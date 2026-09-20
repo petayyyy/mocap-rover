@@ -1,0 +1,1 @@
+{"name":"localization_contracts","config":"config/contracts.json","adapters":{"sim":"CaptureAdapter","replay":"ReplayAdapter","hardware":"CaptureAdapter"},"ground_truth":"evaluation_only"}
