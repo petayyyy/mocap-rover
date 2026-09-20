@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "profiles": {
+    "demo_baseline": {"width": 1600, "height": 1200, "fps": 15, "sensor_mode": "gazebo_rgb_baseline", "pixel_format": "R8G8B8", "optics": "demo_hfov_109.5deg"},
+    "imx296_narrow": {"width": 1440, "height": 1080, "fps": 30, "sensor_mode": "IMX296_mode_unspecified", "pixel_format": "BayerRG8", "optics": "narrow_undocumented", "coverage": "not demonstrated; run coverage check"},
+    "imx296_global_30": {"width": 1440, "height": 1080, "fps": 30, "sensor_mode": "IMX296_mode_unspecified", "pixel_format": "BayerRG8", "optics": "global_shutter_profile_placeholder", "coverage": "not demonstrated; run coverage check"}
+  }
+}

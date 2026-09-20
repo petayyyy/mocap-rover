@@ -23,11 +23,14 @@ parser.add_argument('--pitch-deg', type=float, default=5, help='World Y rotation
 parser.add_argument('--yaw-deg', type=float, default=0.5, help='World Z rotation bound')
 parser.add_argument('--ideal-cameras', action='store_true')
 parser.add_argument('--tag-rover-inverted', action='store_true', help='Start tag rover upside down to test bottom ID 1')
+parser.add_argument('--profile', choices=['demo_baseline','imx296_narrow','imx296_global_30'], default='demo_baseline')
 parser.add_argument('--lighting', choices=['colored', 'neutral'], default='colored')
 parser.add_argument('--light-intensity', type=float, default=1.0, help='Scale of overhead lights, 0..4')
 parser.add_argument('--output-dir', type=Path, default=ROOT,
                     help='Separate scenario directory containing worlds/ and config/')
 args = parser.parse_args()
+PROFILES={'demo_baseline':(1600,1200,15,'R8G8B8'),'imx296_narrow':(1440,1080,30,'R8G8B8'),'imx296_global_30':(1440,1080,30,'R8G8B8')}
+image_width,image_height,camera_fps,pixel_format=PROFILES[args.profile]
 for value in (args.position_cm, args.roll_deg, args.pitch_deg, args.yaw_deg):
     if not math.isfinite(value) or value < 0: parser.error('Error bounds must be finite and nonnegative')
 if args.position_cm > 5: parser.error('position-cm must be <= 5 at this ceiling height')
@@ -118,10 +121,10 @@ for idx,(x,y) in enumerate(((x,y) for y in (2,6,10) for x in (3,9)),1):
     position=[v+d for v,d in zip([x,y,2.9],offset)]
     m=el(w,'model',name=name); el(m,'static','true'); el(m,'pose',' '.join(map(str,position+angles))); l=el(m,'link',name='camera_link')
     box(l,'housing','0.12 0.08 0.06','0 0 0.05 0 0 0','0.12 0.12 0.15 1',False)
-    sensor=el(l,'sensor',name=name,type='camera'); el(sensor,'pose',f'0 0 0 0 {math.pi/2} {math.pi/2}'); el(sensor,'always_on','true'); el(sensor,'update_rate',15); el(sensor,'topic',f'/cameras/{name}/image'); el(sensor,'visualize','true')
+    sensor=el(l,'sensor',name=name,type='camera'); el(sensor,'pose',f'0 0 0 0 {math.pi/2} {math.pi/2}'); el(sensor,'always_on','true'); el(sensor,'update_rate',camera_fps); el(sensor,'topic',f'/cameras/{name}/image'); el(sensor,'visualize','true')
     c=el(sensor,'camera'); el(c,'horizontal_fov',hfov); el(c,'camera_info_topic',f'/cameras/{name}/camera_info')
-    im=el(c,'image'); el(im,'width',1600); el(im,'height',1200); el(im,'format','R8G8B8'); clip=el(c,'clip'); el(clip,'near',0.05); el(clip,'far',20)
-    cameras.append(dict(name=name,position_world=[x,y,2.9],R_world_optical=[[1,0,0],[0,-1,0],[0,0,-1]],K=[fx,0,800,0,fx,600,0,0,1],D=[0]*5,image_size=[1600,1200],horizontal_fov=hfov,image_topic=f'/cameras/{name}/image',camera_info_topic=f'/cameras/{name}/camera_info'))
+    im=el(c,'image'); el(im,'width',image_width); el(im,'height',image_height); el(im,'format',pixel_format); clip=el(c,'clip'); el(clip,'near',0.05); el(clip,'far',20)
+    cameras.append(dict(name=name,position_world=[x,y,2.9],R_world_optical=[[1,0,0],[0,-1,0],[0,0,-1]],K=[fx,0,image_width/2,0,fx,image_height/2,0,0,1],D=[0]*5,image_size=[image_width,image_height],horizontal_fov=hfov,image_topic=f'/cameras/{name}/image',camera_info_topic=f'/cameras/{name}/camera_info'))
     nominal_cameras.append(cameras[-1].copy())
     cameras[-1]=dict(cameras[-1], position_world=position,
                      R_world_optical=matmul(rotation(*angles),[[1,0,0],[0,-1,0],[0,0,-1]]),
@@ -193,7 +196,7 @@ for height in (0,0.3654,0.5):
                 if optical[2]>0 and abs(optical[0]/optical[2])<=math.tan(hfov/2) and abs(optical[1]/optical[2])<=.75*math.tan(hfov/2): seen=True; break
             if not seen: uncovered.append(point[:2])
     coverage.append(dict(height_m=height,sampled_points=14641,uncovered_count=len(uncovered),uncovered_examples=uncovered[:10]))
-settings=dict(tag_rover_inverted=args.tag_rover_inverted,style=args.style,lighting=args.lighting,light_intensity=args.light_intensity,seed=args.seed,ideal_cameras=args.ideal_cameras,
+settings=dict(profile=args.profile,image_size=[image_width,image_height],camera_fps=camera_fps,tag_rover_inverted=args.tag_rover_inverted,style=args.style,lighting=args.lighting,light_intensity=args.light_intensity,seed=args.seed,ideal_cameras=args.ideal_cameras,
               position_bound_cm=args.position_cm,rpy_bounds_deg=[args.roll_deg,args.pitch_deg,args.yaw_deg],
               rotation_convention='R_world_actual_optical = Rz(yaw) Ry(pitch) Rx(roll) R_world_nominal_optical',
               coverage_sample_step_m=0.1,geometric_coverage=coverage)

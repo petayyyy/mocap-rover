@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "arena": {"frame_id": "arena", "size_m": [12.0, 12.0]},
   "cameras": [{"camera_id": "camera_1", "interface": "sim", "mode": "rgb"}, {"camera_id": "camera_2", "interface": "sim", "mode": "rgb"}, {"camera_id": "camera_3", "interface": "sim", "mode": "rgb"}, {"camera_id": "camera_4", "interface": "sim", "mode": "rgb"}, {"camera_id": "camera_5", "interface": "sim", "mode": "rgb"}, {"camera_id": "camera_6", "interface": "sim", "mode": "rgb"}],
-  "capture": {"width": 1600, "height": 1200, "nominal_fps": 15, "ground_truth_input": false},
+  "capture": {"profile": "demo_baseline", "width": 1600, "height": 1200, "nominal_fps": 15, "sensor_mode": "gazebo_rgb_baseline", "pixel_format": "R8G8B8", "ground_truth_input": false},
   "timing": {"clock_domain": "sim", "max_reorder_ms": 200, "reset_on_backward_jump": true},
   "detectors": {"apriltag_family": "tag36h11", "opponent_enabled": false},
   "filters": {"friendly_publish_hz": 30, "opponent_publish_hz": 15, "friendly_prediction_ms": 200, "opponent_prediction_ms": 300},

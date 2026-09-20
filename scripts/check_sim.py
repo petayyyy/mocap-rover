@@ -12,6 +12,9 @@ from gz.msgs10.twist_pb2 import Twist
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--move',action='store_true',help='Drive each rover briefly; use a fresh world with clear space')
 parser.add_argument('--output',default='/tmp/mocap-camera-check')
+parser.add_argument('--width',type=int,default=1600)
+parser.add_argument('--height',type=int,default=1200)
+parser.add_argument('--measure-seconds',type=float,default=0,help='measure wall FPS for each image topic')
 args=parser.parse_args()
 node=Node(); images={}; poses={}; ready=threading.Event(); callbacks=[]
 def check():
@@ -31,13 +34,22 @@ for name in ('tag_rover','yolo_rover'):
 assert ready.wait(60),f'Missing streams: images={list(images)}, poses={poses}'
 out=Path(args.output); out.mkdir(parents=True,exist_ok=True)
 for i,msg in images.copy().items():
-    assert (msg.width,msg.height)==(1600,1200)
+    assert (msg.width,msg.height)==(args.width,args.height), (msg.width,msg.height)
     # Gazebo RGB_INT8 = 3, raw RGB rows may contain padding.
     assert msg.pixel_format_type==3, msg.pixel_format_type
     raw=b''.join(msg.data[r*msg.step:r*msg.step+msg.width*3] for r in range(msg.height))
     (out/f'camera_{i}.ppm').write_bytes(f'P6\n{msg.width} {msg.height}\n255\n'.encode()+raw)
 print('Six RGB streams OK; world poses:',poses)
 print('Snapshots:',out)
+if args.measure_seconds:
+    counts={i:0 for i in range(1,7)}; first=time.monotonic(); deadline=first+args.measure_seconds
+    def count_callback(msg,i): counts[i]+=1
+    measure_callbacks=[]
+    for i in range(1,7):
+        cb=lambda msg,i=i: count_callback(msg,i); measure_callbacks.append(cb); assert node.subscribe(Image,f'/cameras/camera_{i}/image',cb)
+    while time.monotonic()<deadline: time.sleep(.02)
+    elapsed=time.monotonic()-first
+    print('wall_fps=',{i:round(n/elapsed,3) for i,n in counts.items()},'wall_seconds=',round(elapsed,3),'simulation_fps_requires_clock_log=true')
 if args.move:
     for name in ('tag_rover','yolo_rover'):
         pub=node.advertise(f'/model/{name}/cmd_vel',Twist)
