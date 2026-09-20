@@ -1,0 +1,393 @@
+{
+  "world": "mocap_arena",
+  "tag": {
+    "family": "tag36h11",
+    "id": 0,
+    "size": 0.4,
+    "placement": "top",
+    "T_base_tag_translation": [
+      0,
+      0,
+      0.2254
+    ],
+    "R_base_tag": [
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  },
+  "tags": [
+    {
+      "family": "tag36h11",
+      "id": 0,
+      "size": 0.4,
+      "placement": "top",
+      "T_base_tag_translation": [
+        0,
+        0,
+        0.2254
+      ],
+      "R_base_tag": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          1
+        ]
+      ]
+    },
+    {
+      "family": "tag36h11",
+      "id": 1,
+      "size": 0.4,
+      "placement": "bottom",
+      "T_base_tag_translation": [
+        0,
+        0,
+        0.0146
+      ],
+      "R_base_tag": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          -1,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ]
+      ]
+    }
+  ],
+  "tag_frame_convention": "x=image right, y=image up, z=outward normal; transforms map tag to base",
+  "cameras": [
+    {
+      "name": "camera_1",
+      "position_world": [
+        3,
+        2,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          -1,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ]
+      ],
+      "K": [
+        565.8536585365854,
+        0,
+        800,
+        0,
+        565.8536585365854,
+        600,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "image_size": [
+        1600,
+        1200
+      ],
+      "horizontal_fov": 1.9103528747315734,
+      "image_topic": "/cameras/camera_1/image",
+      "camera_info_topic": "/cameras/camera_1/camera_info"
+    },
+    {
+      "name": "camera_2",
+      "position_world": [
+        9,
+        2,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          -1,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ]
+      ],
+      "K": [
+        565.8536585365854,
+        0,
+        800,
+        0,
+        565.8536585365854,
+        600,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "image_size": [
+        1600,
+        1200
+      ],
+      "horizontal_fov": 1.9103528747315734,
+      "image_topic": "/cameras/camera_2/image",
+      "camera_info_topic": "/cameras/camera_2/camera_info"
+    },
+    {
+      "name": "camera_3",
+      "position_world": [
+        3,
+        6,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          -1,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ]
+      ],
+      "K": [
+        565.8536585365854,
+        0,
+        800,
+        0,
+        565.8536585365854,
+        600,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "image_size": [
+        1600,
+        1200
+      ],
+      "horizontal_fov": 1.9103528747315734,
+      "image_topic": "/cameras/camera_3/image",
+      "camera_info_topic": "/cameras/camera_3/camera_info"
+    },
+    {
+      "name": "camera_4",
+      "position_world": [
+        9,
+        6,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          -1,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ]
+      ],
+      "K": [
+        565.8536585365854,
+        0,
+        800,
+        0,
+        565.8536585365854,
+        600,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "image_size": [
+        1600,
+        1200
+      ],
+      "horizontal_fov": 1.9103528747315734,
+      "image_topic": "/cameras/camera_4/image",
+      "camera_info_topic": "/cameras/camera_4/camera_info"
+    },
+    {
+      "name": "camera_5",
+      "position_world": [
+        3,
+        10,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          -1,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ]
+      ],
+      "K": [
+        565.8536585365854,
+        0,
+        800,
+        0,
+        565.8536585365854,
+        600,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "image_size": [
+        1600,
+        1200
+      ],
+      "horizontal_fov": 1.9103528747315734,
+      "image_topic": "/cameras/camera_5/image",
+      "camera_info_topic": "/cameras/camera_5/camera_info"
+    },
+    {
+      "name": "camera_6",
+      "position_world": [
+        9,
+        10,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          -1,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ]
+      ],
+      "K": [
+        565.8536585365854,
+        0,
+        800,
+        0,
+        565.8536585365854,
+        600,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "image_size": [
+        1600,
+        1200
+      ],
+      "horizontal_fov": 1.9103528747315734,
+      "image_topic": "/cameras/camera_6/image",
+      "camera_info_topic": "/cameras/camera_6/camera_info"
+    }
+  ],
+  "role": "nominal_uncalibrated"
+}

@@ -1,0 +1,36 @@
+{
+  "tag_rover_inverted": false,
+  "style": "steel",
+  "lighting": "colored",
+  "light_intensity": 1.0,
+  "seed": 42,
+  "ideal_cameras": false,
+  "position_bound_cm": 3,
+  "rpy_bounds_deg": [
+    0.5,
+    5,
+    0.5
+  ],
+  "rotation_convention": "R_world_actual_optical = Rz(yaw) Ry(pitch) Rx(roll) R_world_nominal_optical",
+  "coverage_sample_step_m": 0.1,
+  "geometric_coverage": [
+    {
+      "height_m": 0,
+      "sampled_points": 14641,
+      "uncovered_count": 0,
+      "uncovered_examples": []
+    },
+    {
+      "height_m": 0.3654,
+      "sampled_points": 14641,
+      "uncovered_count": 0,
+      "uncovered_examples": []
+    },
+    {
+      "height_m": 0.5,
+      "sampled_points": 14641,
+      "uncovered_count": 0,
+      "uncovered_examples": []
+    }
+  ]
+}
