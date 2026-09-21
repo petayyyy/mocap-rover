@@ -64,6 +64,10 @@ Acceptance manifest command: `python3 scripts/run_acceptance.py --seed 9
 pipeline/evaluator/fault matrix, runs seed sweep 42/7/123, emits a hashed 600-second episode manifest, hashes the world and `config/cameras.json`, records git revision, writes a timing replay recording and keeps
 `sim_accepted: false`.
 
+Final bundle smoke-check with seed 42 produced: acceptance JSON 3,616 bytes,
+replay recording 14,999 bytes/60 frames, episode manifest 6,232,059 bytes/8
+episodes; fault matrix `all_pass=true`, gate `sim_accepted=false`.
+
 Snapshot dashboard command: `python3 scripts/serve_dashboard.py
 --snapshot-dir /tmp/mocap-s15-preview-20260921 --port 8080`.
 
