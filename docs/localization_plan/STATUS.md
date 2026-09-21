@@ -34,6 +34,7 @@
 - Добавлен capability-aware `SettingsBackend` с staged validate/apply/rollback, revision и ack/error; simulation trigger нельзя включить без capability.
 - Добавлен structured `Diagnostics` для measured/filtered/predicted events, queue/drop/age каналов, latency percentiles и truth-hidden UI payload.
 - Добавлен localhost-only `DashboardHandler` с `/` и `/api/status`; endpoint не выполняет shell-команды, не публикует raw frames и явно показывает `hardware_verified: false`.
+- Dashboard дополнен `/api/cameras`: единый registry отдаёт шесть virtual camera statuses, channel health и simulation-only capabilities для UI.
 - Добавлен bounded synthetic benchmark `simulation/benchmark.py`; report explicitly marks simulation-only and hardware-unverified.
 - Добавлен simulation-time soak на 30 минут: 27,000 steps, 6 каналов, bounded queues, 1,588 искусственных drops, raw frames не удерживаются.
 - Добавлен `simulation/pipeline.py`: воспроизводимый synthetic camera→AprilTag/opponent→fusion pipeline с отдельными friendly/opponent rates, drops, LOST и runtime truth boundary.
@@ -128,6 +129,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S11 multi-camera association boundary и ID-switch counter покрыты тестом; detector weights, full projection/triangulation and wall-time acceptance remain unverified.
 - S12 browser UI/E2E visual walkthrough не реализованы; backend не предоставляет hardware capability и не выполняет shell commands.
 - S13 dashboard endpoint реализован, но полноценный live Gazebo data wiring, визуальный screenshot walkthrough и six-preview rendering ещё не подтверждены.
+- `/api/cameras` smoke-test подтверждает шесть virtual entries; live Gazebo previews и визуальный walkthrough остаются непроверенными.
 - S14 benchmark не является end-to-end Gazebo/30-minute acceptance; текущий Gazebo baseline wall FPS ниже nominal, поэтому требования frequency/age не приняты.
 - S14 soak подтверждает только bounded simulation-time behavior; реальный 30-minute wall-time Gazebo end-to-end run по-прежнему не принят.
 - Synthetic pipeline acceptance regression проходит nominal/drop scenarios, но не заменяет Gazebo image-based accuracy или wall-time 30-minute acceptance.
