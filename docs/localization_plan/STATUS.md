@@ -1,7 +1,7 @@
 # Localization plan status
 
 Текущая фаза: **SIMULATION**  
-Текущий этап: **S08 — локализация своего ровера**
+Текущий этап: **S09 — объединение и одометрия**
 Статус: **выполнен в заявленном объёме; SIM_ACCEPTED не объявлен**
 
 ## Сделано
@@ -64,6 +64,9 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s tests -v
   PASS — 23/23 tests (S01–S08; AprilTag identity, geometry, timestamps, quality and rejection)
 
+python3 -m unittest discover -s tests -v
+  PASS — 25/25 tests (S01–S09; asynchronous fusion, dedup, out-of-order, coasting and lost)
+
 gz sdf -k worlds/mocap_arena.sdf
   PASS — Valid.
 
@@ -95,6 +98,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S06 calibration solver/ChArUco image acquisition не подключены; report API фиксирует held-out fields, но не заявляет измеренную оптическую точность.
 - S07 не заявляет восстановленную метрическую точность без реальных image-derived target observations; полноценный robust BA и Gazebo image solver остаются дальнейшей работой.
 - S08 observer принимает image-derived corner detections, но detector backend/OpenCV AprilTag runtime, six-camera Gazebo image pipeline, blur/occlusion recall и measured Hz пока не подключены; это не hardware readiness.
+- Добавлен асинхронный planar `PlanarFusion`: timestamped observations, dedup/out-of-order rejection, circular yaw, prediction на publish tick, counters, COASTING/LOST и рост covariance.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
 - Измеренный wall FPS baseline в smoke-check ниже номинала; capture FPS, detector FPS, accepted measurement Hz, output Hz, wall time, simulation time и RTF не смешиваются и не заявляются достигнутыми. Accuracy, calibration quality и LOST runtime behavior не измерялись; SIM_ACCEPTED не объявлен.
@@ -105,13 +109,14 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Артефакты
 
-- `localization_contracts/{contracts.py,config.py,geometry.py,adapters.py,registry.py,timing.py,calibration.py,extrinsics.py,apriltag.py}`
+- `localization_contracts/{contracts.py,config.py,geometry.py,adapters.py,registry.py,timing.py,calibration.py,extrinsics.py,apriltag.py,fusion.py}`
 - `config/contracts.json`, `launch/contracts.launch.json`, `tests/test_contracts.py`
 - `tests/test_registry.py`
 - `tests/test_timing.py`
 - `tests/test_calibration.py`
 - `tests/test_extrinsics.py`
 - `tests/test_apriltag.py`
+- `tests/test_fusion.py`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`
 
@@ -121,6 +126,6 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Следующий этап
 
-**S09** — следующий промпт: `docs/localization_plan/prompts/simulation/09_fusion.md` (автоматически не начинался).
+**S10** — следующий промпт: `docs/localization_plan/prompts/simulation/10_dataset.md` (автоматически не начинался).
 
 Аппаратную фазу H01–H04 не начинать.
