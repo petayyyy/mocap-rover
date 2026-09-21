@@ -69,6 +69,13 @@ Acceptance manifest command: `python3 scripts/run_acceptance.py --seed 9
 pipeline/evaluator/fault matrix, runs seed sweep 42/7/123, emits a hashed 600-second episode manifest, hashes the world and `config/cameras.json`, records git revision, writes a timing replay recording and keeps
 `sim_accepted: false`.
 
+Re-run evidence on 2026-09-21: `python3 scripts/run_acceptance.py --seed 9
+--output /tmp/mocap-s15-current.json` completed with seed sweep 42/7/123,
+11/11 fault scenarios passing, 60 replay frames, 40 scenario episodes,
+`truth_used_by_runtime=false`, and `sim_accepted=false`. The manifest records
+git revision `19e8d27`, world/config/calibration digests, and
+`hardware_verified=false`.
+
 Final bundle smoke-check with seed 42 produced acceptance JSON/replay evidence;
 the episode manifest covers 40 episodes (2 seeds × 5 styles × 4 trajectories),
 fault matrix `all_pass=true`, gate `sim_accepted=false`.

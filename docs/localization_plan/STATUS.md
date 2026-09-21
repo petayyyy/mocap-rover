@@ -201,7 +201,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Acceptance manifest now also records `worlds/mocap_arena.sdf` SHA-256 and current git revision for reproducible world/code provenance.
 - Acceptance manifest now includes independent synthetic seed sweep 42/7/123 with friendly/opponent rates and camera_6 outage counts.
 - Acceptance runner now emits a hashed 600-second episode manifest (rest/straight/circle/eight, seeds 42/7, styles/lighting/occlusion labels) alongside replay evidence.
-- Final runner smoke-check (seed 42): acceptance JSON 3,616 B, replay 14,999 B/60 frames; episode manifest now covers 40 episodes (2 seeds × 5 styles × 4 trajectories), fault matrix all_pass=true, sim_accepted=false.
+- Current runner smoke-check (seed 9, 2026-09-21): `/tmp/mocap-s15-current.json`; replay recording has 60 frames, scenario manifest has 40 episodes (2 seeds × 5 styles × 4 trajectories), seed sweep 42/7/123 reports friendly 30 Hz and opponent 15 Hz, fault matrix has 11/11 scenarios PASS, `truth_used_by_runtime=false`, and `sim_accepted=false`. Manifest records git revision `19e8d27`, world/config/calibration digests, and `hardware_verified=false`.
 - S14 benchmark не является end-to-end Gazebo/30-minute acceptance; текущий Gazebo baseline wall FPS ниже nominal, поэтому требования frequency/age не приняты.
 - S14 soak подтверждает только bounded simulation-time behavior; реальный 30-minute wall-time Gazebo end-to-end run по-прежнему не принят.
 - Synthetic pipeline acceptance regression проходит nominal/drop scenarios, но не заменяет Gazebo image-based accuracy или wall-time 30-minute acceptance.
