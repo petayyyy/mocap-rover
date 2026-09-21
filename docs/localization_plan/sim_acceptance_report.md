@@ -6,11 +6,11 @@
 |---|---|---|
 | S04 registry/fault isolation | PASS | 4 registry tests; bounded queues, reconnect and independent channels |
 | Timing/replay contracts | PASS (boundary) | timing tests, provenance verification and 11-scenario fault matrix with measured offset/drift, replay reset and bounded delays; no hardware clock/trigger claim |
-| Intrinsics/extrinsics reports | PARTIAL | JSON/CameraInfo YAML round-trip, image-derived per-view PnP path and graph checks; no image-derived BA/held-out accuracy |
+| Intrinsics/extrinsics reports | PARTIAL | JSON/CameraInfo YAML round-trip, image-derived per-view PnP plus robust bundle-adjustment path and held-out synthetic experiment; Gazebo image-derived calibration/optical gate remains unverified |
 | AprilTag observation contract | PARTIAL | live camera_1 Gazebo smoke: 19/19 ID-0 detections and PnP accepts; evaluator-only pose run matched 17 with P50/P95 3D error≈0.1083 m, so metric accuracy gate fails |
 | Friendly fusion degradation | PARTIAL | one-camera image→PnP→PlanarFusion/TrackStatus path and synthetic evaluator; no ROS odometry or trajectory accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline/contact projection/metric association tested; no trained detector or opponent wall-time camera run |
-| Settings/debug UI | PARTIAL | localhost APIs, six-slot root HTML, stale-revision error ack and live six-snapshot visual inspection pass; no full interactive performance walkthrough |
+| Settings/debug UI | PARTIAL | localhost APIs, six-slot root HTML, stale-revision error ack and live six-preview/API/PPM smoke-check pass; no full interactive performance walkthrough or sustained UI comparison |
 | 30-minute six-camera end-to-end run | PARTIAL | 30-minute simulation-time soak is bounded; real wall-time Gazebo end-to-end run still not passed |
 | Gazebo baseline SDF | PASS | `gz sdf -k worlds/mocap_arena.sdf` => Valid |
 
@@ -79,3 +79,10 @@ Snapshot dashboard command: `python3 scripts/serve_dashboard.py
 Live dashboard smoke-check on port 18080: HTML length 1421 with 6 preview
 slots; `/api/cameras`=6; `/api/previews`=6; `/preview/camera_1` returned PPM
 magic `P6` and 5,760,017 bytes. The local process was stopped with Ctrl-C.
+
+Live dashboard wiring smoke-check on port 18081 (Gazebo running):
+`/api/status` length 202 reported frames for all six cameras;
+`/api/cameras` length 2604 returned six entries;
+`/api/previews` length 882 returned six available entries;
+`/preview/camera_1` length 5,760,017 began with `P6`. This confirms the
+live six-channel preview path, not the performance or metric-accuracy gates.
