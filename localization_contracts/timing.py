@@ -76,6 +76,12 @@ class ReplayLog:
         obj = cls(frames, **{k: data["header"].get(k, "") for k in ("config_hash", "calibration_hash", "model_hash")})
         obj.header = data["header"]; return obj
 
+    def verify_headers(self, config_hash, calibration_hash, model_hash):
+        expected={'config_hash':config_hash,'calibration_hash':calibration_hash,'model_hash':model_hash}
+        mismatches=[k for k,v in expected.items() if self.header.get(k)!=v]
+        if mismatches: raise ValueError('replay provenance mismatch: '+','.join(mismatches))
+        return True
+
 class ReplayScheduler:
     def __init__(self, log): self.log = log
     def schedule(self, arrival_offset_ns=0, reset=False):

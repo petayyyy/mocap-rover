@@ -15,6 +15,8 @@ class SimulationS05(unittest.TestCase):
             p = Path(d) / "r.json"; log = ReplayLog([self.sample()], "c", "k", "m"); log.dump(p)
             loaded = ReplayLog.load(p)
             self.assertEqual(loaded.frames[0].capture_time_ns, 100)
+            self.assertTrue(loaded.verify_headers('c','k','m'))
+            with self.assertRaises(ValueError): loaded.verify_headers('wrong','k','m')
             self.assertEqual(ReplayScheduler(loaded).schedule(reset=True)[0][0], "new_session")
 
 if __name__ == "__main__": unittest.main()
