@@ -158,6 +158,8 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - `tests/test_benchmark.py`
 - `tests/test_dashboard.py`
 - `docs/localization_plan/sim_acceptance_report.md`
+- `docs/localization_plan/research_comparison_report.md`
+- `docs/localization_plan/operator_runbook_sim.md`
 - `simulation/pipeline.py`, `tests/test_pipeline.py`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`

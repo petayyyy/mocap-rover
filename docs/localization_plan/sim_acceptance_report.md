@@ -39,3 +39,6 @@ PY
 Ground truth is evaluation-only. No physical cameras, IMX296/libcamera, udev,
 trigger, hardware adapter or hardware-verified capability is included. This
 report does not set `SIM_ACCEPTED`; H01–H04 remain unstarted.
+
+Additional required artifacts: `research_comparison_report.md` and
+`operator_runbook_sim.md`.
