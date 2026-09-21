@@ -29,4 +29,17 @@ class SimulationS08(unittest.TestCase):
         self.assertAlmostEqual(result.position_m[1], -.05, places=3)
         self.assertAlmostEqual(result.position_m[2], 2-.2254, places=3)
 
+    def test_bottom_tag_transform_preserves_base_position(self):
+        import cv2
+        K=np.array([[500.,0,320],[0,500.,240],[0,0,1.]])
+        Rbase=np.diag([1.,-1.,-1.]); Tbase=np.eye(4); Tbase[:3,:3]=np.eye(3); Tbase[:3,3]=[.12,-.08,2.]
+        Ttag=Tbase.copy(); Ttag[:3,:3]=Tbase[:3,:3]@Rbase; Ttag[:3,3]=Tbase[:3,3]+Tbase[:3,:3]@np.array([0,0,.0146])
+        rv,_=cv2.Rodrigues(Ttag[:3,:3]); obj=np.array([[-.2,.2,0],[.2,.2,0],[.2,-.2,0],[-.2,-.2,0]],float)
+        corners,_=cv2.projectPoints(obj,rv,Ttag[:3,3],K,np.zeros((5,1)))
+        observer=PnpAprilTagObserver(TagConfig(ids=(0,1),calibration_version='bottom'),K,[0]*5,
+            {'rotation':np.eye(3),'translation':[0,0,0]}, {'rotation':Rbase,'translation':[0,0,.0146]})
+        result=observer.observe(Detection('camera_1',3,1,tuple(map(tuple,corners.reshape(4,2))),1,2,3))
+        self.assertIsNotNone(result); self.assertTrue(result.pose_6d_valid)
+        self.assertAlmostEqual(result.position_m[0],.12,places=2); self.assertAlmostEqual(result.position_m[1],-.08,places=2); self.assertAlmostEqual(result.position_m[2],2.,places=2)
+
 if __name__ == "__main__": unittest.main()
