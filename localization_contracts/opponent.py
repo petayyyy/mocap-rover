@@ -21,3 +21,23 @@ class OpponentTracker:
         if self.state is None: return None
         lost=stamp_ns-self.state.stamp_ns>self.timeout
         return OpponentState(stamp_ns,self.state.x,self.state.y,self.state.vx,self.state.vy,self.state.confirmed,lost=lost)
+
+class MultiCameraAssociator:
+    """Associate one known opponent across cameras without creating duplicate tracks."""
+    def __init__(self, max_time_skew_ns=100_000_000, max_pixel_jump=160):
+        self.max_time_skew_ns=max_time_skew_ns; self.max_pixel_jump=max_pixel_jump; self.last=None; self.id_switches=0
+    def select(self, detections):
+        valid=[d for d in detections if d.confidence >= .3 and len(d.bbox)==4]
+        if not valid: return None
+        valid.sort(key=lambda d:(d.stamp_ns,-d.confidence))
+        newest=valid[-1]
+        if self.last is not None:
+            if newest.stamp_ns-self.last.stamp_ns > self.max_time_skew_ns: return None
+            cx=lambda d:(d.bbox[0]+d.bbox[2])/2
+            if abs(cx(newest)-cx(self.last))>self.max_pixel_jump: return None
+        # Highest confidence among detections near the newest timestamp.
+        candidates=[d for d in valid if abs(d.stamp_ns-newest.stamp_ns)<=self.max_time_skew_ns]
+        chosen=max(candidates,key=lambda d:d.confidence)
+        if self.last is not None and chosen.camera_id != self.last.camera_id: self.id_switches += 1
+        self.last=chosen
+        return chosen
