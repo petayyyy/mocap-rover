@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "kind": "replay",
+  "source": "ReplayLog",
+  "registry": "camera_1..camera_6",
+  "clock_domain": "replay",
+  "nodes": ["replay_scheduler", "camera_registry", "apriltag_observer", "opponent_tracker", "fusion", "diagnostics"],
+  "seek_creates_new_session": true,
+  "hardware_verified": false,
+  "physical_devices": false
+}

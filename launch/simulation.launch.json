@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "kind": "simulation",
+  "source": "gazebo_virtual_cameras",
+  "registry": "camera_1..camera_6",
+  "clock_domain": "sim",
+  "nodes": ["camera_registry", "timing_replay_boundary", "apriltag_observer", "opponent_tracker", "fusion", "diagnostics"],
+  "hardware_verified": false,
+  "physical_devices": false
+}
