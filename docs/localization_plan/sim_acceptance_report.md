@@ -8,7 +8,7 @@
 | Timing/replay contracts | PASS (boundary) | 2 timing tests; no hardware clock/trigger claim |
 | Intrinsics/extrinsics reports | PARTIAL | import/round-trip and graph checks; no image-derived BA accuracy |
 | AprilTag observation contract | PARTIAL | synthetic corner geometry; no detector/image recall benchmark |
-| Friendly fusion degradation | PARTIAL | synthetic evaluator: 60 matched, XY P95 ~0 m, age P95 0 ms; no Gazebo image accuracy |
+| Friendly fusion degradation | PARTIAL | synthetic evaluator: 60 matched, XY P95 ~0 m, age P95 0 ms; all six registry channels exercised, camera_6 outage isolated; no Gazebo image accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline measures >=10 Hz; no trained detector, multi-camera ID-switch set or wall-time camera pipeline |
 | Settings/debug UI | PARTIAL | localhost `/` and `/api/status` smoke-check pass; no live six-preview wiring or visual walkthrough |
 | 30-minute six-camera end-to-end run | PARTIAL | 30-minute simulation-time soak is bounded; real wall-time Gazebo end-to-end run still not passed |

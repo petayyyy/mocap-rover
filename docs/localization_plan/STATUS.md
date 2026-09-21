@@ -132,6 +132,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S14 soak подтверждает только bounded simulation-time behavior; реальный 30-minute wall-time Gazebo end-to-end run по-прежнему не принят.
 - Synthetic pipeline acceptance regression проходит nominal/drop scenarios, но не заменяет Gazebo image-based accuracy или wall-time 30-minute acceptance.
 - Pipeline evaluator-only hold-out run: 60 matched samples, XY P95 ≈0 m and age P95 0 ms; these synthetic metrics are not presented as Gazebo or hardware performance.
+- Synthetic pipeline now exercises all six registry cameras; deterministic camera_6 outage (10 frames over 2 s) leaves camera_1/friendly output active.
 - Добавлен асинхронный planar `PlanarFusion`: timestamped observations, dedup/out-of-order rejection, circular yaw, prediction на publish tick, counters, COASTING/LOST и рост covariance.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
