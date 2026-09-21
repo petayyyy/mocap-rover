@@ -32,6 +32,7 @@
 - Добавлен `OpponentTracker` с confidence gating, подтверждением по истории, contact-point placeholder, velocity, yaw validity и timeout-based LOST; identity не выводится только из отсутствия тега.
 - Добавлен `MultiCameraAssociator`: один выбранный candidate на timestamp, temporal/pixel gating, отсутствие duplicate tracks и измеряемый `id_switches` counter.
 - Добавлен capability-aware `SettingsBackend` с staged validate/apply/rollback, revision и ack/error; simulation trigger нельзя включить без capability.
+- Settings backend rejects stale `expected_revision` with an explicit error ack, covering concurrent client apply protection.
 - Добавлен structured `Diagnostics` для measured/filtered/predicted events, queue/drop/age каналов, latency percentiles и truth-hidden UI payload.
 - Добавлен localhost-only `DashboardHandler` с `/` и `/api/status`; endpoint не выполняет shell-команды, не публикует raw frames и явно показывает `hardware_verified: false`.
 - Dashboard дополнен `/api/cameras`: единый registry отдаёт шесть virtual camera statuses, channel health и simulation-only capabilities для UI.
@@ -93,7 +94,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 45/45 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association, soak, fault matrix, launch manifests and scenario manifest)
+  PASS — 46/46 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association, soak, fault matrix, launch manifests, scenario manifest and stale revision)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
