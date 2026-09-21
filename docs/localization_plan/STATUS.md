@@ -9,6 +9,7 @@
 - [x] Исправлено: synthetic AprilTag geometry больше не объявляет PnP/6-D pose и valid attitude (`localization_contracts/apriltag.py`).
 - [x] Исправлено: одновременные observations не создают искусственный огромный velocity; rates считаются от начала текущей session (`localization_contracts/fusion.py`).
 - [x] Добавлены регрессии на оба случая (`tests/test_apriltag.py`, `tests/test_fusion.py`).
+- [x] Добавлен OpenCV IPPE-SQUARE PnP boundary с явной цепочкой `T_arena_camera · T_camera_tag · inv(T_base_tag)` и метрическим synthetic regression (`localization_contracts/apriltag.py`).
 - [ ] Не закрыто: настоящий detector, PnP/K/D, T_arena_camera/T_base_marker и ROS 2 Odometry.
 - [ ] Не закрыто: image-derived calibration/BA, шесть live image channels, настоящий YOLO и 30-minute wall-time profile.
 
@@ -42,6 +43,7 @@
 - Недостаточные или несвязные наблюдения отклоняются; solver boundary не читает Gazebo ground truth.
 - Добавлен dependency-free AprilTag 36h11 observer для полных synthetic/replay detections: configurable IDs/0.40 m size, K geometry, timestamps, calibration version, quality/covariance и reject invalid ID/size.
 - Observer намеренно публикует только planar geometry: `pose_6d_valid=False`, `attitude_state=unknown`; PnP и внешние transforms остаются незавершённым SIM-критерием.
+- `PnpAprilTagObserver` теперь отдельно публикует 6D-valid pose только после успешного PnP/reprojection check; detector, Gazebo image capture и ROS odometry к нему пока не подключены.
 - Добавлен `OpponentTracker` с confidence gating, подтверждением по истории, contact-point placeholder, velocity, yaw validity и timeout-based LOST; identity не выводится только из отсутствия тега.
 - Добавлен `MultiCameraAssociator`: один выбранный candidate на timestamp, temporal/pixel gating, отсутствие duplicate tracks и измеряемый `id_switches` counter.
 - Added height-aware bbox contact-point projection to arena ground plane with explicit height uncertainty; bbox center is not treated as body center.
@@ -109,7 +111,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 53/53 tests (S01–S15 acceptance artifacts, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
+  PASS — 54/54 tests (S01–S15 acceptance artifacts, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
