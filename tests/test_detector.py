@@ -27,6 +27,12 @@ class SimulationS08Detector(unittest.TestCase):
         image=cv2.imread('/tmp/mocap-s08-live/camera_1.png',0) if os.path.isfile('/tmp/mocap-s08-live/camera_1.png') else None
         if image is None: self.skipTest('live Gazebo snapshot unavailable')
         self.assertEqual([d.tag_id for d in AprilTagImageDetector().detect(image)], [0])
+    def test_half_scale_preserves_tag_and_rescales_corners(self):
+        import cv2
+        image=cv2.imread('/tmp/mocap-s08-baseline/camera_1.ppm',0) if __import__('os').path.isfile('/tmp/mocap-s08-baseline/camera_1.ppm') else None
+        if image is None: self.skipTest('Gazebo snapshot unavailable')
+        full=AprilTagImageDetector().detect(image)[0]; half=AprilTagImageDetector(scale=.5).detect(image)[0]
+        self.assertEqual(half.tag_id,full.tag_id); self.assertLess(float(np.linalg.norm(np.asarray(half.corners)-np.asarray(full.corners))),10)
 
     def test_detector_to_pnp_observation_has_capture_provenance(self):
         try:

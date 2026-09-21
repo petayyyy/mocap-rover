@@ -18,9 +18,9 @@ class OneCameraImagePipeline:
     ``publish`` is deliberately a separate caller/timer boundary.
     """
     def __init__(self, camera_id, K, D, camera_pose, base_tag, calibration_version,
-                 family="tag36h11", tag_size_m=.4):
+                 family="tag36h11", tag_size_m=.4, detector_scale=1.0):
         self.camera_id=camera_id
-        self.detector=AprilTagImageDetector(family)
+        self.detector=AprilTagImageDetector(family,scale=detector_scale)
         self.observer=PnpAprilTagObserver(TagConfig(family=family,size_m=tag_size_m,calibration_version=calibration_version),K,D,camera_pose,base_tag)
         self.fusion=PlanarFusion()
         self.frames=0; self.detections=0; self.accepted=0; self.last_latency_ms=None; self.last_observation=None
@@ -52,11 +52,11 @@ class OneCameraImagePipeline:
 
 class MultiCameraImagePipeline:
     """Independent six-camera image pipelines with conservative source choice."""
-    def __init__(self, cameras, base_tag, calibration_version):
+    def __init__(self, cameras, base_tag, calibration_version, detector_scale=1.0):
         self.cameras={}
         for camera_id, spec in cameras.items():
             self.cameras[camera_id]=OneCameraImagePipeline(camera_id,spec["K"],spec.get("D",[0]*5),
-                {"rotation":spec["R_world_optical"],"translation":spec["position_world"]},base_tag,calibration_version)
+                {"rotation":spec["R_world_optical"],"translation":spec["position_world"]},base_tag,calibration_version,detector_scale=detector_scale)
         self.selector=ObservationSelector(); self.disabled=set()
 
     def disable(self, camera_id):

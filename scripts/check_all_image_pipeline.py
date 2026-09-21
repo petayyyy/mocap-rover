@@ -35,7 +35,7 @@ def main(seconds=5.0, config_path='config/cameras.json'):
     if not ready.wait(15): raise RuntimeError(f'CameraInfo missing: {sorted(set(entries)-set(infos))}')
     specs={}
     for cid,c in entries.items(): specs[cid]={'K':np.asarray(infos[cid][0]).reshape(3,3),'D':infos[cid][1],'R_world_optical':c['R_world_optical'],'position_world':c['position_world']}
-    pipeline=MultiCameraImagePipeline(specs,{'rotation':config['tag']['R_base_tag'],'translation':config['tag']['T_base_tag_translation']},'gazebo-camera-info')
+    pipeline=MultiCameraImagePipeline(specs,{'rotation':config['tag']['R_base_tag'],'translation':config['tag']['T_base_tag_translation']},'gazebo-camera-info',detector_scale=.5)
     time.sleep(seconds)
     for topic in topics: node.unsubscribe(topic)
     elapsed=max(time.monotonic()-start,1e-9); out={}
