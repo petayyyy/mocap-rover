@@ -28,6 +28,7 @@
 - [x] S11 добавлен explicit `YoloRuntimeStatus`/`YoloDetector` boundary: missing `ultralytics`/weights fail clearly and never synthesize detections; current environment reports unavailable.
 - [x] Dashboard теперь имеет dynamic status polling (500 ms), XY map marker и явный LOST color path; это UI capability smoke coverage, не подтверждение live Gazebo data wiring.
 - [x] S12 `SettingsBackend` теперь поддерживает runtime apply/rollback callbacks после validated atomic apply; integration regression проверяет ack и отсутствие callback на stale revision.
+- [x] Добавлен `scripts/serve_live_dashboard.py`: live Gazebo image topics обновляют registry, six preview files и dashboard metadata; raw frames не передаются через JSON.
 - [x] Image pipeline теперь требует и принимает live `/cameras/camera_N/camera_info` K/D перед PnP; отсутствие CameraInfo приводит к диагностической ошибке.
 - [x] Detector добавил bounded raw+Otsu contrast path; baseline live camera_1 path даёт 19/19 ID-0 detections/PnP accepts, а six-camera runner получает frames на всех channels.
 - [x] Добавлена bottom-tag ID 1 transform regression: full `T_base_tag` rotation/translation preserves base position without image mirroring or per-ID yaw sign hacks.
@@ -176,6 +177,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S11 multi-camera association boundary и ID-switch counter покрыты тестом; detector weights, full projection/triangulation and wall-time acceptance remain unverified.
 - S12 backend staged apply/rollback/ack и localhost UI smoke реализованы; browser E2E visual walkthrough и live-node settings wiring остаются непроверенными.
 - S13 dashboard endpoint реализован, но полноценный live Gazebo data wiring, визуальный screenshot walkthrough и six-preview rendering ещё не подтверждены.
+- S13 live dashboard wiring теперь runnable; live visual walkthrough и sustained performance comparison без/с UI ещё не приняты.
 - `/api/cameras` smoke-test подтверждает шесть virtual entries; live Gazebo previews и визуальный walkthrough остаются непроверенными.
 - `/api/previews` smoke-test подтверждает шесть metadata entries; live rendered frames и visual screenshot walkthrough остаются непроверенными.
 - Preview file endpoint smoke-test подтверждает local PPM response; Gazebo snapshot directory still requires a live smoke-check before visual acceptance.
