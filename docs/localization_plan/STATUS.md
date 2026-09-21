@@ -91,7 +91,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 40/40 tests (S01–S15 acceptance artifacts, dashboard cameras/previews, pipeline evaluator, multi-camera association and soak)
+  PASS — 41/41 tests (S01–S15 acceptance artifacts, dashboard cameras/previews, pipeline evaluator, multi-camera association, soak and fault matrix)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
