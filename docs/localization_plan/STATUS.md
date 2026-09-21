@@ -20,6 +20,7 @@
 - [x] Добавлен ROS-independent `TimedOdometryPublisher`: отдельные 30 Hz ticks, catch-up при задержке, frame semantics и явный LOST; `rclpy/nav_msgs` в окружении отсутствуют, поэтому ROS node не заявлен.
 - [x] Multi-camera pipeline supports atomic per-camera calibration replacement with session reset isolated to the reconfigured source; integration regression covers unaffected camera continuity.
 - [x] S14 benchmark now has a real in-process image→detector→PnP→fusion profile (`simulation.benchmark.image_path`), reporting separate capture/detection/accepted/output rates and p95 latency without retaining raw frames; it is not Gazebo wall-time acceptance.
+- [x] Добавлен `scripts/check_all_image_pipeline.py` для одновременной проверки шести Gazebo image+CameraInfo streams без world poses.
 - [x] S10 добавлен reproducible image/YOLO-label builder (`simulation.dataset.build_image_dataset`): PNGs, labels, session-level train/val/test split and leakage-safe manifest; weights/training status remain explicitly unset.
 - [x] S11 добавлен explicit `YoloRuntimeStatus`/`YoloDetector` boundary: missing `ultralytics`/weights fail clearly and never synthesize detections; current environment reports unavailable.
 - [x] Dashboard теперь имеет dynamic status polling (500 ms), XY map marker и явный LOST color path; это UI capability smoke coverage, не подтверждение live Gazebo data wiring.
@@ -175,6 +176,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Live dashboard smoke-check on port 18080: HTML 1421 bytes/6 slots, cameras=6, previews=6, camera_1 PPM magic `P6`/5,760,017 bytes; process stopped with Ctrl-C.
 - Live preview smoke-check: `/usr/bin/python3 scripts/check_sim.py --output /tmp/mocap-s15-preview-20260921 --measure-seconds 3` подтвердил 6 RGB streams, 2 world poses и 6 PPM (1600×1200); wall_fps=4.33 each, target 30 Hz не принят.
 - Image pipeline smoke-check: `/usr/bin/python3 scripts/check_image_pipeline.py --camera camera_1 --seconds 5` получил 19 Gazebo frames, `detections=19`, `accepted=19`, ID 0, runtime CameraInfo K/D, `wall_fps=3.65`, detector p95≈313.2 ms; ground truth runtime не использован. Accuracy/frequency gate остаётся NOT_ACCEPTED.
+- Six-camera image smoke-check: `/usr/bin/python3 scripts/check_all_image_pipeline.py --seconds 5` получил frames на всех 6 channels; camera_1 `3/3` detections/accepted, cameras_2..6 continued receiving frames, per-camera wall rate≈0.36–0.54 Hz and p95≈282–430 ms. This confirms isolation, but fails required performance/freshness gate.
 - Gazebo shutdown logged unresolved `pybind11::handle::dec_ref()`/GIL abort after the smoke-check; process was stopped and this runtime issue remains an explicit baseline limitation.
 - Visual inspection of converted `camera_1.png` and six-view montage confirmed rendered Gazebo imagery and visible tag rover/AprilTag; this does not establish detector recall or metric accuracy.
 - Research comparison report expanded with explicit matrix for all required items 1–6 from `04_implementation_plan.md`; unavailable alternatives remain NOT_ACCEPTED rather than inferred.
