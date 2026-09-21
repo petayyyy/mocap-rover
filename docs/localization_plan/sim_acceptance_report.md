@@ -6,7 +6,7 @@
 |---|---|---|
 | S04 registry/fault isolation | PASS | 4 registry tests; bounded queues, reconnect and independent channels |
 | Timing/replay contracts | PASS (boundary) | timing tests and 11-scenario fault matrix with measured offset/drift, replay reset and bounded delays; no hardware clock/trigger claim |
-| Intrinsics/extrinsics reports | PARTIAL | import/round-trip and graph checks; no image-derived BA accuracy |
+| Intrinsics/extrinsics reports | PARTIAL | JSON/CameraInfo YAML round-trip and graph checks; no image-derived BA accuracy |
 | AprilTag observation contract | PARTIAL | synthetic corner geometry; installed OpenCV AprilTag 36h11 probe segfaulted (exit 139), so no detector/image recall benchmark is claimed |
 | Friendly fusion degradation | PARTIAL | synthetic evaluator, validated TrackStatus, calibration reset and quality-hysteresis source selection; no Gazebo image accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline measures >=10 Hz; no trained detector, multi-camera ID-switch set or wall-time camera pipeline |

@@ -25,6 +25,7 @@
 - Добавлены `TimingMetadata`, `ClockModel`, диагностика skew/offset и `ReplayLog`/`ReplayScheduler` с сохранением исходных capture/receive/processed timestamps, exposure reference и hash metadata.
 - Реализованы явные режимы `free_running`/`ideal_sync`, независимое arrival scheduling и session marker при seek/reset; hardware trigger/PTP/NTP не реализованы.
 - Добавлен dependency-free intrinsic calibration model с pinhole/rational/fisheye, K/D, ROI/binning/flip, CameraInfo-подобным экспортом, JSON import/export, distortion/undistortion, resize и held-out report metadata.
+- Добавлен ROS CameraInfo/OpenCV-style YAML import/export round-trip using the available PyYAML runtime; malformed YAML remains rejected.
 - Изменения размера делают калибровку `stale`; `focal_length_mm` хранится как metadata-only и не изменяет измеренную K.
 - Добавлены `CalibrationGraph` и `CalibrationActivation`: связность графа камер/мишеней, минимальное число точек, gauge boundary, intrinsics version, quality/covariance и атомарная активация полного набора.
 - Недостаточные или несвязные наблюдения отклоняются; solver boundary не читает Gazebo ground truth.
@@ -94,7 +95,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 49/49 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, TrackStatus contract, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
+  PASS — 50/50 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, TrackStatus contract, YAML calibration round-trip, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check

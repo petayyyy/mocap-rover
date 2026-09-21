@@ -37,6 +37,20 @@ def load_json(path):
     try: data = json.loads(path.read_text(encoding="utf-8")); return Intrinsics(**data).validate()
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as e: raise ValueError("invalid calibration file") from e
 
+def save_camera_info_yaml(path, calibration: Intrinsics):
+    try:
+        import yaml
+    except ImportError as e: raise ValueError('PyYAML is required for CameraInfo YAML') from e
+    calibration.validate(); path.write_text(yaml.safe_dump(calibration.as_camera_info(), sort_keys=False), encoding='utf-8')
+
+def load_camera_info_yaml(path):
+    try:
+        import yaml
+        data=yaml.safe_load(path.read_text(encoding='utf-8'))
+        cm=data['camera_matrix']['data']; dc=data['distortion_coefficients']['data']
+        return Intrinsics(data['distortion_model'],int(data['image_width']),int(data['image_height']),list(cm),list(dc),status='unverified').validate()
+    except (ImportError, OSError, KeyError, TypeError, ValueError) as e: raise ValueError('invalid CameraInfo YAML') from e
+
 def distort_point(x, y, D, model="pinhole"):
     k1, k2, p1, p2 = (D + [0] * 4)[:4]; r2 = x*x+y*y
     radial = 1+k1*r2+k2*r2*r2
