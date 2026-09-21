@@ -17,6 +17,9 @@ def main():
     recording=a.recording or str(Path(a.output).with_suffix('.replay.json'))
     frames=[TimingMetadata(i, i*33_333_333, i*33_333_333, i*33_333_333+1, 'sim', 0, 0).validate() for i in range(0, min(60,pipe['friendly_output']))]
     ReplayLog(frames,ConfigStore.digest(config),calibration_hash,"untrained-sim-model").dump(recording)
-    report={'schema':'sim-acceptance-1','seed':a.seed,'python':sys.version.split()[0],'platform':platform.platform(),'git_revision':git_revision,'world_path':str(world_path),'world_digest':world_hash,'config_digest':ConfigStore.digest(config),'calibration_path':str(calibration_path),'calibration_digest':calibration_hash,'recording':recording,'recording_frames':len(frames),'hardware_verified':False,'simulation_only':True,'pipeline':{k:v for k,v in pipe.items() if k!='samples'},'evaluator':evaluate_samples(pipe),'fault_matrix':run_matrix(a.seed),'sim_accepted':False}
+    sweep=[]
+    for sweep_seed in (42,7,123):
+        s=run(2,sweep_seed); sweep.append({'seed':sweep_seed,'friendly_hz':s['friendly_hz'],'opponent_hz':s['opponent_hz'],'camera_6_drops':s['camera_drops']['camera_6']})
+    report={'schema':'sim-acceptance-1','seed':a.seed,'seed_sweep':sweep,'python':sys.version.split()[0],'platform':platform.platform(),'git_revision':git_revision,'world_path':str(world_path),'world_digest':world_hash,'config_digest':ConfigStore.digest(config),'calibration_path':str(calibration_path),'calibration_digest':calibration_hash,'recording':recording,'recording_frames':len(frames),'hardware_verified':False,'simulation_only':True,'pipeline':{k:v for k,v in pipe.items() if k!='samples'},'evaluator':evaluate_samples(pipe),'fault_matrix':run_matrix(a.seed),'sim_accepted':False}
     Path(a.output).write_text(json.dumps(report,indent=2,sort_keys=True),encoding='utf-8'); print(json.dumps(report,indent=2,sort_keys=True))
 if __name__=='__main__': main()
