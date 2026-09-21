@@ -32,6 +32,7 @@
 - Добавлен dependency-free AprilTag 36h11 observer для полных synthetic/replay detections: configurable IDs/0.40 m size, K geometry, timestamps, calibration version, quality/covariance и reject invalid ID/size.
 - Добавлен `OpponentTracker` с confidence gating, подтверждением по истории, contact-point placeholder, velocity, yaw validity и timeout-based LOST; identity не выводится только из отсутствия тега.
 - Добавлен `MultiCameraAssociator`: один выбранный candidate на timestamp, temporal/pixel gating, отсутствие duplicate tracks и измеряемый `id_switches` counter.
+- Added height-aware bbox contact-point projection to arena ground plane with explicit height uncertainty; bbox center is not treated as body center.
 - Добавлен capability-aware `SettingsBackend` с staged validate/apply/rollback, revision и ack/error; simulation trigger нельзя включить без capability.
 - Settings backend rejects stale `expected_revision` with an explicit error ack, covering concurrent client apply protection.
 - Добавлен structured `Diagnostics` для measured/filtered/predicted events, queue/drop/age каналов, latency percentiles и truth-hidden UI payload.
@@ -95,7 +96,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 50/50 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, TrackStatus contract, YAML calibration round-trip, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
+  PASS — 51/51 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check

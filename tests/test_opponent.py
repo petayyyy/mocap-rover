@@ -7,3 +7,5 @@ class SimulationS11(unittest.TestCase):
  def test_multicamera_single_selection_and_switch_count(self):
   a=MultiCameraAssociator(); d1=Detection2D('c1',1,100,(0,0,10,10),.7); d2=Detection2D('c2',1,100,(1,0,11,10),.9)
   self.assertEqual(a.select([d1,d2]).camera_id,'c2'); self.assertEqual(a.select([Detection2D('c1',2,150,(1,0,11,10),.8)]).camera_id,'c1'); self.assertEqual(a.id_switches,1)
+ def test_height_aware_contact_projection(self):
+  d=Detection2D('c',1,0,(40,40,60,60),.9); p=project_contact_point(d,100,100,50,50,(0,0,2.0),((1,0,0),(0,1,0),(0,0,-1)),height_uncertainty_m=.1); self.assertAlmostEqual(p['position_m'][0],0); self.assertAlmostEqual(p['position_m'][2],0); self.assertEqual(p['height_uncertainty_m'],.1)

@@ -1,6 +1,15 @@
 """Simulation/replay opponent observation and identity-aware tracker boundary."""
 from dataclasses import dataclass
 import math
+def project_contact_point(det, fx, fy, cx, cy, camera_origin, rotation, ground_z=0.0, height_uncertainty_m=0.0):
+    """Project bbox bottom-center to horizontal plane; returns point and uncertainty."""
+    x1,y1,x2,y2=det.bbox; u=(x1+x2)/2; v=y2
+    ray=((u-cx)/fx,(v-cy)/fy,1.0)
+    direction=tuple(sum(rotation[r][k]*ray[k] for k in range(3)) for r in range(3))
+    if abs(direction[2])<1e-9: raise ValueError('contact ray parallel to ground')
+    scale=(ground_z-camera_origin[2])/direction[2]
+    if scale<=0: raise ValueError('contact plane is behind camera')
+    return {'position_m':tuple(camera_origin[k]+scale*direction[k] for k in range(3)),'height_uncertainty_m':height_uncertainty_m,'source':'bbox_contact_point'}
 @dataclass(frozen=True)
 class Detection2D:
     camera_id:str; frame_seq:int; stamp_ns:int; bbox:tuple; confidence:float; height_m:float|None=None
