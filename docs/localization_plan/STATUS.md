@@ -149,6 +149,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Added declarative `launch/simulation.launch.json` and `launch/replay.launch.json`; both use the shared registry, do not connect physical devices and explicitly set `hardware_verified: false`.
 - Added `scripts/run_acceptance.py`: deterministic S15 manifest with config digest, seed, pipeline/evaluator/fault-matrix results and explicit `sim_accepted: false` gate.
 - Acceptance runner now writes a bounded `ReplayLog` recording with config/calibration/model hashes and timing metadata, and records its path/frame count in the manifest.
+- Acceptance manifest now hashes and records the concrete `config/cameras.json` calibration snapshot, and uses that digest in the replay header.
 - S14 benchmark не является end-to-end Gazebo/30-minute acceptance; текущий Gazebo baseline wall FPS ниже nominal, поэтому требования frequency/age не приняты.
 - S14 soak подтверждает только bounded simulation-time behavior; реальный 30-minute wall-time Gazebo end-to-end run по-прежнему не принят.
 - Synthetic pipeline acceptance regression проходит nominal/drop scenarios, но не заменяет Gazebo image-based accuracy или wall-time 30-minute acceptance.

@@ -58,7 +58,7 @@ do not instantiate physical devices.
 
 Acceptance manifest command: `python3 scripts/run_acceptance.py --seed 9
 --output /tmp/mocap-s15-acceptance-9.json`. The manifest records config digest,
-pipeline/evaluator/fault matrix, writes a timing replay recording and keeps
+pipeline/evaluator/fault matrix, hashes `config/cameras.json`, writes a timing replay recording and keeps
 `sim_accepted: false`.
 
 Snapshot dashboard command: `python3 scripts/serve_dashboard.py
