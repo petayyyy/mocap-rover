@@ -10,7 +10,7 @@
 | AprilTag observation contract | PARTIAL | synthetic corner geometry; no detector/image recall benchmark |
 | Friendly fusion degradation | PARTIAL | synthetic evaluator: 60 matched, XY P95 ~0 m, age P95 0 ms; all six registry channels exercised, camera_6 outage isolated; no Gazebo image accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline measures >=10 Hz; no trained detector, multi-camera ID-switch set or wall-time camera pipeline |
-| Settings/debug UI | PARTIAL | localhost APIs and explicit PPM preview response pass; no live Gazebo rendered preview walkthrough |
+| Settings/debug UI | PARTIAL | localhost APIs and live Gazebo snapshot check pass; no interactive visual walkthrough |
 | 30-minute six-camera end-to-end run | PARTIAL | 30-minute simulation-time soak is bounded; real wall-time Gazebo end-to-end run still not passed |
 | Gazebo baseline SDF | PASS | `gz sdf -k worlds/mocap_arena.sdf` => Valid |
 
@@ -25,6 +25,8 @@ print(evaluate_samples(run(2, return_samples=True)))
 PY
   # matched=60, xy_p95_m≈0, age_p95_ms=0; truth is not runtime input
 gz sdf -k worlds/mocap_arena.sdf          # PASS — Valid
+/usr/bin/python3 scripts/check_sim.py --output /tmp/mocap-s15-preview-20260921 --measure-seconds 3
+                                          # PASS — six RGB streams, two world poses, six PPM snapshots; wall_fps=4.33 each
 python3 - <<'PY'                            # S14 bounded synthetic benchmark
 from simulation.benchmark import run
 print(run(.05))
