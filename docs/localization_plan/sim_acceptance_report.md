@@ -6,10 +6,10 @@
 |---|---|---|
 | S04 registry/fault isolation | PASS | 4 registry tests; bounded queues, reconnect and independent channels |
 | Timing/replay contracts | PASS (boundary) | timing tests, provenance verification and 11-scenario fault matrix with measured offset/drift, replay reset and bounded delays; no hardware clock/trigger claim |
-| Intrinsics/extrinsics reports | PARTIAL | JSON/CameraInfo YAML round-trip and graph checks; no image-derived BA accuracy |
-| AprilTag observation contract | PARTIAL | synthetic corner geometry; installed OpenCV AprilTag 36h11 probe segfaulted (exit 139), so no detector/image recall benchmark is claimed |
-| Friendly fusion degradation | PARTIAL | synthetic evaluator, validated TrackStatus, calibration reset and quality-hysteresis source selection; no Gazebo image accuracy |
-| Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline measures >=10 Hz, contact projection and ID-switch counter tested; no trained detector or wall-time camera pipeline |
+| Intrinsics/extrinsics reports | PARTIAL | JSON/CameraInfo YAML round-trip, image-derived per-view PnP path and graph checks; no image-derived BA/held-out accuracy |
+| AprilTag observation contract | PARTIAL | live camera_1 Gazebo smoke: 19/19 ID-0 detections and PnP accepts; no recall/pose accuracy benchmark or six-camera run |
+| Friendly fusion degradation | PARTIAL | one-camera image→PnP→PlanarFusion/TrackStatus path and synthetic evaluator; no ROS odometry or trajectory accuracy |
+| Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline/contact projection/metric association tested; no trained detector or opponent wall-time camera run |
 | Settings/debug UI | PARTIAL | localhost APIs, six-slot root HTML, stale-revision error ack and live six-snapshot visual inspection pass; no full interactive performance walkthrough |
 | 30-minute six-camera end-to-end run | PARTIAL | 30-minute simulation-time soak is bounded; real wall-time Gazebo end-to-end run still not passed |
 | Gazebo baseline SDF | PASS | `gz sdf -k worlds/mocap_arena.sdf` => Valid |
@@ -17,7 +17,7 @@
 Commands:
 
 ```text
-python3 -m unittest discover -s tests -v  # PASS — 32/32 including dashboard smoke-check
+python3 -m unittest discover -s tests -v  # PASS — 63/63 including image pipeline and dashboard smoke-check
 python3 -m unittest tests.test_pipeline -v # PASS — synthetic nominal/drop acceptance regression
 python3 -m unittest tests.test_acceptance_matrix -v # PASS — 11 reproducible S15 fault/replay scenarios
 python3 - <<'PY'                            # evaluator-only hold-out metrics
@@ -26,6 +26,8 @@ print(evaluate_samples(run(2, return_samples=True)))
 PY
   # matched=60, xy_p95_m≈0, age_p95_ms=0; truth is not runtime input
 gz sdf -k worlds/mocap_arena.sdf          # PASS — Valid
+/usr/bin/python3 scripts/check_image_pipeline.py --camera camera_1 --seconds 5
+                                          # PASS (smoke only) — frames=19, detections=19, accepted=19, ID=0, CameraInfo runtime K/D, wall_fps=3.65, detector_p95≈313 ms
 /usr/bin/python3 scripts/check_sim.py --output /tmp/mocap-s15-preview-20260921 --measure-seconds 3
                                           # PASS — six RGB streams, two world poses, six PPM snapshots; wall_fps=4.33 each
 ffmpeg -y -loglevel error -i /tmp/mocap-s15-preview-20260921/camera_1.ppm /tmp/mocap-s15-preview-20260921/camera_1.png
@@ -45,9 +47,10 @@ Ground truth is evaluation-only. No physical cameras, IMX296/libcamera, udev,
 trigger, hardware adapter or hardware-verified capability is included. This
 report does not set `SIM_ACCEPTED`; H01–H04 remain unstarted.
 
-The attempted OpenCV AprilTag 36h11 probe is an environment limitation:
-`cv2.aruco` is present, but its AprilTag detector call crashed natively with
-exit 139 in this environment. The crashing backend was not committed.
+An earlier OpenCV detector API probe crashed natively with exit 139 and is not
+used. The committed legacy `cv2.aruco.detectMarkers` backend is isolated in the
+simulation adapter; the live smoke path above completes, while Gazebo shutdown
+still logs a pybind11/GIL abort after the report is emitted.
 
 Additional required artifacts: `research_comparison_report.md` and
 `operator_runbook_sim.md`.
