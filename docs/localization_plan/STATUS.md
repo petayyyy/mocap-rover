@@ -1,7 +1,7 @@
 # Localization plan status
 
 Текущая фаза: **SIMULATION**  
-Текущий этап: **S13 — визуализация и диагностика**
+Текущий этап: **S14 — производительность и устойчивость**
 Статус: **выполнен в заявленном объёме; SIM_ACCEPTED не объявлен**
 
 ## Сделано
@@ -32,6 +32,7 @@
 - Добавлен `OpponentTracker` с confidence gating, подтверждением по истории, contact-point placeholder, velocity, yaw validity и timeout-based LOST; identity не выводится только из отсутствия тега.
 - Добавлен capability-aware `SettingsBackend` с staged validate/apply/rollback, revision и ack/error; simulation trigger нельзя включить без capability.
 - Добавлен structured `Diagnostics` для measured/filtered/predicted events, queue/drop/age каналов, latency percentiles и truth-hidden UI payload.
+- Добавлен bounded synthetic benchmark `simulation/benchmark.py`; report explicitly marks simulation-only and hardware-unverified.
 
 ## Проверено
 
@@ -79,6 +80,9 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s tests -v
   PASS — 30/30 tests (S01–S13; diagnostics state separation and latency/channel metrics)
 
+python3 -m unittest discover -s tests -v
+  PASS — 31/31 tests (S01–S14; bounded benchmark report)
+
 gz sdf -k worlds/mocap_arena.sdf
   PASS — Valid.
 
@@ -113,6 +117,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S11 detector weights, multi-camera geometric association, GPU benchmark и ≥10 Hz wall-time acceptance ещё не реализованы.
 - S12 browser UI/E2E visual walkthrough не реализованы; backend не предоставляет hardware capability и не выполняет shell commands.
 - S13 полноценный browser rendering/screenshot и live Gazebo dashboard ещё не реализованы; diagnostics payload не содержит raw frames и ground truth.
+- S14 benchmark не является end-to-end Gazebo/30-minute acceptance; текущий Gazebo baseline wall FPS ниже nominal, поэтому требования frequency/age не приняты.
 - Добавлен асинхронный planar `PlanarFusion`: timestamped observations, dedup/out-of-order rejection, circular yaw, prediction на publish tick, counters, COASTING/LOST и рост covariance.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
@@ -135,6 +140,8 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - `tests/test_opponent.py`
 - `tests/test_settings.py`
 - `tests/test_diagnostics.py`
+- `tests/test_benchmark.py`
+- `docs/localization_plan/sim_acceptance_report.md`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`
 
@@ -144,6 +151,6 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Следующий этап
 
-**S14** — следующий промпт: `docs/localization_plan/prompts/simulation/14_performance.md` (автоматически не начинался).
+**S15** — следующий prompt: `docs/localization_plan/prompts/simulation/15_acceptance.md` (отчёт подготовлен; SIM_ACCEPTED не объявлен).
 
 Аппаратную фазу H01–H04 не начинать.
