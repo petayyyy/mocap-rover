@@ -127,6 +127,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S06 calibration solver/ChArUco image acquisition не подключены; report API фиксирует held-out fields, но не заявляет измеренную оптическую точность.
 - S07 не заявляет восстановленную метрическую точность без реальных image-derived target observations; полноценный robust BA и Gazebo image solver остаются дальнейшей работой.
 - S08 observer принимает image-derived corner detections, но detector backend/OpenCV AprilTag runtime, six-camera Gazebo image pipeline, blur/occlusion recall и measured Hz пока не подключены; это не hardware readiness.
+- OpenCV AprilTag 36h11 probe was attempted but crashed natively (exit 139) in the installed build; no crashing detector backend was retained or presented as verified.
 - S11 detector weights, multi-camera geometric association, GPU benchmark и ≥10 Hz wall-time acceptance ещё не реализованы.
 - S11 multi-camera association boundary и ID-switch counter покрыты тестом; detector weights, full projection/triangulation and wall-time acceptance remain unverified.
 - S12 browser UI/E2E visual walkthrough не реализованы; backend не предоставляет hardware capability и не выполняет shell commands.

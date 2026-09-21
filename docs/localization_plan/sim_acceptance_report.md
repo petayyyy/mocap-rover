@@ -7,7 +7,7 @@
 | S04 registry/fault isolation | PASS | 4 registry tests; bounded queues, reconnect and independent channels |
 | Timing/replay contracts | PASS (boundary) | 2 timing tests; no hardware clock/trigger claim |
 | Intrinsics/extrinsics reports | PARTIAL | import/round-trip and graph checks; no image-derived BA accuracy |
-| AprilTag observation contract | PARTIAL | synthetic corner geometry; no detector/image recall benchmark |
+| AprilTag observation contract | PARTIAL | synthetic corner geometry; installed OpenCV AprilTag 36h11 probe segfaulted (exit 139), so no detector/image recall benchmark is claimed |
 | Friendly fusion degradation | PARTIAL | synthetic evaluator: 60 matched, XY P95 ~0 m, age P95 0 ms; all six registry channels exercised, camera_6 outage isolated; no Gazebo image accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline measures >=10 Hz; no trained detector, multi-camera ID-switch set or wall-time camera pipeline |
 | Settings/debug UI | PARTIAL | localhost APIs and live six-snapshot visual inspection pass; no interactive browser walkthrough |
@@ -43,6 +43,10 @@ PY
 Ground truth is evaluation-only. No physical cameras, IMX296/libcamera, udev,
 trigger, hardware adapter or hardware-verified capability is included. This
 report does not set `SIM_ACCEPTED`; H01–H04 remain unstarted.
+
+The attempted OpenCV AprilTag 36h11 probe is an environment limitation:
+`cv2.aruco` is present, but its AprilTag detector call crashed natively with
+exit 139 in this environment. The crashing backend was not committed.
 
 Additional required artifacts: `research_comparison_report.md` and
 `operator_runbook_sim.md`.
