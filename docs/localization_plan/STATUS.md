@@ -38,6 +38,7 @@
 - Dashboard дополнен `/api/previews`: шесть preview metadata entries (size/pixel format/availability) без raw payload.
 - Dashboard дополнен explicit localhost `/preview/camera_N` PPM serving from checked snapshot paths; raw frames are served only as preview HTTP responses, never embedded in JSON.
 - Dashboard root now renders six preview slots with camera labels and asynchronously loaded channel metadata; browser smoke-test verifies all six preview URLs.
+- Added `scripts/serve_dashboard.py` to wire the shared registry and checked Gazebo snapshot directory into the localhost dashboard without physical devices.
 - Добавлен bounded synthetic benchmark `simulation/benchmark.py`; report explicitly marks simulation-only and hardware-unverified.
 - Добавлен simulation-time soak на 30 минут: 27,000 steps, 6 каналов, bounded queues, 1,588 искусственных drops, raw frames не удерживаются.
 - Добавлен `simulation/pipeline.py`: воспроизводимый synthetic camera→AprilTag/opponent→fusion pipeline с отдельными friendly/opponent rates, drops, LOST и runtime truth boundary.
@@ -181,6 +182,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - `simulation/acceptance_matrix.py`, `tests/test_acceptance_matrix.py`
 - `launch/simulation.launch.json`, `launch/replay.launch.json`, `tests/test_launch_manifests.py`
 - `scripts/run_acceptance.py`, `tests/test_acceptance_runner.py`
+- `scripts/serve_dashboard.py`, `tests/test_serve_dashboard.py`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`
 

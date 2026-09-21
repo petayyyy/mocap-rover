@@ -31,10 +31,15 @@ workaround are limitations, not hidden success.
 
 ## Dashboard
 
-Start the localhost-only handler from Python with `serve("127.0.0.1", 8080)`;
-`/api/status` is diagnostics/settings metadata only. Browser disconnect must not
-be treated as a tracker stop. The current dashboard is a smoke-test endpoint,
-not a SIM_ACCEPTED visual walkthrough.
+After `check_sim.py` writes snapshots, start the localhost-only dashboard with:
+
+```text
+python3 scripts/serve_dashboard.py --snapshot-dir /tmp/mocap-s15-preview-20260921 --port 8080
+```
+
+It exposes `/api/status`, `/api/cameras`, `/api/previews` and six `/preview/`
+URLs. Browser disconnect must not be treated as a tracker stop. This is a
+simulation snapshot walkthrough, not a SIM_ACCEPTED performance claim.
 
 ## Acceptance discipline
 

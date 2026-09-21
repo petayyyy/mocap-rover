@@ -60,3 +60,6 @@ Acceptance manifest command: `python3 scripts/run_acceptance.py --seed 9
 --output /tmp/mocap-s15-acceptance-9.json`. The manifest records config digest,
 pipeline/evaluator/fault matrix, writes a timing replay recording and keeps
 `sim_accepted: false`.
+
+Snapshot dashboard command: `python3 scripts/serve_dashboard.py
+--snapshot-dir /tmp/mocap-s15-preview-20260921 --port 8080`.
