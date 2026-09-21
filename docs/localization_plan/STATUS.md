@@ -140,6 +140,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Research comparison report expanded with explicit matrix for all required items 1–6 from `04_implementation_plan.md`; unavailable alternatives remain NOT_ACCEPTED rather than inferred.
 - Added `simulation/acceptance_matrix.py`: reproducible 10-scenario matrix for 5/10/30% drops, 20/50/100/200 ms delay, reorder, clock/replay boundary and camera_6 outage.
 - Added declarative `launch/simulation.launch.json` and `launch/replay.launch.json`; both use the shared registry, do not connect physical devices and explicitly set `hardware_verified: false`.
+- Added `scripts/run_acceptance.py`: deterministic S15 manifest with config digest, seed, pipeline/evaluator/fault-matrix results and explicit `sim_accepted: false` gate.
 - S14 benchmark не является end-to-end Gazebo/30-minute acceptance; текущий Gazebo baseline wall FPS ниже nominal, поэтому требования frequency/age не приняты.
 - S14 soak подтверждает только bounded simulation-time behavior; реальный 30-minute wall-time Gazebo end-to-end run по-прежнему не принят.
 - Synthetic pipeline acceptance regression проходит nominal/drop scenarios, но не заменяет Gazebo image-based accuracy или wall-time 30-minute acceptance.
@@ -175,6 +176,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - `simulation/pipeline.py`, `tests/test_pipeline.py`
 - `simulation/acceptance_matrix.py`, `tests/test_acceptance_matrix.py`
 - `launch/simulation.launch.json`, `launch/replay.launch.json`, `tests/test_launch_manifests.py`
+- `scripts/run_acceptance.py`, `tests/test_acceptance_runner.py`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`
 

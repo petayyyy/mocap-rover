@@ -55,3 +55,7 @@ Additional required artifacts: `research_comparison_report.md` and
 Launch manifests: `launch/simulation.launch.json` and
 `launch/replay.launch.json`; both are declarative virtual/replay manifests and
 do not instantiate physical devices.
+
+Acceptance manifest command: `python3 scripts/run_acceptance.py --seed 9
+--output /tmp/mocap-s15-acceptance-9.json`. The manifest records config digest,
+pipeline/evaluator/fault matrix and keeps `sim_accepted: false`.
