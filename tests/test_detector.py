@@ -22,6 +22,12 @@ class SimulationS08Detector(unittest.TestCase):
         self.assertEqual(len(detections[0].corners), 4)
         self.assertEqual(AprilTagImageDetector().backend, "opencv-aruco-apriltag-36h11-legacy")
 
+    def test_detector_uses_bounded_contrast_preprocessing(self):
+        import cv2, os
+        image=cv2.imread('/tmp/mocap-s08-live/camera_1.png',0) if os.path.isfile('/tmp/mocap-s08-live/camera_1.png') else None
+        if image is None: self.skipTest('live Gazebo snapshot unavailable')
+        self.assertEqual([d.tag_id for d in AprilTagImageDetector().detect(image)], [0])
+
     def test_detector_to_pnp_observation_has_capture_provenance(self):
         try:
             import cv2

@@ -42,11 +42,17 @@ class AprilTagImageDetector:
             raise ValueError("image must be a non-empty grayscale or BGR array")
         if array.ndim == 3:
             array = self._cv2.cvtColor(array, self._cv2.COLOR_BGR2GRAY)
-        corners, ids, _ = self._cv2.aruco.detectMarkers(array, self._dictionary)
-        if ids is None:
-            return ()
+        candidates=[]
+        for candidate in (array, self._cv2.threshold(array, 0, 255, self._cv2.THRESH_BINARY + self._cv2.THRESH_OTSU)[1]):
+            corners, ids, _ = self._cv2.aruco.detectMarkers(candidate, self._dictionary)
+            if ids is not None:
+                candidates.extend(zip(corners, ids.reshape(-1)))
+        if not candidates: return ()
         out = []
-        for marker_corners, marker_id in zip(corners, ids.reshape(-1)):
+        seen=set()
+        for marker_corners, marker_id in candidates:
+            if int(marker_id) in seen: continue
+            seen.add(int(marker_id))
             points = marker_corners.reshape(4, 2)
             out.append(PixelDetection(int(marker_id), tuple((float(x), float(y)) for x, y in points)))
         return tuple(out)

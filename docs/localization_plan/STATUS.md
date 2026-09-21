@@ -18,6 +18,7 @@
 - [x] S10 добавлен reproducible image/YOLO-label builder (`simulation.dataset.build_image_dataset`): PNGs, labels, session-level train/val/test split and leakage-safe manifest; weights/training status remain explicitly unset.
 - [x] Dashboard теперь имеет dynamic status polling (500 ms), XY map marker и явный LOST color path; это UI capability smoke coverage, не подтверждение live Gazebo data wiring.
 - [x] Image pipeline теперь требует и принимает live `/cameras/camera_N/camera_info` K/D перед PnP; отсутствие CameraInfo приводит к диагностической ошибке.
+- [x] Detector добавил bounded raw+Otsu contrast path; на сохранённом Gazebo snapshot crop этот путь воспроизводит ID 0, но полный live run после текущего SDF rendering пока остаётся `detections=0`.
 - [ ] Не закрыто: настоящий detector, PnP/K/D, T_arena_camera/T_base_marker и ROS 2 Odometry.
 - [ ] Не закрыто: image-derived calibration/BA, шесть live image channels, настоящий YOLO и 30-minute wall-time profile.
 - [ ] S07 remains partial: current solver is robust per-view PnP aggregation, not joint bundle adjustment; held-out calibration accuracy and hidden-mount-error recovery remain unverified.
@@ -120,7 +121,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 61/61 tests (S01–S15 acceptance artifacts, reproducible image/label split regression, metric opponent handoff/association regressions, image-derived calibration PnP regression, real image detector→PnP path, innovation-gate, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
+  PASS — 62/62 tests (S01–S15 acceptance artifacts, Gazebo snapshot contrast detector regression, reproducible image/label split regression, metric opponent handoff/association regressions, image-derived calibration PnP regression, real image detector→PnP path, innovation-gate, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
