@@ -4,6 +4,29 @@
 Текущий этап: **S15 — заблокирован до закрытия сквозных image-based критериев**
 Статус: **контракты и synthetic-регрессии выполнены; live Gazebo image→pose приёмка не выполнена; SIM_ACCEPTED не объявлен**
 
+## Трассировка этапов и commit’ов
+
+Базовая реализация каждого этапа S04–S15 зафиксирована отдельным commit’ом;
+последующие correction/verification commits перечислены в истории git:
+
+| Этап | Commit | Основной артефакт |
+|---|---|---|
+| S04 | `ba77c2f` | `localization_contracts/registry.py`, registry/fault tests |
+| S05 | `71161f8` | `localization_contracts/timing.py`, replay boundary |
+| S06 | `4c52713` | `localization_contracts/calibration.py` |
+| S07 | `890eb96` | `localization_contracts/extrinsics.py` |
+| S08 | `2f83164` | `localization_contracts/apriltag.py` |
+| S09 | `5f8c6ed` | `localization_contracts/fusion.py` |
+| S10 | `f707576` | `simulation/dataset.py` |
+| S11 | `c196ff6` | `localization_contracts/opponent.py` |
+| S12 | `91a78ca` | settings/capability boundary |
+| S13 | `fb0a115` | diagnostics/dashboard contracts |
+| S14 | `5f1c8a7` | `simulation/benchmark.py` |
+| S15 | `ec5f49d` | acceptance report and gate status |
+
+Эта таблица не объявляет `SIM_ACCEPTED`: сквозные ограничения S15 ниже
+остаются обязательными и явно отделены от завершённых контрактных этапов.
+
 ## Correction checklist по ревью
 
 - [x] Исправлено: synthetic AprilTag geometry больше не объявляет PnP/6-D pose и valid attitude (`localization_contracts/apriltag.py`).
