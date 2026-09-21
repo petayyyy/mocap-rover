@@ -11,8 +11,8 @@ class State:
 
 class PlanarFusion:
     def __init__(self, object_id="tag_rover", publish_hz=30, dropout_horizon_ms=200):
-        self.object_id=object_id; self.publish_hz=publish_hz; self.horizon=dropout_horizon_ms*1_000_000; self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.session=0; self.calibration_version=None
-    def reset(self): self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.session+=1
+        self.object_id=object_id; self.publish_hz=publish_hz; self.horizon=dropout_horizon_ms*1_000_000; self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.session=0; self.calibration_version=None; self.session_start_ns=None; self.measurement_times=[]; self.output_times=[]
+    def reset(self): self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.session+=1; self.session_start_ns=None; self.measurement_times=[]; self.output_times=[]
     def update(self, obs):
         obs.validate()
         if self.calibration_version is not None and obs.calibration_version != self.calibration_version:
@@ -21,19 +21,28 @@ class PlanarFusion:
         if self.last_measurement and obs.measurement_id == self.last_measurement.measurement_id: return False
         if self.last_measurement and obs.capture_time_ns < self.last_measurement.capture_time_ns: return False
         z=obs.position_m; yaw=float(obs.pixel_features.get("yaw_rad",0))
+        if self.session_start_ns is None: self.session_start_ns=obs.capture_time_ns
         if self.state is None: self.state=State(obs.capture_time_ns,z[0],z[1],yaw,covariance=.04)
         else:
-            dt=max((obs.capture_time_ns-self.state.stamp_ns)/1e9,1e-6)
-            self.state=State(obs.capture_time_ns,z[0],z[1],yaw,(z[0]-self.state.x)/dt,(z[1]-self.state.y)/dt,angle_diff(yaw,self.state.yaw)/dt,.04)
-        self.last_measurement=obs; self.measurements+=1; return True
+            delta_ns=obs.capture_time_ns-self.state.stamp_ns
+            # Simultaneous observations from different cameras are valid
+            # measurements, but must not manufacture an enormous velocity.
+            if delta_ns <= 0:
+                self.state=State(self.state.stamp_ns,z[0],z[1],yaw,self.state.vx,self.state.vy,self.state.omega,.04)
+            else:
+                dt=delta_ns/1e9
+                self.state=State(obs.capture_time_ns,z[0],z[1],yaw,(z[0]-self.state.x)/dt,(z[1]-self.state.y)/dt,angle_diff(yaw,self.state.yaw)/dt,.04)
+        self.last_measurement=obs; self.measurements+=1; self.measurement_times.append(obs.capture_time_ns); return True
     def publish(self, stamp_ns):
-        self.outputs+=1
+        self.outputs+=1; self.output_times.append(stamp_ns)
         if self.state is None: return None
         dt=max(0,(stamp_ns-self.state.stamp_ns)/1e9); age=stamp_ns-self.state.stamp_ns
         if age>self.horizon: valid=False; tracking="LOST"
         elif age: valid=True; tracking="COASTING"
         else: valid=True; tracking="TRACKING"
-        return {"state": State(stamp_ns,self.state.x+self.state.vx*dt,self.state.y+self.state.vy*dt,self.state.yaw+self.state.omega*dt,self.state.vx,self.state.vy,self.state.omega,self.state.covariance+dt*.1), "valid":valid,"tracking_state":tracking,"measurement_hz":self.measurements/max(stamp_ns/1e9,1e-9),"output_hz":self.outputs/max(stamp_ns/1e9,1e-9),"measurement_age_ms":age/1e6}
+        start=self.session_start_ns if self.session_start_ns is not None else stamp_ns
+        elapsed=max((stamp_ns-start)/1e9, 1e-9)
+        return {"state": State(stamp_ns,self.state.x+self.state.vx*dt,self.state.y+self.state.vy*dt,self.state.yaw+self.state.omega*dt,self.state.vx,self.state.vy,self.state.omega,self.state.covariance+dt*.1), "valid":valid,"tracking_state":tracking,"measurement_hz":self.measurements/elapsed,"output_hz":self.outputs/elapsed,"measurement_age_ms":age/1e6}
 
     def status(self, stamp_ns):
         item=self.publish(stamp_ns)

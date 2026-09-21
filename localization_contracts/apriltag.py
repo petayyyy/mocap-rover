@@ -37,4 +37,6 @@ class AprilTagObserver:
             "tag_rover", d.capture_time_ns, "sim", d.timestamp_uncertainty_ns, d.exposure_duration_ns,
             d.receive_time_ns, d.processed_time_ns, self.config.calibration_version, FRAME_ARENA,
             (x,y,z), (0.01,0.01,0.04), quality, "apriltag36h11", self.config.family, d.tag_id,
-            pose_6d_valid=True, attitude_state="valid", pixel_features={"yaw_rad": yaw, "side_px": side}).validate()
+            # This boundary only estimates a planar centre/range from corners.  It
+            # does not solve PnP, so advertising a 6-D pose here is unsafe.
+            pose_6d_valid=False, attitude_state="unknown", pixel_features={"yaw_rad": yaw, "side_px": side}).validate()

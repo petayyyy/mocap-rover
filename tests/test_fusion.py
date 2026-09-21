@@ -7,6 +7,12 @@ class SimulationS09(unittest.TestCase):
   f=PlanarFusion(); self.assertTrue(f.update(self.obs(1,0,0))); self.assertFalse(f.update(self.obs(1,0,0))); f.update(self.obs(2,100_000_000,10)); self.assertEqual(f.publish(150_000_000)["tracking_state"],"COASTING"); self.assertEqual(f.publish(400_000_000)["tracking_state"],"LOST")
  def test_out_of_order_rejected(self):
   f=PlanarFusion(); f.update(self.obs(2,100,0)); self.assertFalse(f.update(self.obs(1,50,0)))
+ def test_same_timestamp_does_not_create_infinite_velocity(self):
+  f=PlanarFusion(); f.update(self.obs(1,1_000_000_000,0)); f.update(self.obs(2,1_000_000_000,10))
+  self.assertLess(abs(f.state.vx), 100.0)
+ def test_rates_are_session_relative(self):
+  f=PlanarFusion(); f.update(self.obs(1,10_000_000_000,0)); f.publish(10_100_000_000)
+  self.assertGreater(f.publish(10_200_000_000)["output_hz"], 1.0)
  def test_calibration_change_resets_session(self):
   f=PlanarFusion(); first=self.obs(1,0,0); f.update(first); old=f.session; changed=self.obs(2,100,0)
   from dataclasses import replace
