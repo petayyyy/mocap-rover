@@ -13,8 +13,10 @@
 - [x] Добавлен OpenCV legacy AprilTag image detector adapter (`localization_contracts/detector.py`) и detector→PnP regression с capture timestamp; он не получает ground truth.
 - [x] Добавлен runnable `scripts/check_image_pipeline.py`: Gazebo image topic → RGB frame → OpenCV AprilTag detector → PnP observer, с capture timestamp, latency и hardware/simulation provenance flags.
 - [x] Добавлен covariance-based innovation gate и reject counter для implausible jumps; prediction horizon и publication tick остаются отдельными от measurement acceptance (`localization_contracts/fusion.py`).
+- [x] Добавлен image-derived per-view PnP calibration path с metric board points, K/D, board pose, reprojection reject и robust median translation (`CalibrationGraph.add_image_observation/solve_image_observations`).
 - [ ] Не закрыто: настоящий detector, PnP/K/D, T_arena_camera/T_base_marker и ROS 2 Odometry.
 - [ ] Не закрыто: image-derived calibration/BA, шесть live image channels, настоящий YOLO и 30-minute wall-time profile.
+- [ ] S07 remains partial: current solver is robust per-view PnP aggregation, not joint bundle adjustment; held-out calibration accuracy and hidden-mount-error recovery remain unverified.
 
 Эти исправления не превращают synthetic boundary в доказательство сквозной точности или аппаратной готовности.
 
@@ -114,7 +116,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 57/57 tests (S01–S15 acceptance artifacts, real image detector→PnP path, innovation-gate, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
+  PASS — 58/58 tests (S01–S15 acceptance artifacts, image-derived calibration PnP regression, real image detector→PnP path, innovation-gate, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
