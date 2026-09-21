@@ -137,6 +137,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Preview file endpoint smoke-test подтверждает local PPM response; Gazebo snapshot directory still requires a live smoke-check before visual acceptance.
 - Live preview smoke-check: `/usr/bin/python3 scripts/check_sim.py --output /tmp/mocap-s15-preview-20260921 --measure-seconds 3` подтвердил 6 RGB streams, 2 world poses и 6 PPM (1600×1200); wall_fps=4.33 each, target 30 Hz не принят.
 - Visual inspection of converted `camera_1.png` and six-view montage confirmed rendered Gazebo imagery and visible tag rover/AprilTag; this does not establish detector recall or metric accuracy.
+- Research comparison report expanded with explicit matrix for all required items 1–6 from `04_implementation_plan.md`; unavailable alternatives remain NOT_ACCEPTED rather than inferred.
 - S14 benchmark не является end-to-end Gazebo/30-minute acceptance; текущий Gazebo baseline wall FPS ниже nominal, поэтому требования frequency/age не приняты.
 - S14 soak подтверждает только bounded simulation-time behavior; реальный 30-minute wall-time Gazebo end-to-end run по-прежнему не принят.
 - Synthetic pipeline acceptance regression проходит nominal/drop scenarios, но не заменяет Gazebo image-based accuracy или wall-time 30-minute acceptance.
