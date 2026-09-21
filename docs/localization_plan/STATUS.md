@@ -155,6 +155,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Завершение `check_sim.py` сопровождается известным pybind11/GIL abort при завершении подписчиков; основной smoke-check до этого подтверждает шесть RGB topics и две позы.
 - Физические камеры, IMX296/libcamera/udev/trigger и драйверы не подключались.
 - Аппаратная фаза H01–H04 не начиналась.
+- Hardware-only unresolved items are tracked in `hardware_backlog.md`; no SIM result is promoted to hardware verification.
 
 ## Артефакты
 
