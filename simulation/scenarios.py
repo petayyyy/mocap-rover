@@ -15,6 +15,7 @@ def episode(name,seed,seconds=600,style='steel',lighting='neutral',brightness=1.
 def manifest(seeds=(42,7),seconds=600):
     rows=[]
     for seed in seeds:
-        for name in ('rest','straight','circle','eight'):
-            rows.append(episode(name,seed,seconds,STYLES[seed%len(STYLES)],'colored' if seed%2 else 'neutral',.5+(seed%3)*.25,name=='circle',name=='eight'))
+        for style in STYLES:
+            for name in ('rest','straight','circle','eight'):
+                rows.append(episode(name,seed,seconds,style,'colored' if seed%2 else 'neutral',.5+(seed%3)*.25,name=='circle',name=='eight'))
     return {'schema':'sim-episodes-1','seed_set':list(seeds),'episodes':rows,'truth_role':'labels_and_evaluation_only'}
