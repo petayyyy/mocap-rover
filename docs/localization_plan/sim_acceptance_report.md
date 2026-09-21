@@ -63,3 +63,7 @@ pipeline/evaluator/fault matrix, writes a timing replay recording and keeps
 
 Snapshot dashboard command: `python3 scripts/serve_dashboard.py
 --snapshot-dir /tmp/mocap-s15-preview-20260921 --port 8080`.
+
+Live dashboard smoke-check on port 18080: HTML length 1421 with 6 preview
+slots; `/api/cameras`=6; `/api/previews`=6; `/preview/camera_1` returned PPM
+magic `P6` and 5,760,017 bytes. The local process was stopped with Ctrl-C.

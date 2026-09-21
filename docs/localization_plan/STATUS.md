@@ -138,6 +138,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - `/api/previews` smoke-test подтверждает шесть metadata entries; live rendered frames и visual screenshot walkthrough остаются непроверенными.
 - Preview file endpoint smoke-test подтверждает local PPM response; Gazebo snapshot directory still requires a live smoke-check before visual acceptance.
 - Root HTML smoke-test confirms six preview slots; it is a localhost rendering check, not a full interactive Gazebo performance acceptance.
+- Live dashboard smoke-check on port 18080: HTML 1421 bytes/6 slots, cameras=6, previews=6, camera_1 PPM magic `P6`/5,760,017 bytes; process stopped with Ctrl-C.
 - Live preview smoke-check: `/usr/bin/python3 scripts/check_sim.py --output /tmp/mocap-s15-preview-20260921 --measure-seconds 3` подтвердил 6 RGB streams, 2 world poses и 6 PPM (1600×1200); wall_fps=4.33 each, target 30 Hz не принят.
 - Visual inspection of converted `camera_1.png` and six-view montage confirmed rendered Gazebo imagery and visible tag rover/AprilTag; this does not establish detector recall or metric accuracy.
 - Research comparison report expanded with explicit matrix for all required items 1–6 from `04_implementation_plan.md`; unavailable alternatives remain NOT_ACCEPTED rather than inferred.
