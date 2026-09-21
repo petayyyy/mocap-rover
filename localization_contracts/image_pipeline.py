@@ -39,6 +39,11 @@ class OneCameraImagePipeline:
         self.last_latency_ms=(time.monotonic_ns()-started)/1e6
         return accepted
 
+    def reconfigure_calibration(self, K, D, version, camera_pose, base_tag):
+        """Atomically replace observer calibration and reset the fusion session."""
+        replacement=PnpAprilTagObserver(TagConfig(calibration_version=version),K,D,camera_pose,base_tag)
+        self.observer=replacement; self.fusion.reset(); self.last_observation=None
+
     def publish(self, stamp_ns):
         item=self.fusion.publish(int(stamp_ns))
         status=self.fusion.status(int(stamp_ns))
@@ -61,6 +66,10 @@ class MultiCameraImagePipeline:
     def enable(self, camera_id):
         if camera_id not in self.cameras: raise KeyError(camera_id)
         self.disabled.discard(camera_id)
+
+    def reconfigure_camera(self, camera_id, K, D, version, camera_pose, base_tag):
+        if camera_id not in self.cameras: raise KeyError(camera_id)
+        self.cameras[camera_id].reconfigure_calibration(K,D,version,camera_pose,base_tag)
 
     def process(self, camera_id, image, capture_time_ns, receive_time_ns=None, frame_seq=None):
         if camera_id in self.disabled: return []

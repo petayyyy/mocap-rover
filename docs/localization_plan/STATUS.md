@@ -18,6 +18,7 @@
 - [x] Добавлен reusable `OneCameraImagePipeline`: image detector→PnP→shared `PlanarFusion`, с отдельными `process`/`publish` границами и validated `TrackStatus`; ROS 2 transport пока не заявлен.
 - [x] Добавлен `MultiCameraImagePipeline` поверх независимых camera pipelines: conservative quality selection, disable/enable одного image channel и сохранение остальных outputs.
 - [x] Добавлен ROS-independent `TimedOdometryPublisher`: отдельные 30 Hz ticks, catch-up при задержке, frame semantics и явный LOST; `rclpy/nav_msgs` в окружении отсутствуют, поэтому ROS node не заявлен.
+- [x] Multi-camera pipeline supports atomic per-camera calibration replacement with session reset isolated to the reconfigured source; integration regression covers unaffected camera continuity.
 - [x] S10 добавлен reproducible image/YOLO-label builder (`simulation.dataset.build_image_dataset`): PNGs, labels, session-level train/val/test split and leakage-safe manifest; weights/training status remain explicitly unset.
 - [x] S11 добавлен explicit `YoloRuntimeStatus`/`YoloDetector` boundary: missing `ultralytics`/weights fail clearly and never synthesize detections; current environment reports unavailable.
 - [x] Dashboard теперь имеет dynamic status polling (500 ms), XY map marker и явный LOST color path; это UI capability smoke coverage, не подтверждение live Gazebo data wiring.
@@ -125,7 +126,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 67/67 tests (S01–S15 acceptance artifacts, explicit YOLO unavailable boundary, independent odometry publisher/LOST regression, six-camera image pipeline disable/selection regression, one-camera image→PnP→fusion/status regression, Gazebo snapshot contrast detector regression, reproducible image/label split regression, metric opponent handoff/association regressions, image-derived calibration PnP regression, real image detector→PnP path, innovation-gate, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
+  PASS — 68/68 tests (S01–S15 acceptance artifacts, isolated calibration apply/reset regression, explicit YOLO unavailable boundary, independent odometry publisher/LOST regression, six-camera image pipeline disable/selection regression, one-camera image→PnP→fusion/status regression, Gazebo snapshot contrast detector regression, reproducible image/label split regression, metric opponent handoff/association regressions, image-derived calibration PnP regression, real image detector→PnP path, innovation-gate, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
