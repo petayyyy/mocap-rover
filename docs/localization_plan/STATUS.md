@@ -26,9 +26,9 @@
 - [x] S11 добавлен explicit `YoloRuntimeStatus`/`YoloDetector` boundary: missing `ultralytics`/weights fail clearly and never synthesize detections; current environment reports unavailable.
 - [x] Dashboard теперь имеет dynamic status polling (500 ms), XY map marker и явный LOST color path; это UI capability smoke coverage, не подтверждение live Gazebo data wiring.
 - [x] Image pipeline теперь требует и принимает live `/cameras/camera_N/camera_info` K/D перед PnP; отсутствие CameraInfo приводит к диагностической ошибке.
-- [x] Detector добавил bounded raw+Otsu contrast path; на сохранённом Gazebo snapshot crop этот путь воспроизводит ID 0, но полный live run после текущего SDF rendering пока остаётся `detections=0`.
-- [ ] Не закрыто: настоящий detector, PnP/K/D, T_arena_camera/T_base_marker и ROS 2 Odometry.
-- [ ] Не закрыто: image-derived calibration/BA, шесть live image channels, настоящий YOLO и 30-minute wall-time profile.
+- [x] Detector добавил bounded raw+Otsu contrast path; baseline live camera_1 path даёт 19/19 ID-0 detections/PnP accepts, а six-camera runner получает frames на всех channels.
+- [ ] Не закрыто: ROS 2 Odometry transport, held-out trajectory accuracy и robust image-derived BA.
+- [ ] Не закрыто: trained YOLO runtime/weights и 30-minute wall-time profile at required rates.
 - [ ] S07 remains partial: current solver is robust per-view PnP aggregation, not joint bundle adjustment; held-out calibration accuracy and hidden-mount-error recovery remain unverified.
 
 Эти исправления не превращают synthetic boundary в доказательство сквозной точности или аппаратной готовности.
@@ -159,16 +159,16 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Ограничения
 
-- Detector, tracker, fusion, odometry publisher, recorder и полноценный replay runtime ещё не реализованы; фиктивные детекторы не добавлялись.
+- Detector, metric tracker, fusion и odometry publication boundaries реализованы для simulation/replay; ROS 2 transport, recorder integration and full replay runtime remain incomplete; фиктивные YOLO detections не добавлялись.
 - S04 registry работает только с виртуальными sim/replay bindings; это не hardware adapter и не подтверждает физические камеры, IMX296/libcamera/udev/trigger или hardware verified capabilities.
 - S05 time quality проверяется синтетическими timestamps; real driver timestamps, PTP/NTP, trigger и межузловая аппаратная синхронизация не подтверждены.
-- S06 calibration solver/ChArUco image acquisition не подключены; report API фиксирует held-out fields, но не заявляет измеренную оптическую точность.
+- S06 CameraInfo/K/D import и image-derived PnP path подключены; ChArUco acquisition, robust BA and measured optical accuracy remain incomplete.
 - S07 не заявляет восстановленную метрическую точность без реальных image-derived target observations; полноценный robust BA и Gazebo image solver остаются дальнейшей работой.
 - S08 observer и OpenCV detector подключены к one-camera Gazebo image/CameraInfo smoke path; six-camera live image recall, blur/occlusion recall и measured trajectory accuracy пока не приняты; это не hardware readiness.
 - Legacy detector API probe ранее crash-нулся (exit 139), но изолированный `cv2.aruco.detectMarkers` backend выполняет текущий baseline smoke path; shutdown GIL issue остаётся ограничением.
 - S11 detector weights/runtime отсутствуют; metric association boundary и image/label dataset готовы, GPU benchmark, trained inference и ≥10 Hz wall-time acceptance не реализованы.
 - S11 multi-camera association boundary и ID-switch counter покрыты тестом; detector weights, full projection/triangulation and wall-time acceptance remain unverified.
-- S12 browser UI/E2E visual walkthrough не реализованы; backend не предоставляет hardware capability и не выполняет shell commands.
+- S12 backend staged apply/rollback/ack и localhost UI smoke реализованы; browser E2E visual walkthrough и live-node settings wiring остаются непроверенными.
 - S13 dashboard endpoint реализован, но полноценный live Gazebo data wiring, визуальный screenshot walkthrough и six-preview rendering ещё не подтверждены.
 - `/api/cameras` smoke-test подтверждает шесть virtual entries; live Gazebo previews и визуальный walkthrough остаются непроверенными.
 - `/api/previews` smoke-test подтверждает шесть metadata entries; live rendered frames и visual screenshot walkthrough остаются непроверенными.
@@ -206,7 +206,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Fusion now resets state/session and per-session counters on calibration-version change, preventing geometry from mixing calibration sets.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - S08 image adapter теперь runnable against Gazebo topics и даёт detector→PnP observations на baseline camera_1; no measured trajectory accuracy or ROS odometry claim is made.
-- Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
+- Gazebo S03 adapter остаётся dependency-free boundary/профилем; runtime CameraInfo and image smoke bridge now exist in scripts, while ROS bridge, simulation-time/RTF recorder and full calibrated multi-camera accuracy remain incomplete.
 - Измеренный wall FPS baseline в smoke-check ниже номинала; capture FPS, detector FPS, accepted measurement Hz, output Hz, wall time, simulation time и RTF не смешиваются и не заявляются достигнутыми. Accuracy, calibration quality и LOST runtime behavior не измерялись; SIM_ACCEPTED не объявлен.
 - Профили узкой оптики честно имеют статус `coverage: not demonstrated`; нулевое геометрическое покрытие baseline не означает пиксельную читаемость или отсутствие occlusion.
 - Завершение `check_sim.py` сопровождается известным pybind11/GIL abort при завершении подписчиков; основной smoke-check до этого подтверждает шесть RGB topics и две позы.
