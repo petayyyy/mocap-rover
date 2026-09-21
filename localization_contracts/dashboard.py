@@ -19,9 +19,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if self.path == "/":
             slots="".join(f"<figure><figcaption>camera_{i}</figcaption><img src='/preview/camera_{i}' alt='camera_{i} preview' width='320'><small id='camera_{i}-state'>metadata pending</small></figure>" for i in range(1,7))
             body=("<html><title>mocap-rover simulation</title><body><h1>Localization dashboard</h1>"
+                  "<section><h2>XY map (runtime status)</h2><svg id='map' viewBox='0 0 120 120' width='360' height='360' style='background:#20242b'><path d='M0 0H120V120H0Z' fill='none' stroke='#777'/><circle id='track' cx='0' cy='0' r='2' fill='#4fd'/></svg></section>"
                   "<pre id='status'>loading</pre><section id='previews'>"+slots+"</section>"
-                  "<script>fetch('/api/status').then(r=>r.json()).then(x=>status.textContent=JSON.stringify(x,null,2));"
-                  "fetch('/api/cameras').then(r=>r.json()).then(xs=>xs.forEach(x=>{let e=document.getElementById(x.camera_id+'-state');if(e)e.textContent=JSON.stringify(x.channels)}));</script>"
+                  "<script>async function refresh(){let x=await fetch('/api/status').then(r=>r.json());status.textContent=JSON.stringify(x,null,2);let s=x.track||x.state;if(s&&s.x!==undefined){track.setAttribute('cx',s.x*10);track.setAttribute('cy',(12-s.y)*10);track.setAttribute('fill',s.tracking_state==='LOST'?'#f44':'#4fd')}let xs=await fetch('/api/cameras').then(r=>r.json());xs.forEach(x=>{let e=document.getElementById(x.camera_id+'-state');if(e)e.textContent=JSON.stringify(x.channels)});} refresh();setInterval(refresh,500);</script>"
                   "</body></html>").encode()
             self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body); return
         self.send_error(404)
