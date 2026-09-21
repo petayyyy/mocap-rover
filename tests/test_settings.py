@@ -8,3 +8,6 @@ class SimulationS12(unittest.TestCase):
   self.assertTrue(b.rollback().ok)
  def test_stale_revision_returns_error_ack(self):
   b=SettingsBackend(load_config('config/contracts.json')); b.stage({'capture':{'width':900}}); self.assertTrue(b.apply(expected_revision=0).ok); b.stage({'capture':{'width':901}}); self.assertFalse(b.apply(expected_revision=0).ok); self.assertEqual(b.last_ack.error,'stale config revision')
+ def test_runtime_binding_receives_apply_and_rollback(self):
+  b=SettingsBackend(load_config('config/contracts.json')); seen=[]; b.bind_runtime(lambda c:seen.append(('apply',c['capture']['width'])),lambda c:seen.append(('rollback',c['capture']['width'])))
+  b.stage({'capture':{'width':901}}); self.assertTrue(b.apply().ok); self.assertEqual(seen[-1],('apply',901)); self.assertTrue(b.rollback().ok); self.assertEqual(seen[-1][0],'rollback')
