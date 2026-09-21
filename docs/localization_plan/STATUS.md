@@ -1,7 +1,7 @@
 # Localization plan status
 
 Текущая фаза: **SIMULATION**  
-Текущий этап: **S07 — взаимное положение камер**
+Текущий этап: **S08 — локализация своего ровера**
 Статус: **выполнен в заявленном объёме; SIM_ACCEPTED не объявлен**
 
 ## Сделано
@@ -28,6 +28,7 @@
 - Изменения размера делают калибровку `stale`; `focal_length_mm` хранится как metadata-only и не изменяет измеренную K.
 - Добавлены `CalibrationGraph` и `CalibrationActivation`: связность графа камер/мишеней, минимальное число точек, gauge boundary, intrinsics version, quality/covariance и атомарная активация полного набора.
 - Недостаточные или несвязные наблюдения отклоняются; solver boundary не читает Gazebo ground truth.
+- Добавлен dependency-free AprilTag 36h11 observer для полных synthetic/replay detections: configurable IDs/0.40 m size, K geometry, timestamps, calibration version, quality/covariance и reject invalid ID/size.
 
 ## Проверено
 
@@ -60,6 +61,9 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s tests -v
   PASS — 21/21 tests (S01–S07; connected/disconnected graph, sparse data and atomic activation)
 
+python3 -m unittest discover -s tests -v
+  PASS — 23/23 tests (S01–S08; AprilTag identity, geometry, timestamps, quality and rejection)
+
 gz sdf -k worlds/mocap_arena.sdf
   PASS — Valid.
 
@@ -90,6 +94,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S05 time quality проверяется синтетическими timestamps; real driver timestamps, PTP/NTP, trigger и межузловая аппаратная синхронизация не подтверждены.
 - S06 calibration solver/ChArUco image acquisition не подключены; report API фиксирует held-out fields, но не заявляет измеренную оптическую точность.
 - S07 не заявляет восстановленную метрическую точность без реальных image-derived target observations; полноценный robust BA и Gazebo image solver остаются дальнейшей работой.
+- S08 observer принимает image-derived corner detections, но detector backend/OpenCV AprilTag runtime, six-camera Gazebo image pipeline, blur/occlusion recall и measured Hz пока не подключены; это не hardware readiness.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
 - Измеренный wall FPS baseline в smoke-check ниже номинала; capture FPS, detector FPS, accepted measurement Hz, output Hz, wall time, simulation time и RTF не смешиваются и не заявляются достигнутыми. Accuracy, calibration quality и LOST runtime behavior не измерялись; SIM_ACCEPTED не объявлен.
@@ -100,12 +105,13 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Артефакты
 
-- `localization_contracts/{contracts.py,config.py,geometry.py,adapters.py,registry.py,timing.py,calibration.py,extrinsics.py}`
+- `localization_contracts/{contracts.py,config.py,geometry.py,adapters.py,registry.py,timing.py,calibration.py,extrinsics.py,apriltag.py}`
 - `config/contracts.json`, `launch/contracts.launch.json`, `tests/test_contracts.py`
 - `tests/test_registry.py`
 - `tests/test_timing.py`
 - `tests/test_calibration.py`
 - `tests/test_extrinsics.py`
+- `tests/test_apriltag.py`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`
 
@@ -115,6 +121,6 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Следующий этап
 
-**S08** — следующий промпт: `docs/localization_plan/prompts/simulation/08_apriltag.md` (автоматически не начинался).
+**S09** — следующий промпт: `docs/localization_plan/prompts/simulation/09_fusion.md` (автоматически не начинался).
 
 Аппаратную фазу H01–H04 не начинать.
