@@ -10,7 +10,7 @@
 | AprilTag observation contract | PARTIAL | synthetic corner geometry; installed OpenCV AprilTag 36h11 probe segfaulted (exit 139), so no detector/image recall benchmark is claimed |
 | Friendly fusion degradation | PARTIAL | synthetic evaluator: 60 matched, XY P95 ~0 m, age P95 0 ms; all six registry channels exercised, camera_6 outage isolated; no Gazebo image accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline measures >=10 Hz; no trained detector, multi-camera ID-switch set or wall-time camera pipeline |
-| Settings/debug UI | PARTIAL | localhost APIs and live six-snapshot visual inspection pass; no interactive browser walkthrough |
+| Settings/debug UI | PARTIAL | localhost APIs, six-slot root HTML and live six-snapshot visual inspection pass; no full interactive performance walkthrough |
 | 30-minute six-camera end-to-end run | PARTIAL | 30-minute simulation-time soak is bounded; real wall-time Gazebo end-to-end run still not passed |
 | Gazebo baseline SDF | PASS | `gz sdf -k worlds/mocap_arena.sdf` => Valid |
 

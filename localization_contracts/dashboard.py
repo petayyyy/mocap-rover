@@ -17,7 +17,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not path or not Path(path).is_file(): self.send_error(404); return
             body=Path(path).read_bytes(); self.send_response(200); self.send_header("Content-Type","image/x-portable-pixmap"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body); return
         if self.path == "/":
-            body=b"<html><title>mocap-rover simulation</title><body><h1>Localization dashboard</h1><pre id='status'></pre><script>fetch('/api/status').then(r=>r.json()).then(x=>status.textContent=JSON.stringify(x,null,2))</script></body></html>"
+            slots="".join(f"<figure><figcaption>camera_{i}</figcaption><img src='/preview/camera_{i}' alt='camera_{i} preview' width='320'><small id='camera_{i}-state'>metadata pending</small></figure>" for i in range(1,7))
+            body=("<html><title>mocap-rover simulation</title><body><h1>Localization dashboard</h1>"
+                  "<pre id='status'>loading</pre><section id='previews'>"+slots+"</section>"
+                  "<script>fetch('/api/status').then(r=>r.json()).then(x=>status.textContent=JSON.stringify(x,null,2));"
+                  "fetch('/api/cameras').then(r=>r.json()).then(xs=>xs.forEach(x=>{let e=document.getElementById(x.camera_id+'-state');if(e)e.textContent=JSON.stringify(x.channels)}));</script>"
+                  "</body></html>").encode()
             self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body); return
         self.send_error(404)
     def _json(self,value):
