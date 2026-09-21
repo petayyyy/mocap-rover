@@ -10,6 +10,7 @@
 - [x] Исправлено: одновременные observations не создают искусственный огромный velocity; rates считаются от начала текущей session (`localization_contracts/fusion.py`).
 - [x] Добавлены регрессии на оба случая (`tests/test_apriltag.py`, `tests/test_fusion.py`).
 - [x] Добавлен OpenCV IPPE-SQUARE PnP boundary с явной цепочкой `T_arena_camera · T_camera_tag · inv(T_base_tag)` и метрическим synthetic regression (`localization_contracts/apriltag.py`).
+- [x] Добавлен covariance-based innovation gate и reject counter для implausible jumps; prediction horizon и publication tick остаются отдельными от measurement acceptance (`localization_contracts/fusion.py`).
 - [ ] Не закрыто: настоящий detector, PnP/K/D, T_arena_camera/T_base_marker и ROS 2 Odometry.
 - [ ] Не закрыто: image-derived calibration/BA, шесть live image channels, настоящий YOLO и 30-minute wall-time profile.
 
@@ -111,7 +112,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 54/54 tests (S01–S15 acceptance artifacts, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
+  PASS — 55/55 tests (S01–S15 acceptance artifacts, innovation-gate, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check

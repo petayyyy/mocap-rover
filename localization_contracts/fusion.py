@@ -10,9 +10,9 @@ class State:
     stamp_ns:int; x:float; y:float; yaw:float; vx:float=0.; vy:float=0.; omega:float=0.; covariance:float=1.
 
 class PlanarFusion:
-    def __init__(self, object_id="tag_rover", publish_hz=30, dropout_horizon_ms=200):
-        self.object_id=object_id; self.publish_hz=publish_hz; self.horizon=dropout_horizon_ms*1_000_000; self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.session=0; self.calibration_version=None; self.session_start_ns=None; self.measurement_times=[]; self.output_times=[]
-    def reset(self): self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.session+=1; self.session_start_ns=None; self.measurement_times=[]; self.output_times=[]
+    def __init__(self, object_id="tag_rover", publish_hz=30, dropout_horizon_ms=200, gate_sigma=5.0):
+        self.object_id=object_id; self.publish_hz=publish_hz; self.horizon=dropout_horizon_ms*1_000_000; self.gate_sigma=gate_sigma; self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.rejected=0; self.session=0; self.calibration_version=None; self.session_start_ns=None; self.measurement_times=[]; self.output_times=[]
+    def reset(self): self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.rejected=0; self.session+=1; self.session_start_ns=None; self.measurement_times=[]; self.output_times=[]
     def update(self, obs):
         obs.validate()
         if self.calibration_version is not None and obs.calibration_version != self.calibration_version:
@@ -25,13 +25,21 @@ class PlanarFusion:
         if self.state is None: self.state=State(obs.capture_time_ns,z[0],z[1],yaw,covariance=.04)
         else:
             delta_ns=obs.capture_time_ns-self.state.stamp_ns
+            dt=max(delta_ns/1e9, 0.)
+            predicted_x=self.state.x+self.state.vx*dt; predicted_y=self.state.y+self.state.vy*dt
+            measurement_var=max(float(obs.covariance_m2[0]), float(obs.covariance_m2[1]) if len(obs.covariance_m2)>1 else float(obs.covariance_m2[0]), 1e-9)
+            innovation=math.hypot(z[0]-predicted_x, z[1]-predicted_y)
+            threshold=self.gate_sigma*math.sqrt(self.state.covariance+measurement_var+dt*.1)
+            if innovation > threshold:
+                self.rejected += 1
+                return False
             # Simultaneous observations from different cameras are valid
             # measurements, but must not manufacture an enormous velocity.
             if delta_ns <= 0:
-                self.state=State(self.state.stamp_ns,z[0],z[1],yaw,self.state.vx,self.state.vy,self.state.omega,.04)
+                self.state=State(self.state.stamp_ns,z[0],z[1],yaw,self.state.vx,self.state.vy,self.state.omega,measurement_var)
             else:
                 dt=delta_ns/1e9
-                self.state=State(obs.capture_time_ns,z[0],z[1],yaw,(z[0]-self.state.x)/dt,(z[1]-self.state.y)/dt,angle_diff(yaw,self.state.yaw)/dt,.04)
+                self.state=State(obs.capture_time_ns,z[0],z[1],yaw,(z[0]-self.state.x)/dt,(z[1]-self.state.y)/dt,angle_diff(yaw,self.state.yaw)/dt,measurement_var)
         self.last_measurement=obs; self.measurements+=1; self.measurement_times.append(obs.capture_time_ns); return True
     def publish(self, stamp_ns):
         self.outputs+=1; self.output_times.append(stamp_ns)

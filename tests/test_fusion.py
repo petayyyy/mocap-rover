@@ -13,6 +13,9 @@ class SimulationS09(unittest.TestCase):
  def test_rates_are_session_relative(self):
   f=PlanarFusion(); f.update(self.obs(1,10_000_000_000,0)); f.publish(10_100_000_000)
   self.assertGreater(f.publish(10_200_000_000)["output_hz"], 1.0)
+ def test_innovation_gate_rejects_implausible_jump(self):
+  f=PlanarFusion(gate_sigma=3.0); self.assertTrue(f.update(self.obs(1,0,0)))
+  self.assertFalse(f.update(self.obs(2,100_000_000,1000))); self.assertEqual(f.rejected,1); self.assertEqual(f.measurements,1)
  def test_calibration_change_resets_session(self):
   f=PlanarFusion(); first=self.obs(1,0,0); f.update(first); old=f.session; changed=self.obs(2,100,0)
   from dataclasses import replace
