@@ -1,7 +1,7 @@
 # Localization plan status
 
 Текущая фаза: **SIMULATION**  
-Текущий этап: **S14 — производительность и устойчивость**
+Текущий этап: **S15 — приёмка всей системы в симуляторе**
 Статус: **выполнен в заявленном объёме; SIM_ACCEPTED не объявлен**
 
 ## Сделано
@@ -84,6 +84,9 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
+python3 -m unittest discover -s tests -v
+  PASS — 32/32 tests (S01–S15 acceptance artifacts and dashboard smoke-check)
+
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
 
@@ -156,6 +159,6 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Следующий этап
 
-**S15** — следующий prompt: `docs/localization_plan/prompts/simulation/15_acceptance.md` (отчёт подготовлен; SIM_ACCEPTED не объявлен).
+**S15** — acceptance report: `docs/localization_plan/sim_acceptance_report.md`; результат NOT ACCEPTED, SIM_ACCEPTED не объявлен.
 
 Аппаратную фазу H01–H04 не начинать.
