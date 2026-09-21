@@ -94,7 +94,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 46/46 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association, soak, fault matrix, launch manifests, scenario manifest and stale revision)
+  PASS — 47/47 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
@@ -162,6 +162,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Pipeline evaluator-only hold-out run: 60 matched samples, XY P95 ≈0 m and age P95 0 ms; these synthetic metrics are not presented as Gazebo or hardware performance.
 - Synthetic pipeline now exercises all six registry cameras; deterministic camera_6 outage (10 frames over 2 s) leaves camera_1/friendly output active.
 - Добавлен асинхронный planar `PlanarFusion`: timestamped observations, dedup/out-of-order rejection, circular yaw, prediction на publish tick, counters, COASTING/LOST и рост covariance.
+- Fusion now resets state/session and per-session counters on calibration-version change, preventing geometry from mixing calibration sets.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
 - Измеренный wall FPS baseline в smoke-check ниже номинала; capture FPS, detector FPS, accepted measurement Hz, output Hz, wall time, simulation time и RTF не смешиваются и не заявляются достигнутыми. Accuracy, calibration quality и LOST runtime behavior не измерялись; SIM_ACCEPTED не объявлен.

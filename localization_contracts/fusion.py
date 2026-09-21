@@ -11,10 +11,13 @@ class State:
 
 class PlanarFusion:
     def __init__(self, object_id="tag_rover", publish_hz=30, dropout_horizon_ms=200):
-        self.object_id=object_id; self.publish_hz=publish_hz; self.horizon=dropout_horizon_ms*1_000_000; self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.session=0
-    def reset(self): self.state=None; self.last_measurement=None; self.session+=1
+        self.object_id=object_id; self.publish_hz=publish_hz; self.horizon=dropout_horizon_ms*1_000_000; self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.session=0; self.calibration_version=None
+    def reset(self): self.state=None; self.last_measurement=None; self.measurements=0; self.outputs=0; self.session+=1
     def update(self, obs):
         obs.validate()
+        if self.calibration_version is not None and obs.calibration_version != self.calibration_version:
+            self.reset()
+        self.calibration_version=obs.calibration_version
         if self.last_measurement and obs.measurement_id == self.last_measurement.measurement_id: return False
         if self.last_measurement and obs.capture_time_ns < self.last_measurement.capture_time_ns: return False
         z=obs.position_m; yaw=float(obs.pixel_features.get("yaw_rad",0))

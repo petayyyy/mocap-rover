@@ -7,4 +7,8 @@ class SimulationS09(unittest.TestCase):
   f=PlanarFusion(); self.assertTrue(f.update(self.obs(1,0,0))); self.assertFalse(f.update(self.obs(1,0,0))); f.update(self.obs(2,100_000_000,10)); self.assertEqual(f.publish(150_000_000)["tracking_state"],"COASTING"); self.assertEqual(f.publish(400_000_000)["tracking_state"],"LOST")
  def test_out_of_order_rejected(self):
   f=PlanarFusion(); f.update(self.obs(2,100,0)); self.assertFalse(f.update(self.obs(1,50,0)))
+ def test_calibration_change_resets_session(self):
+  f=PlanarFusion(); first=self.obs(1,0,0); f.update(first); old=f.session; changed=self.obs(2,100,0)
+  from dataclasses import replace
+  self.assertTrue(f.update(replace(changed,calibration_version='new-cal'))); self.assertGreater(f.session,old); self.assertEqual(f.measurements,1)
 if __name__=='__main__': unittest.main()
