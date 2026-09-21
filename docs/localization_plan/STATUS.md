@@ -94,7 +94,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 48/48 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
+  PASS — 49/49 tests (S01–S15 acceptance artifacts, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, TrackStatus contract, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
@@ -163,6 +163,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Synthetic pipeline now exercises all six registry cameras; deterministic camera_6 outage (10 frames over 2 s) leaves camera_1/friendly output active.
 - Добавлен асинхронный planar `PlanarFusion`: timestamped observations, dedup/out-of-order rejection, circular yaw, prediction на publish tick, counters, COASTING/LOST и рост covariance.
 - Added `ObservationSelector` quality hysteresis for neighboring cameras; active source changes only after the configured quality margin.
+- Fusion now exposes validated common `TrackStatus` with state, age, rates, source camera, calibration version and session/reset counter.
 - Fusion now resets state/session and per-session counters on calibration-version change, preventing geometry from mixing calibration sets.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.

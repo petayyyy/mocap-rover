@@ -35,6 +35,14 @@ class PlanarFusion:
         else: valid=True; tracking="TRACKING"
         return {"state": State(stamp_ns,self.state.x+self.state.vx*dt,self.state.y+self.state.vy*dt,self.state.yaw+self.state.omega*dt,self.state.vx,self.state.vy,self.state.omega,self.state.covariance+dt*.1), "valid":valid,"tracking_state":tracking,"measurement_hz":self.measurements/max(stamp_ns/1e9,1e-9),"output_hz":self.outputs/max(stamp_ns/1e9,1e-9),"measurement_age_ms":age/1e6}
 
+    def status(self, stamp_ns):
+        item=self.publish(stamp_ns)
+        if item is None:
+            state='INITIALIZING'; valid=False; age=None; last=None
+        else:
+            state=item['tracking_state']; valid=item['valid']; age=item['measurement_age_ms']; last=self.last_measurement.capture_time_ns
+        return TrackStatus(SCHEMA_VERSION,self.object_id,valid,state,last,age,tuple([self.last_measurement.camera_id] if self.last_measurement else []),float(self.measurements),float(self.outputs),bool(item and item['state'].yaw is not None),self.calibration_version or 'unset',str(self.session),self.session).validate()
+
 class ObservationSelector:
     """Select one camera observation with quality hysteresis."""
     def __init__(self, switch_margin=.15): self.switch_margin=switch_margin; self.active_camera=None

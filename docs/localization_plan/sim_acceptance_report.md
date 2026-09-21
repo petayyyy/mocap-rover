@@ -8,7 +8,7 @@
 | Timing/replay contracts | PASS (boundary) | timing tests and 11-scenario fault matrix with measured offset/drift, replay reset and bounded delays; no hardware clock/trigger claim |
 | Intrinsics/extrinsics reports | PARTIAL | import/round-trip and graph checks; no image-derived BA accuracy |
 | AprilTag observation contract | PARTIAL | synthetic corner geometry; installed OpenCV AprilTag 36h11 probe segfaulted (exit 139), so no detector/image recall benchmark is claimed |
-| Friendly fusion degradation | PARTIAL | synthetic evaluator, calibration reset and quality-hysteresis source selection; no Gazebo image accuracy |
+| Friendly fusion degradation | PARTIAL | synthetic evaluator, validated TrackStatus, calibration reset and quality-hysteresis source selection; no Gazebo image accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline measures >=10 Hz; no trained detector, multi-camera ID-switch set or wall-time camera pipeline |
 | Settings/debug UI | PARTIAL | localhost APIs, six-slot root HTML, stale-revision error ack and live six-snapshot visual inspection pass; no full interactive performance walkthrough |
 | 30-minute six-camera end-to-end run | PARTIAL | 30-minute simulation-time soak is bounded; real wall-time Gazebo end-to-end run still not passed |

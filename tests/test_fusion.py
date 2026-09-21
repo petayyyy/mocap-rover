@@ -15,4 +15,6 @@ class SimulationS09(unittest.TestCase):
   s=ObservationSelector(.15); a=self.obs(1,0,0); b=self.obs(2,0,1)
   from dataclasses import replace
   a=replace(a,quality=.8,camera_id='camera_1'); b=replace(b,quality=.9,camera_id='camera_2'); self.assertEqual(s.select([a,b]).camera_id,'camera_2'); b2=replace(b,quality=.85); self.assertEqual(s.select([a,b2]).camera_id,'camera_2')
+ def test_common_track_status_contract(self):
+  f=PlanarFusion(); f.update(self.obs(1,0,0)); s=f.status(10); self.assertEqual(s.tracking_state,'COASTING'); self.assertEqual(s.pose_frame,'arena'); self.assertEqual(s.calibration_version,'c')
 if __name__=='__main__': unittest.main()
