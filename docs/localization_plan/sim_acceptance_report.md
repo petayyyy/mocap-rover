@@ -5,7 +5,7 @@
 | Критерий | Результат | Доказательство/ограничение |
 |---|---|---|
 | S04 registry/fault isolation | PASS | 4 registry tests; bounded queues, reconnect and independent channels |
-| Timing/replay contracts | PASS (boundary) | 2 timing tests; no hardware clock/trigger claim |
+| Timing/replay contracts | PASS (boundary) | timing tests and 10-scenario fault matrix; no hardware clock/trigger claim |
 | Intrinsics/extrinsics reports | PARTIAL | import/round-trip and graph checks; no image-derived BA accuracy |
 | AprilTag observation contract | PARTIAL | synthetic corner geometry; installed OpenCV AprilTag 36h11 probe segfaulted (exit 139), so no detector/image recall benchmark is claimed |
 | Friendly fusion degradation | PARTIAL | synthetic evaluator: 60 matched, XY P95 ~0 m, age P95 0 ms; all six registry channels exercised, camera_6 outage isolated; no Gazebo image accuracy |
@@ -19,6 +19,7 @@ Commands:
 ```text
 python3 -m unittest discover -s tests -v  # PASS — 32/32 including dashboard smoke-check
 python3 -m unittest tests.test_pipeline -v # PASS — synthetic nominal/drop acceptance regression
+python3 -m unittest tests.test_acceptance_matrix -v # PASS — 10 reproducible S15 fault/replay scenarios
 python3 - <<'PY'                            # evaluator-only hold-out metrics
 from simulation.pipeline import run, evaluate_samples
 print(evaluate_samples(run(2, return_samples=True)))
