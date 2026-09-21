@@ -5162,7 +5162,6 @@
               <metal>
                 <metalness>0.0</metalness>
                 <roughness>0.75</roughness>
-                <albedo_map>model://mocap-rover/materials/textures/tag36h11_0.png</albedo_map>
               </metal>
             </pbr>
           </material>
@@ -5190,7 +5189,6 @@
               <metal>
                 <metalness>0.0</metalness>
                 <roughness>0.75</roughness>
-                <albedo_map>model://mocap-rover/materials/textures/tag36h11_0.png</albedo_map>
               </metal>
             </pbr>
           </material>
