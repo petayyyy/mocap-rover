@@ -7,7 +7,7 @@
 | S04 registry/fault isolation | PASS | 4 registry tests; bounded queues, reconnect and independent channels |
 | Timing/replay contracts | PASS (boundary) | timing tests, provenance verification and 11-scenario fault matrix with measured offset/drift, replay reset and bounded delays; no hardware clock/trigger claim |
 | Intrinsics/extrinsics reports | PARTIAL | JSON/CameraInfo YAML round-trip, image-derived per-view PnP path and graph checks; no image-derived BA/held-out accuracy |
-| AprilTag observation contract | PARTIAL | live camera_1 Gazebo smoke: 19/19 ID-0 detections and PnP accepts; no recall/pose accuracy benchmark or six-camera run |
+| AprilTag observation contract | PARTIAL | live camera_1 Gazebo smoke: 19/19 ID-0 detections and PnP accepts; evaluator-only pose run matched 17 with P50/P95 3D error≈0.1083 m, so metric accuracy gate fails |
 | Friendly fusion degradation | PARTIAL | one-camera image→PnP→PlanarFusion/TrackStatus path and synthetic evaluator; no ROS odometry or trajectory accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline/contact projection/metric association tested; no trained detector or opponent wall-time camera run |
 | Settings/debug UI | PARTIAL | localhost APIs, six-slot root HTML, stale-revision error ack and live six-snapshot visual inspection pass; no full interactive performance walkthrough |
@@ -28,6 +28,8 @@ PY
 gz sdf -k worlds/mocap_arena.sdf          # PASS — Valid
 /usr/bin/python3 scripts/check_image_pipeline.py --camera camera_1 --seconds 5
                                           # PASS (smoke only) — frames=19, detections=19, accepted=19, ID=0, CameraInfo runtime K/D, wall_fps=3.65, detector_p95≈313 ms
+/usr/bin/python3 scripts/evaluate_live_pose.py --seconds 5
+                                          # EVALUATOR — matched=17, P50/P95 3D error≈0.1083 m; truth is evaluator-only, accuracy gate NOT_ACCEPTED
 /usr/bin/python3 scripts/check_sim.py --output /tmp/mocap-s15-preview-20260921 --measure-seconds 3
                                           # PASS — six RGB streams, two world poses, six PPM snapshots; wall_fps=4.33 each
 ffmpeg -y -loglevel error -i /tmp/mocap-s15-preview-20260921/camera_1.ppm /tmp/mocap-s15-preview-20260921/camera_1.png
