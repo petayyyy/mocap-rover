@@ -30,6 +30,7 @@
 - [x] S12 `SettingsBackend` теперь поддерживает runtime apply/rollback callbacks после validated atomic apply; integration regression проверяет ack и отсутствие callback на stale revision.
 - [x] Добавлен `scripts/serve_live_dashboard.py`: live Gazebo image topics обновляют registry, six preview files и dashboard metadata; raw frames не передаются через JSON.
 - [x] Live dashboard preview metadata теперь отражает фактические width/height каждого полученного Gazebo stream; до первого кадра сохраняется только explicit baseline fallback 1600×1200.
+- [x] Live dashboard status/preview providers читают frame counters и dimensions через lock, избегая частично обновлённых snapshots при параллельных Gazebo callbacks.
 - [x] Image pipeline теперь требует и принимает live `/cameras/camera_N/camera_info` K/D перед PnP; отсутствие CameraInfo приводит к диагностической ошибке.
 - [x] Detector добавил bounded raw+Otsu contrast path; baseline live camera_1 path даёт 19/19 ID-0 detections/PnP accepts, а six-camera runner получает frames на всех channels.
 - [x] Добавлена bottom-tag ID 1 transform regression: full `T_base_tag` rotation/translation preserves base position without image mirroring or per-ID yaw sign hacks.

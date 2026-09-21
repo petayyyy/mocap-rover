@@ -18,12 +18,22 @@ def main():
         with lock:
             counts[cid]+=1
             dimensions[cid]=(msg.width,msg.height)
-        registry.push(cid,'image',(counts[cid],time.monotonic_ns()))
+        with lock:
+            seq = counts[cid]
+        registry.push(cid,'image',(seq,time.monotonic_ns()))
     for cid in sorted(registry.bindings):
         if not node.subscribe(Image,f'/cameras/{cid}/image',lambda msg,cid=cid:callback(msg,cid)): raise RuntimeError(cid)
-    DashboardHandler.status_provider=staticmethod(lambda:{'phase':'SIMULATION','hardware_verified':False,'live':True,'wall_seconds':time.monotonic()-started,'frames':dict(counts)})
+    def status_snapshot():
+        with lock:
+            frames=dict(counts)
+        return {'phase':'SIMULATION','hardware_verified':False,'live':True,'wall_seconds':time.monotonic()-started,'frames':frames}
+    def preview_snapshot():
+        with lock:
+            sizes=dict(dimensions)
+        return [registry.preview(cid,PreviewMetadata(*(sizes[cid] if sizes[cid] != (0,0) else (1600,1200)),available=(a.output/f'{cid}.ppm').is_file())) for cid in sorted(registry.bindings)]
+    DashboardHandler.status_provider=staticmethod(status_snapshot)
     DashboardHandler.cameras_provider=staticmethod(lambda:[registry.status(cid) for cid in sorted(registry.bindings)])
-    DashboardHandler.previews_provider=staticmethod(lambda:[registry.preview(cid,PreviewMetadata(*(dimensions[cid] if dimensions[cid] != (0,0) else (1600,1200)),available=(a.output/f'{cid}.ppm').is_file())) for cid in sorted(registry.bindings)])
+    DashboardHandler.previews_provider=staticmethod(preview_snapshot)
     DashboardHandler.preview_files_provider=staticmethod(lambda:{cid:str(a.output/f'{cid}.ppm') for cid in registry.bindings})
     print(f'http://{a.host}:{a.port}/',flush=True); serve(a.host,a.port).serve_forever()
 if __name__=='__main__': main()
