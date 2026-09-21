@@ -168,7 +168,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Root HTML smoke-test confirms six preview slots; it is a localhost rendering check, not a full interactive Gazebo performance acceptance.
 - Live dashboard smoke-check on port 18080: HTML 1421 bytes/6 slots, cameras=6, previews=6, camera_1 PPM magic `P6`/5,760,017 bytes; process stopped with Ctrl-C.
 - Live preview smoke-check: `/usr/bin/python3 scripts/check_sim.py --output /tmp/mocap-s15-preview-20260921 --measure-seconds 3` подтвердил 6 RGB streams, 2 world poses и 6 PPM (1600×1200); wall_fps=4.33 each, target 30 Hz не принят.
-- Image pipeline smoke-check: `/usr/bin/python3 scripts/check_image_pipeline.py --camera camera_1 --seconds 8` получил 26 Gazebo frames (`wall_fps=3.25`), detector backend `opencv-aruco-apriltag-36h11-legacy`, `detections=0`, `accepted=0`, detector p95≈406.9 ms; это NOT ACCEPTED, так как rendered SDF target пока не дал распознаваемую AprilTag.
+- Image pipeline smoke-check: `/usr/bin/python3 scripts/check_image_pipeline.py --camera camera_1 --seconds 5` получил 19 Gazebo frames, `detections=19`, `accepted=19`, ID 0, runtime CameraInfo K/D, `wall_fps=3.65`, detector p95≈313.2 ms; ground truth runtime не использован. Accuracy/frequency gate остаётся NOT_ACCEPTED.
 - Gazebo shutdown logged unresolved `pybind11::handle::dec_ref()`/GIL abort after the smoke-check; process was stopped and this runtime issue remains an explicit baseline limitation.
 - Visual inspection of converted `camera_1.png` and six-view montage confirmed rendered Gazebo imagery and visible tag rover/AprilTag; this does not establish detector recall or metric accuracy.
 - Research comparison report expanded with explicit matrix for all required items 1–6 from `04_implementation_plan.md`; unavailable alternatives remain NOT_ACCEPTED rather than inferred.
@@ -195,7 +195,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Fusion now exposes validated common `TrackStatus` with state, age, rates, source camera, calibration version and session/reset counter.
 - Fusion now resets state/session and per-session counters on calibration-version change, preventing geometry from mixing calibration sets.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
-- S08 image adapter теперь runnable against Gazebo topics, но live SDF render does not yet yield a detector observation; no accuracy/recall/odometry claim is made.
+- S08 image adapter теперь runnable against Gazebo topics и даёт detector→PnP observations на baseline camera_1; no measured trajectory accuracy or ROS odometry claim is made.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
 - Измеренный wall FPS baseline в smoke-check ниже номинала; capture FPS, detector FPS, accepted measurement Hz, output Hz, wall time, simulation time и RTF не смешиваются и не заявляются достигнутыми. Accuracy, calibration quality и LOST runtime behavior не измерялись; SIM_ACCEPTED не объявлен.
 - Профили узкой оптики честно имеют статус `coverage: not demonstrated`; нулевое геометрическое покрытие baseline не означает пиксельную читаемость или отсутствие occlusion.
