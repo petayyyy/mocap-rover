@@ -34,6 +34,7 @@
 - Добавлен structured `Diagnostics` для measured/filtered/predicted events, queue/drop/age каналов, latency percentiles и truth-hidden UI payload.
 - Добавлен localhost-only `DashboardHandler` с `/` и `/api/status`; endpoint не выполняет shell-команды, не публикует raw frames и явно показывает `hardware_verified: false`.
 - Добавлен bounded synthetic benchmark `simulation/benchmark.py`; report explicitly marks simulation-only and hardware-unverified.
+- Добавлен `simulation/pipeline.py`: воспроизводимый synthetic camera→AprilTag/opponent→fusion pipeline с отдельными friendly/opponent rates, drops, LOST и runtime truth boundary.
 
 ## Проверено
 
@@ -125,6 +126,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S12 browser UI/E2E visual walkthrough не реализованы; backend не предоставляет hardware capability и не выполняет shell commands.
 - S13 dashboard endpoint реализован, но полноценный live Gazebo data wiring, визуальный screenshot walkthrough и six-preview rendering ещё не подтверждены.
 - S14 benchmark не является end-to-end Gazebo/30-minute acceptance; текущий Gazebo baseline wall FPS ниже nominal, поэтому требования frequency/age не приняты.
+- Synthetic pipeline acceptance regression проходит nominal/drop scenarios, но не заменяет Gazebo image-based accuracy или wall-time 30-minute acceptance.
 - Добавлен асинхронный planar `PlanarFusion`: timestamped observations, dedup/out-of-order rejection, circular yaw, prediction на publish tick, counters, COASTING/LOST и рост covariance.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
@@ -150,6 +152,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - `tests/test_benchmark.py`
 - `tests/test_dashboard.py`
 - `docs/localization_plan/sim_acceptance_report.md`
+- `simulation/pipeline.py`, `tests/test_pipeline.py`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`
 
