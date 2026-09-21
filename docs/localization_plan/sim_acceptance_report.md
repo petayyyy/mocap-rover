@@ -52,6 +52,9 @@ exit 139 in this environment. The crashing backend was not committed.
 Additional required artifacts: `research_comparison_report.md` and
 `operator_runbook_sim.md`.
 
+Mandatory scenario traceability: `s15_gap_register.md` maps all nine required
+scenarios to current evidence and gate status.
+
 Launch manifests: `launch/simulation.launch.json` and
 `launch/replay.launch.json`; both are declarative virtual/replay manifests and
 do not instantiate physical devices.

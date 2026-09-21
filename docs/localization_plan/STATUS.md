@@ -189,6 +189,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - `simulation/acceptance_matrix.py`, `tests/test_acceptance_matrix.py`
 - `launch/simulation.launch.json`, `launch/replay.launch.json`, `tests/test_launch_manifests.py`
 - `scripts/run_acceptance.py`, `tests/test_acceptance_runner.py`
+- `docs/localization_plan/s15_gap_register.md`
 - `scripts/serve_dashboard.py`, `tests/test_serve_dashboard.py`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`
