@@ -171,6 +171,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S08 observer и OpenCV detector подключены к one-camera Gazebo image/CameraInfo smoke path; six-camera live image recall, blur/occlusion recall и measured trajectory accuracy пока не приняты; это не hardware readiness.
 - Legacy detector API probe ранее crash-нулся (exit 139), но изолированный `cv2.aruco.detectMarkers` backend выполняет текущий baseline smoke path; shutdown GIL issue остаётся ограничением.
 - S11 detector weights/runtime отсутствуют; metric association boundary и image/label dataset готовы, GPU benchmark, trained inference и ≥10 Hz wall-time acceptance не реализованы.
+- S11 environment check: `ultralytics/torch/onnxruntime` and weights are absent; isolated `/tmp` pip install was cancelled after dependency resolution did not complete, with no system/repository environment changes.
 - S11 multi-camera association boundary и ID-switch counter покрыты тестом; detector weights, full projection/triangulation and wall-time acceptance remain unverified.
 - S12 backend staged apply/rollback/ack и localhost UI smoke реализованы; browser E2E visual walkthrough и live-node settings wiring остаются непроверенными.
 - S13 dashboard endpoint реализован, но полноценный live Gazebo data wiring, визуальный screenshot walkthrough и six-preview rendering ещё не подтверждены.
