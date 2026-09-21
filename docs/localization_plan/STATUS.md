@@ -26,7 +26,7 @@
 - [x] Detector supports measured 0.5× profile with corner rescaling; saved-frame detection retained ID 0 while raw detector timing fell from ≈16 ms to ≈5 ms. Live six-camera rate remains transport/Gazebo limited.
 - [x] S10 добавлен reproducible image/YOLO-label builder (`simulation.dataset.build_image_dataset`): PNGs, labels, session-level train/val/test split and leakage-safe manifest; weights/training status remain explicitly unset.
 - [x] S11 добавлен explicit `YoloRuntimeStatus`/`YoloDetector` boundary: missing `ultralytics`/weights fail clearly and never synthesize detections; current environment reports unavailable.
-- [x] Dashboard теперь имеет dynamic status polling (500 ms), XY map marker и явный LOST color path; это UI capability smoke coverage, не подтверждение live Gazebo data wiring.
+- [x] Dashboard имеет dynamic status polling (500 ms), XY map marker и явный LOST color path; live Gazebo six-preview/API wiring подтверждён smoke-check, но performance/accuracy acceptance остаётся открытой.
 - [x] S12 `SettingsBackend` теперь поддерживает runtime apply/rollback callbacks после validated atomic apply; integration regression проверяет ack и отсутствие callback на stale revision.
 - [x] Добавлен `scripts/serve_live_dashboard.py`: live Gazebo image topics обновляют registry, six preview files и dashboard metadata; raw frames не передаются через JSON.
 - [x] Image pipeline теперь требует и принимает live `/cameras/camera_N/camera_info` K/D перед PnP; отсутствие CameraInfo приводит к диагностической ошибке.
