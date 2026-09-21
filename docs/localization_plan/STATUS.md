@@ -11,6 +11,7 @@
 - [x] Добавлены регрессии на оба случая (`tests/test_apriltag.py`, `tests/test_fusion.py`).
 - [x] Добавлен OpenCV IPPE-SQUARE PnP boundary с явной цепочкой `T_arena_camera · T_camera_tag · inv(T_base_tag)` и метрическим synthetic regression (`localization_contracts/apriltag.py`).
 - [x] Добавлен OpenCV legacy AprilTag image detector adapter (`localization_contracts/detector.py`) и detector→PnP regression с capture timestamp; он не получает ground truth.
+- [x] Добавлен runnable `scripts/check_image_pipeline.py`: Gazebo image topic → RGB frame → OpenCV AprilTag detector → PnP observer, с capture timestamp, latency и hardware/simulation provenance flags.
 - [x] Добавлен covariance-based innovation gate и reject counter для implausible jumps; prediction horizon и publication tick остаются отдельными от measurement acceptance (`localization_contracts/fusion.py`).
 - [ ] Не закрыто: настоящий detector, PnP/K/D, T_arena_camera/T_base_marker и ROS 2 Odometry.
 - [ ] Не закрыто: image-derived calibration/BA, шесть live image channels, настоящий YOLO и 30-minute wall-time profile.
@@ -160,6 +161,8 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Root HTML smoke-test confirms six preview slots; it is a localhost rendering check, not a full interactive Gazebo performance acceptance.
 - Live dashboard smoke-check on port 18080: HTML 1421 bytes/6 slots, cameras=6, previews=6, camera_1 PPM magic `P6`/5,760,017 bytes; process stopped with Ctrl-C.
 - Live preview smoke-check: `/usr/bin/python3 scripts/check_sim.py --output /tmp/mocap-s15-preview-20260921 --measure-seconds 3` подтвердил 6 RGB streams, 2 world poses и 6 PPM (1600×1200); wall_fps=4.33 each, target 30 Hz не принят.
+- Image pipeline smoke-check: `/usr/bin/python3 scripts/check_image_pipeline.py --camera camera_1 --seconds 8` получил 26 Gazebo frames (`wall_fps=3.25`), detector backend `opencv-aruco-apriltag-36h11-legacy`, `detections=0`, `accepted=0`, detector p95≈406.9 ms; это NOT ACCEPTED, так как rendered SDF target пока не дал распознаваемую AprilTag.
+- Gazebo shutdown logged unresolved `pybind11::handle::dec_ref()`/GIL abort after the smoke-check; process was stopped and this runtime issue remains an explicit baseline limitation.
 - Visual inspection of converted `camera_1.png` and six-view montage confirmed rendered Gazebo imagery and visible tag rover/AprilTag; this does not establish detector recall or metric accuracy.
 - Research comparison report expanded with explicit matrix for all required items 1–6 from `04_implementation_plan.md`; unavailable alternatives remain NOT_ACCEPTED rather than inferred.
 - Added `simulation/acceptance_matrix.py`: reproducible 10-scenario matrix for 5/10/30% drops, 20/50/100/200 ms delay, reorder, clock/replay boundary and camera_6 outage.
@@ -185,6 +188,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Fusion now exposes validated common `TrackStatus` with state, age, rates, source camera, calibration version and session/reset counter.
 - Fusion now resets state/session and per-session counters on calibration-version change, preventing geometry from mixing calibration sets.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
+- S08 image adapter теперь runnable against Gazebo topics, но live SDF render does not yet yield a detector observation; no accuracy/recall/odometry claim is made.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
 - Измеренный wall FPS baseline в smoke-check ниже номинала; capture FPS, detector FPS, accepted measurement Hz, output Hz, wall time, simulation time и RTF не смешиваются и не заявляются достигнутыми. Accuracy, calibration quality и LOST runtime behavior не измерялись; SIM_ACCEPTED не объявлен.
 - Профили узкой оптики честно имеют статус `coverage: not demonstrated`; нулевое геометрическое покрытие baseline не означает пиксельную читаемость или отсутствие occlusion.

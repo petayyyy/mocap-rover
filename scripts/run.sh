@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+export GZ_SIM_RESOURCE_PATH="$root_dir/models:$root_dir${GZ_SIM_RESOURCE_PATH:+:$GZ_SIM_RESOURCE_PATH}"
 # Keep the lock through exec and until Gazebo's child processes have exited.
 # Overlapping restarts can leave the GUI attached to a departing server.
 runtime_dir="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/mocap-rover"
