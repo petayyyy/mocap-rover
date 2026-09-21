@@ -34,3 +34,14 @@ class PlanarFusion:
         elif age: valid=True; tracking="COASTING"
         else: valid=True; tracking="TRACKING"
         return {"state": State(stamp_ns,self.state.x+self.state.vx*dt,self.state.y+self.state.vy*dt,self.state.yaw+self.state.omega*dt,self.state.vx,self.state.vy,self.state.omega,self.state.covariance+dt*.1), "valid":valid,"tracking_state":tracking,"measurement_hz":self.measurements/max(stamp_ns/1e9,1e-9),"output_hz":self.outputs/max(stamp_ns/1e9,1e-9),"measurement_age_ms":age/1e6}
+
+class ObservationSelector:
+    """Select one camera observation with quality hysteresis."""
+    def __init__(self, switch_margin=.15): self.switch_margin=switch_margin; self.active_camera=None
+    def select(self, observations):
+        valid=[o for o in observations if o.quality >= 0]
+        if not valid:return None
+        best=max(valid,key=lambda o:o.quality)
+        current=next((o for o in valid if o.camera_id==self.active_camera),None)
+        if current is None or best.quality >= current.quality+self.switch_margin: self.active_camera=best.camera_id; return best
+        return current
