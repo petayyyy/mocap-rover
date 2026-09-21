@@ -68,6 +68,10 @@ def main():
     if not node.subscribe(Image, f"/cameras/{args.camera}/image", callback):
         raise RuntimeError("unable to subscribe to image topic")
     time.sleep(args.seconds)
+    # Detach the callback before interpreter teardown; gz-transport otherwise
+    # can destroy pybind objects from a worker thread and abort on GIL checks.
+    node.unsubscribe(f"/cameras/{args.camera}/image")
+    time.sleep(0.1)
     with lock:
         elapsed = max(time.monotonic() - start, 1e-9)
         lat = sorted(stats["latencies_ms"])
