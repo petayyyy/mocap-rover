@@ -78,6 +78,38 @@ class CalibrationGraph:
             result[camera_id]=CameraPose(camera_id,tuple(float(x) for x in position),tuple(float(x) for x in R.reshape(-1)),
                 covariance=(float(np.var([x[0][0,3] for x in views])),)*3, quality=max(0.,min(1.,math.exp(-best[1]))), intrinsics_version="image-derived").validate()
         return result
+
+    def solve_bundle_adjustment(self, initial=None, loss='soft_l1', f_scale=1.0):
+        """Jointly refine each camera pose against all registered image points.
+
+        Board poses define the metric gauge.  The solver consumes only image
+        observations/K/D and fixed board transforms; no world truth is read.
+        """
+        if not self.connected(): raise ValueError("camera observation graph is disconnected")
+        try:
+            import cv2
+            from scipy.optimize import least_squares
+        except ImportError as exc: raise RuntimeError("bundle adjustment requires OpenCV and scipy") from exc
+        seed=self.solve_image_observations() if initial is None else initial
+        result={}
+        for camera_id in self.cameras:
+            edges=[e for e in self.edges if e[0]==camera_id and isinstance(e[2],dict)]
+            if not edges: raise ValueError(f"no image observations for {camera_id}")
+            pose=seed[camera_id]; R0=np.asarray(pose.rotation).reshape(3,3); rv0,_=cv2.Rodrigues(R0)
+            x0=np.r_[rv0.reshape(3),np.asarray(pose.position_m)]
+            def residual(x):
+                R_arena,_=cv2.Rodrigues(x[:3]); T_arena=np.eye(4); T_arena[:3,:3]=R_arena; T_arena[:3,3]=x[3:]
+                rows=[]
+                for _,_,p in edges:
+                    Tcb=np.linalg.inv(T_arena) @ p['board_pose']; rv,_=cv2.Rodrigues(Tcb[:3,:3])
+                    projected,_=cv2.projectPoints(p['object_points'],rv,Tcb[:3,3],p['K'],p['D'])
+                    rows.extend((projected.reshape(-1,2)-p['image_points']).reshape(-1))
+                return np.asarray(rows)
+            fit=least_squares(residual,x0,loss=loss,f_scale=f_scale,max_nfev=300)
+            R,_=cv2.Rodrigues(fit.x[:3]); rms=float(np.sqrt(np.mean(fit.fun**2)))
+            result[camera_id]=CameraPose(camera_id,tuple(float(v) for v in fit.x[3:]),tuple(float(v) for v in R.reshape(-1)),
+                covariance=(rms*rms,)*3,quality=max(0.,min(1.,math.exp(-rms))),intrinsics_version='bundle-adjusted').validate()
+        return result
     def connected(self):
         seen = set()
         if self.edges: seen.add(self.edges[0][0])

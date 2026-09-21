@@ -27,4 +27,8 @@ class SimulationS07(unittest.TestCase):
         out=g.solve_image_observations(); self.assertAlmostEqual(out["camera_1"].position_m[2],0.,places=3)
         self.assertGreater(out["camera_1"].quality,.9)
 
+    def test_bundle_adjustment_refines_all_image_observations(self):
+        from simulation.calibration_experiment import run
+        result=run(noise_px=0.15); self.assertLess(result['bundle_translation_error_m'],.01)
+
 if __name__ == "__main__": unittest.main()

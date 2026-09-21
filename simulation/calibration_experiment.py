@@ -21,12 +21,13 @@ def run(seed=42, noise_px=0.15):
         graph.add_image_observation('camera_1',f'board_{board_i}',points,noisy,K,D,board_pose)
         object_points.append((points,board_pose))
     solved=graph.solve_image_observations(reprojection_limit_px=3.)['camera_1']
-    estimated=np.asarray(solved.position_m); truth_position=truth[:3,3]
+    bundle=graph.solve_bundle_adjustment()['camera_1']
+    estimated=np.asarray(solved.position_m); bundle_estimated=np.asarray(bundle.position_m); truth_position=truth[:3,3]
     # Independent held-out board: it was never registered with the solver.
     hold_points=np.array([[x,y,0] for x in np.linspace(-.7,.7,5) for y in np.linspace(-.5,.5,4)],float); hold_board=_T(1,7,0)
     T_est=np.eye(4); T_est[:3,:3]=np.asarray(solved.rotation).reshape(3,3); T_est[:3,3]=estimated
     Tcb_truth=np.linalg.inv(truth)@hold_board; rv_truth,_=cv2.Rodrigues(Tcb_truth[:3,:3]); hold_img,_=cv2.projectPoints(hold_points,rv_truth,Tcb_truth[:3,3],K,D)
     Tcb_est=np.linalg.inv(T_est)@hold_board; rv_est,_=cv2.Rodrigues(Tcb_est[:3,:3]); hold_pred,_=cv2.projectPoints(hold_points,rv_est,Tcb_est[:3,3],K,D)
     hold_error=float(np.sqrt(np.mean(np.sum((hold_img.reshape(-1,2)-hold_pred.reshape(-1,2))**2,axis=1))))
-    return {'seed':seed,'independent_points':80,'held_out_points':20,'translation_error_m':float(np.linalg.norm(estimated-truth_position)),'held_out_reprojection_px':hold_error,
+    return {'seed':seed,'independent_points':80,'held_out_points':20,'translation_error_m':float(np.linalg.norm(estimated-truth_position)),'bundle_translation_error_m':float(np.linalg.norm(bundle_estimated-truth_position)),'held_out_reprojection_px':hold_error,
             'reprojection_quality':solved.quality,'noise_px':noise_px,'truth_used_only_by_generator_evaluator':True,'solver_reads_truth':False}
