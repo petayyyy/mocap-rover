@@ -1,7 +1,7 @@
 # Localization plan status
 
 Текущая фаза: **SIMULATION**  
-Текущий этап: **S03 — адаптер симуляции и профиль камеры**
+Текущий этап: **S04 — реестр виртуальных камер и сменяемые источники**
 Статус: **выполнен в заявленном объёме; SIM_ACCEPTED не объявлен**
 
 ## Сделано
@@ -18,6 +18,10 @@
 - `generate_world.py --profile` параметризует SDF; дефолтный baseline сохранён как 1600×1200/15 Гц. `check_sim.py` принимает `--width/--height` и выводит wall FPS; simulation FPS/RTF явно не подменяются wall FPS.
 - Добавлен `simulation/faults.py`: seedable drop, delay, reorder, clock offset/drift. Capture timestamp не перезаписывается временем доставки.
 - Добавлен отдельный `simulation/evaluator.py`; ground truth читается только evaluation-only функцией и не входит в `Observation`, `Frame` или рабочий capture contract. Detector/tracker не создавались.
+- Добавлен `localization_contracts/registry.py`: стабильные `camera_1..camera_6`, runtime topic/stream IDs, preview metadata, simulation/replay capabilities и virtual edge node. `hardware_verified` принудительно запрещён.
+- Реализованы проверки уникальности runtime ID/topic/stream ID и полной привязки шести логических камер, bounded queues с drop-oldest, reconnect с экспоненциальным backoff и версией calibration.
+- Реализованы атомарная смена источника с проверкой совместимой calibration version, независимое отключение image stream/marker observations и статусы каналов.
+- Добавлены воспроизводимые S04-тесты перестановки runtime IDs, duplicate binding, preview, bounded queue, независимого отказа канала и восстановления.
 
 ## Проверено
 
@@ -38,6 +42,17 @@ python3 -m json.tool launch/contracts.launch.json >/dev/null
 python3 -m unittest discover -s tests -v
   PASS — 11/11 tests (S01/S02 + S03 faults/evaluator)
 
+python3 -m unittest discover -s tests -v
+  PASS — 15/15 tests (S01/S02 + S03 + S04 registry/fault scenarios)
+
+gz sdf -k worlds/mocap_arena.sdf
+  PASS — Valid.
+
+./scripts/run.sh -s --headless-rendering
+/usr/bin/python3 scripts/check_sim.py --measure-seconds 3
+  PASS — six RGB streams and both world poses; snapshots: /tmp/mocap-camera-check.
+  wall_fps=3.648 for cameras 1–5 and 3.316 for camera 6; simulation FPS requires clock log, so 30 Hz is not accepted.
+
 python3 scripts/generate_world.py --profile imx296_global_30 --seed 42 --output-dir /tmp/mocap-s03-profile
   PASS — profile=imx296_global_30, 1440×1080, nominal 30 Hz; geometric coverage: 0 uncovered samples (visibility/occlusion not proven)
 
@@ -56,6 +71,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 ## Ограничения
 
 - Detector, tracker, fusion, odometry publisher, recorder и полноценный replay runtime ещё не реализованы; фиктивные детекторы не добавлялись.
+- S04 registry работает только с виртуальными sim/replay bindings; это не hardware adapter и не подтверждает физические камеры, IMX296/libcamera/udev/trigger или hardware verified capabilities.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
 - Измеренный wall FPS baseline в smoke-check ниже номинала; capture FPS, detector FPS, accepted measurement Hz, output Hz, wall time, simulation time и RTF не смешиваются и не заявляются достигнутыми. Accuracy, calibration quality и LOST runtime behavior не измерялись; SIM_ACCEPTED не объявлен.
@@ -66,8 +82,9 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Артефакты
 
-- `localization_contracts/{contracts.py,config.py,geometry.py,adapters.py}`
+- `localization_contracts/{contracts.py,config.py,geometry.py,adapters.py,registry.py}`
 - `config/contracts.json`, `launch/contracts.launch.json`, `tests/test_contracts.py`
+- `tests/test_registry.py`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`
 
@@ -77,6 +94,6 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Следующий этап
 
-**S04** — следующий промпт: `docs/localization_plan/prompts/simulation/04_registry.md` (переход не выполнялся).
+**S05** — следующий промпт: `docs/localization_plan/prompts/simulation/05_timing.md` (автоматически не начинался).
 
 Аппаратную фазу H01–H04 не начинать.
