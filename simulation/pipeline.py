@@ -4,12 +4,12 @@ from localization_contracts.fusion import PlanarFusion
 from localization_contracts.opponent import OpponentTracker, Detection2D
 from simulation.faults import FaultConfig, FaultInjector
 
-def run(duration_s=2.0, seed=42, drop_probability=0.0):
+def run(duration_s=2.0, seed=42, drop_probability=0.0, return_samples=False):
     steps=int(duration_s*30); observer=AprilTagObserver(TagConfig(calibration_version="sim-cal-1"),500,500,320,240)
     friendly=PlanarFusion(dropout_horizon_ms=200); opponent=OpponentTracker(); accepted=0; opponent_updates=0; outputs=0; lost=0
     frames=[{"capture_time_ns":i*33_333_333,"sequence":i} for i in range(steps)]
     delivered=FaultInjector(FaultConfig(seed=seed,drop_probability=drop_probability)).apply(frames)
-    by_seq={f["sequence"]:f for f in delivered}
+    by_seq={f["sequence"]:f for f in delivered}; sample_outputs=[]
     for i in range(steps):
         stamp=i*33_333_333
         if i in by_seq:
@@ -19,7 +19,19 @@ def run(duration_s=2.0, seed=42, drop_probability=0.0):
             if o and friendly.update(o): accepted+=1
             if i%2==0:
                 if opponent.update(Detection2D("camera_1",i,stamp,(x+20,200,x+80,280),.9)): opponent_updates+=1
-        if friendly.publish(stamp): outputs+=1
-        p=friendly.publish(stamp)
+        p=friendly.publish(stamp); sample_outputs.append((stamp,p))
+        if p: outputs+=1
         if p and p["tracking_state"]=="LOST": lost+=1
-    return {"duration_sim_s":duration_s,"friendly_measurements":accepted,"friendly_output":outputs,"opponent_measurements":opponent_updates,"opponent_hz":opponent_updates/max(duration_s,1e-9),"friendly_hz":accepted/max(duration_s,1e-9),"lost_publishes":lost,"dropped_frames":steps-len(delivered),"seed":seed,"ground_truth_used_by_runtime":False}
+    result={"duration_sim_s":duration_s,"friendly_measurements":accepted,"friendly_output":outputs,"opponent_measurements":opponent_updates,"opponent_hz":opponent_updates/max(duration_s,1e-9),"friendly_hz":accepted/max(duration_s,1e-9),"lost_publishes":lost,"dropped_frames":steps-len(delivered),"seed":seed,"ground_truth_used_by_runtime":False}
+    if return_samples: result["samples"]=sample_outputs
+    return result
+
+def evaluate_samples(result):
+    errors=[]; ages=[]
+    for stamp, item in result.get("samples",[]):
+        if not item: continue
+        state=item["state"]; truth_x=.12+(stamp/33_333_333)*.0016; truth_y=0.0
+        errors.append(((state.x-truth_x)**2+(state.y-truth_y)**2)**.5); ages.append(item["measurement_age_ms"])
+    errors.sort(); ages.sort()
+    at=lambda a,p: a[min(len(a)-1,int((len(a)-1)*p))] if a else None
+    return {"matched":len(errors),"xy_p95_m":at(errors,.95),"age_p95_ms":at(ages,.95),"truth_used_only_here":True}

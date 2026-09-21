@@ -127,6 +127,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S13 dashboard endpoint реализован, но полноценный live Gazebo data wiring, визуальный screenshot walkthrough и six-preview rendering ещё не подтверждены.
 - S14 benchmark не является end-to-end Gazebo/30-minute acceptance; текущий Gazebo baseline wall FPS ниже nominal, поэтому требования frequency/age не приняты.
 - Synthetic pipeline acceptance regression проходит nominal/drop scenarios, но не заменяет Gazebo image-based accuracy или wall-time 30-minute acceptance.
+- Pipeline evaluator-only hold-out run: 60 matched samples, XY P95 ≈0 m and age P95 0 ms; these synthetic metrics are not presented as Gazebo or hardware performance.
 - Добавлен асинхронный planar `PlanarFusion`: timestamped observations, dedup/out-of-order rejection, circular yaw, prediction на publish tick, counters, COASTING/LOST и рост covariance.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.

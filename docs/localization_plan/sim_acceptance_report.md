@@ -8,7 +8,7 @@
 | Timing/replay contracts | PASS (boundary) | 2 timing tests; no hardware clock/trigger claim |
 | Intrinsics/extrinsics reports | PARTIAL | import/round-trip and graph checks; no image-derived BA accuracy |
 | AprilTag observation contract | PARTIAL | synthetic corner geometry; no detector/image recall benchmark |
-| Friendly fusion degradation | PARTIAL | synthetic end-to-end pipeline passes nominal/drop tests; no Gazebo image accuracy |
+| Friendly fusion degradation | PARTIAL | synthetic evaluator: 60 matched, XY P95 ~0 m, age P95 0 ms; no Gazebo image accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline measures >=10 Hz; no trained detector, multi-camera ID-switch set or wall-time camera pipeline |
 | Settings/debug UI | PARTIAL | localhost `/` and `/api/status` smoke-check pass; no live six-preview wiring or visual walkthrough |
 | 30-minute six-camera end-to-end run | FAIL | current baseline wall FPS ~3.316–3.648 and no full pipeline |
@@ -19,6 +19,11 @@ Commands:
 ```text
 python3 -m unittest discover -s tests -v  # PASS — 32/32 including dashboard smoke-check
 python3 -m unittest tests.test_pipeline -v # PASS — synthetic nominal/drop acceptance regression
+python3 - <<'PY'                            # evaluator-only hold-out metrics
+from simulation.pipeline import run, evaluate_samples
+print(evaluate_samples(run(2, return_samples=True)))
+PY
+  # matched=60, xy_p95_m≈0, age_p95_ms=0; truth is not runtime input
 gz sdf -k worlds/mocap_arena.sdf          # PASS — Valid
 python3 - <<'PY'                            # S14 bounded synthetic benchmark
 from simulation.benchmark import run
