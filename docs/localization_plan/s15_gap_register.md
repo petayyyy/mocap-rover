@@ -6,11 +6,11 @@ to hardware verification.
 
 | # | Required scenario | Evidence | Gate |
 |---|---|---|---|
-| 1 | 10-minute rest/motion trajectories | short synthetic pipeline only; no 10-minute trajectory manifest | NOT_ACCEPTED |
+| 1 | 10-minute rest/motion trajectories | `simulation/scenarios.py` generates 600 s rest/straight/circle/eight episodes; no detector accuracy run | PARTIAL |
 | 2 | seams, corners, field boundaries, partial overlap | geometric baseline coverage and camera snapshots; no detector seam accuracy | PARTIAL |
-| 3 | five opponent styles/lights/brightness | config has one active scenario style; no detector sweep | NOT_ACCEPTED |
+| 3 | five opponent styles/lights/brightness | episode manifest covers five styles and brightness values; no detector sweep | PARTIAL |
 | 4 | independent mounting seeds/ideal control | S03 seed/fault infrastructure and baseline geometry | PARTIAL |
-| 5 | close/crossing rovers, hidden tag, similar materials | tracker unit tests only; no rendered crossing/occlusion dataset | NOT_ACCEPTED |
+| 5 | close/crossing rovers, hidden tag, similar materials | episode manifest carries crossing/occlusion labels; no rendered detector dataset | PARTIAL |
 | 6 | drops 5/10/30%, reorder, 20/50/100/200 ms delay | 11-scenario `acceptance_matrix.py`, reproducible | PASS (boundary) |
 | 7 | camera disable/restore/runtime remap/wrong calibration | S04 registry tests and camera_6 outage; no Gazebo wrong-calibration accuracy | PARTIAL |
 | 8 | clock drift/jump, pause/reset, seek, exposure variation | clock offset/drift and replay reset rows; no Gazebo pause/seek exposure episode | PARTIAL |

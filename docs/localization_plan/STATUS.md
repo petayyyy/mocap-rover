@@ -143,6 +143,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Visual inspection of converted `camera_1.png` and six-view montage confirmed rendered Gazebo imagery and visible tag rover/AprilTag; this does not establish detector recall or metric accuracy.
 - Research comparison report expanded with explicit matrix for all required items 1–6 from `04_implementation_plan.md`; unavailable alternatives remain NOT_ACCEPTED rather than inferred.
 - Added `simulation/acceptance_matrix.py`: reproducible 10-scenario matrix for 5/10/30% drops, 20/50/100/200 ms delay, reorder, clock/replay boundary and camera_6 outage.
+- Added `simulation/scenarios.py`: reproducible rest/straight/circle/eight episodes across independent seeds, five styles, lighting/brightness and occlusion/crossing labels; truth remains evaluation-only.
 - Clock/replay matrix row now executes `ReplayScheduler.schedule(reset=True)` and asserts an explicit `new_session` marker before replay frames.
 - Delay rows in the matrix now record observed transport delay and assert it stays within each configured 20/50/100/200 ms bound.
 - Matrix now also measures a 5 ms offset + 20 ppm drift case (`clock_delta_ns=5,020,000`) and checks replay reset separately.
@@ -187,6 +188,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - `docs/localization_plan/operator_runbook_sim.md`
 - `simulation/pipeline.py`, `tests/test_pipeline.py`
 - `simulation/acceptance_matrix.py`, `tests/test_acceptance_matrix.py`
+- `simulation/scenarios.py`, `tests/test_scenarios_manifest.py`
 - `launch/simulation.launch.json`, `launch/replay.launch.json`, `tests/test_launch_manifests.py`
 - `scripts/run_acceptance.py`, `tests/test_acceptance_runner.py`
 - `docs/localization_plan/s15_gap_register.md`
