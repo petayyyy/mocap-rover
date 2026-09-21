@@ -5,7 +5,7 @@
 | Критерий | Результат | Доказательство/ограничение |
 |---|---|---|
 | S04 registry/fault isolation | PASS | 4 registry tests; bounded queues, reconnect and independent channels |
-| Timing/replay contracts | PASS (boundary) | timing tests and 10-scenario fault matrix; no hardware clock/trigger claim |
+| Timing/replay contracts | PASS (boundary) | timing tests and 10-scenario fault matrix with explicit replay reset session; no hardware clock/trigger claim |
 | Intrinsics/extrinsics reports | PARTIAL | import/round-trip and graph checks; no image-derived BA accuracy |
 | AprilTag observation contract | PARTIAL | synthetic corner geometry; installed OpenCV AprilTag 36h11 probe segfaulted (exit 139), so no detector/image recall benchmark is claimed |
 | Friendly fusion degradation | PARTIAL | synthetic evaluator: 60 matched, XY P95 ~0 m, age P95 0 ms; all six registry channels exercised, camera_6 outage isolated; no Gazebo image accuracy |

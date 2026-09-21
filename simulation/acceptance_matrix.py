@@ -1,6 +1,7 @@
 """Reproducible S15 fault/scenario matrix over simulation/replay boundaries."""
 from simulation.faults import FaultConfig, FaultInjector
 from simulation.pipeline import run
+from localization_contracts.timing import ReplayLog, ReplayScheduler, TimingMetadata
 def run_matrix(seed=42):
     rows=[]
     for drop in (.05,.10,.30):
@@ -11,6 +12,8 @@ def run_matrix(seed=42):
         out=FaultInjector(FaultConfig(seed=seed,max_delay_ms=delay)).apply([{'capture_time_ns':0,'sequence':0}])
         rows.append({'scenario':f'delay_{delay}ms','transport_delay_bounded':out[0]['receive_time_ns']>=0,'pass':True})
     rows.append({'scenario':'reorder','pass':len(FaultInjector(FaultConfig(seed=seed,reorder_probability=1)).apply([{'capture_time_ns':i,'sequence':i} for i in range(3)]))==3})
-    rows.append({'scenario':'clock_drift_jump_replay_reset','pass':run(1,seed=seed)['ground_truth_used_by_runtime'] is False})
+    log=ReplayLog([TimingMetadata(0,0,1,2,'replay',0,0)],'cfg','cal','model')
+    schedule=ReplayScheduler(log).schedule(reset=True)
+    rows.append({'scenario':'clock_drift_jump_replay_reset','new_session':schedule[0][0]=='new_session','pass':schedule[0][0]=='new_session' and run(1,seed=seed)['ground_truth_used_by_runtime'] is False})
     rows.append({'scenario':'camera_6_disable_restore','pass':run(2,seed=seed)['camera_drops']['camera_6']>0})
     return {'seed':seed,'scenarios':rows,'all_pass':all(x['pass'] for x in rows),'truth_used_by_runtime':False}

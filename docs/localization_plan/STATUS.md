@@ -143,6 +143,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - Visual inspection of converted `camera_1.png` and six-view montage confirmed rendered Gazebo imagery and visible tag rover/AprilTag; this does not establish detector recall or metric accuracy.
 - Research comparison report expanded with explicit matrix for all required items 1–6 from `04_implementation_plan.md`; unavailable alternatives remain NOT_ACCEPTED rather than inferred.
 - Added `simulation/acceptance_matrix.py`: reproducible 10-scenario matrix for 5/10/30% drops, 20/50/100/200 ms delay, reorder, clock/replay boundary and camera_6 outage.
+- Clock/replay matrix row now executes `ReplayScheduler.schedule(reset=True)` and asserts an explicit `new_session` marker before replay frames.
 - Added declarative `launch/simulation.launch.json` and `launch/replay.launch.json`; both use the shared registry, do not connect physical devices and explicitly set `hardware_verified: false`.
 - Added `scripts/run_acceptance.py`: deterministic S15 manifest with config digest, seed, pipeline/evaluator/fault-matrix results and explicit `sim_accepted: false` gate.
 - Acceptance runner now writes a bounded `ReplayLog` recording with config/calibration/model hashes and timing metadata, and records its path/frame count in the manifest.
