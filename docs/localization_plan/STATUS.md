@@ -1,7 +1,7 @@
 # Localization plan status
 
 Текущая фаза: **SIMULATION**  
-Текущий этап: **S10 — данные и обучение второго ровера**
+Текущий этап: **S11 — второй ровер**
 Статус: **выполнен в заявленном объёме; SIM_ACCEPTED не объявлен**
 
 ## Сделано
@@ -29,6 +29,7 @@
 - Добавлены `CalibrationGraph` и `CalibrationActivation`: связность графа камер/мишеней, минимальное число точек, gauge boundary, intrinsics version, quality/covariance и атомарная активация полного набора.
 - Недостаточные или несвязные наблюдения отклоняются; solver boundary не читает Gazebo ground truth.
 - Добавлен dependency-free AprilTag 36h11 observer для полных synthetic/replay detections: configurable IDs/0.40 m size, K geometry, timestamps, calibration version, quality/covariance и reject invalid ID/size.
+- Добавлен `OpponentTracker` с confidence gating, подтверждением по истории, contact-point placeholder, velocity, yaw validity и timeout-based LOST; identity не выводится только из отсутствия тега.
 
 ## Проверено
 
@@ -67,6 +68,9 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s tests -v
   PASS — 25/25 tests (S01–S09; asynchronous fusion, dedup, out-of-order, coasting and lost)
 
+python3 -m unittest discover -s tests -v
+  PASS — 28/28 tests (S01–S11; opponent confidence, confirmation and timeout)
+
 gz sdf -k worlds/mocap_arena.sdf
   PASS — Valid.
 
@@ -98,6 +102,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S06 calibration solver/ChArUco image acquisition не подключены; report API фиксирует held-out fields, но не заявляет измеренную оптическую точность.
 - S07 не заявляет восстановленную метрическую точность без реальных image-derived target observations; полноценный robust BA и Gazebo image solver остаются дальнейшей работой.
 - S08 observer принимает image-derived corner detections, но detector backend/OpenCV AprilTag runtime, six-camera Gazebo image pipeline, blur/occlusion recall и measured Hz пока не подключены; это не hardware readiness.
+- S11 detector weights, multi-camera geometric association, GPU benchmark и ≥10 Hz wall-time acceptance ещё не реализованы.
 - Добавлен асинхронный planar `PlanarFusion`: timestamped observations, dedup/out-of-order rejection, circular yaw, prediction на publish tick, counters, COASTING/LOST и рост covariance.
 - ROS message packages и реальный Gazebo capture adapter пока отсутствуют; launch — декларативный контракт.
 - Gazebo S03 adapter остаётся dependency-free boundary/профилем: полноценный ROS bridge, CameraInfo runtime capture, simulation-time/RTF counter и калибровочная мишень с реальной наблюдаемостью ещё не реализованы.
@@ -117,6 +122,7 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - `tests/test_extrinsics.py`
 - `tests/test_apriltag.py`
 - `tests/test_fusion.py`
+- `tests/test_opponent.py`
 - [sim_baseline_report.md](sim_baseline_report.md)
 - `config/simulation_profiles.json`, `simulation/{faults.py,evaluator.py}`, `tests/test_simulation.py`
 
@@ -126,6 +132,6 @@ Gazebo baseline не изменён; SDF проверен после измен�
 
 ## Следующий этап
 
-**S11** — следующий промпт: `docs/localization_plan/prompts/simulation/11_opponent.md` (автоматически не начинался).
+**S12** — следующий промпт: `docs/localization_plan/prompts/simulation/12_settings_ui.md` (автоматически не начинался).
 
 Аппаратную фазу H01–H04 не начинать.
