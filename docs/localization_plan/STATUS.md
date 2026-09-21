@@ -19,6 +19,7 @@
 - [x] Добавлен `MultiCameraImagePipeline` поверх независимых camera pipelines: conservative quality selection, disable/enable одного image channel и сохранение остальных outputs.
 - [x] Добавлен ROS-independent `TimedOdometryPublisher`: отдельные 30 Hz ticks, catch-up при задержке, frame semantics и явный LOST; `rclpy/nav_msgs` в окружении отсутствуют, поэтому ROS node не заявлен.
 - [x] S10 добавлен reproducible image/YOLO-label builder (`simulation.dataset.build_image_dataset`): PNGs, labels, session-level train/val/test split and leakage-safe manifest; weights/training status remain explicitly unset.
+- [x] S11 добавлен explicit `YoloRuntimeStatus`/`YoloDetector` boundary: missing `ultralytics`/weights fail clearly and never synthesize detections; current environment reports unavailable.
 - [x] Dashboard теперь имеет dynamic status polling (500 ms), XY map marker и явный LOST color path; это UI capability smoke coverage, не подтверждение live Gazebo data wiring.
 - [x] Image pipeline теперь требует и принимает live `/cameras/camera_N/camera_info` K/D перед PnP; отсутствие CameraInfo приводит к диагностической ошибке.
 - [x] Detector добавил bounded raw+Otsu contrast path; на сохранённом Gazebo snapshot crop этот путь воспроизводит ID 0, но полный live run после текущего SDF rendering пока остаётся `detections=0`.
@@ -56,7 +57,7 @@
 - Недостаточные или несвязные наблюдения отклоняются; solver boundary не читает Gazebo ground truth.
 - Добавлен dependency-free AprilTag 36h11 observer для полных synthetic/replay detections: configurable IDs/0.40 m size, K geometry, timestamps, calibration version, quality/covariance и reject invalid ID/size.
 - Observer намеренно публикует только planar geometry: `pose_6d_valid=False`, `attitude_state=unknown`; PnP и внешние transforms остаются незавершённым SIM-критерием.
-- `PnpAprilTagObserver` теперь отдельно публикует 6D-valid pose только после успешного PnP/reprojection check; detector, Gazebo image capture и ROS odometry к нему пока не подключены.
+- `PnpAprilTagObserver` теперь отдельно публикует 6D-valid pose только после успешного PnP/reprojection check; Gazebo image capture подключён для camera_1 smoke path, ROS odometry adapter пока не подключён.
 - Добавлен `OpponentTracker` с confidence gating, подтверждением по истории, contact-point placeholder, velocity, yaw validity и timeout-based LOST; identity не выводится только из отсутствия тега.
 - Добавлен `MultiCameraAssociator`: один выбранный candidate на timestamp, temporal/pixel gating, отсутствие duplicate tracks и измеряемый `id_switches` counter.
 - Added height-aware bbox contact-point projection to arena ground plane with explicit height uncertainty; bbox center is not treated as body center.
@@ -124,7 +125,7 @@ python3 -m unittest discover -s tests -v
   PASS — 31/31 tests (S01–S14; bounded benchmark report)
 
 python3 -m unittest discover -s tests -v
-  PASS — 66/66 tests (S01–S15 acceptance artifacts, independent odometry publisher/LOST regression, six-camera image pipeline disable/selection regression, one-camera image→PnP→fusion/status regression, Gazebo snapshot contrast detector regression, reproducible image/label split regression, metric opponent handoff/association regressions, image-derived calibration PnP regression, real image detector→PnP path, innovation-gate, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
+  PASS — 67/67 tests (S01–S15 acceptance artifacts, explicit YOLO unavailable boundary, independent odometry publisher/LOST regression, six-camera image pipeline disable/selection regression, one-camera image→PnP→fusion/status regression, Gazebo snapshot contrast detector regression, reproducible image/label split regression, metric opponent handoff/association regressions, image-derived calibration PnP regression, real image detector→PnP path, innovation-gate, PnP transform/reprojection regression, review regressions, runnable snapshot dashboard, pipeline evaluator, multi-camera association/selection, contact projection, TrackStatus contract, YAML calibration round-trip, replay provenance, soak, fault matrix, launch manifests, scenario manifest, stale revision and calibration reset)
 
 python3 -m unittest tests.test_dashboard -v
   PASS — localhost HTML/status smoke-check
@@ -159,9 +160,9 @@ Gazebo baseline не изменён; SDF проверен после измен�
 - S05 time quality проверяется синтетическими timestamps; real driver timestamps, PTP/NTP, trigger и межузловая аппаратная синхронизация не подтверждены.
 - S06 calibration solver/ChArUco image acquisition не подключены; report API фиксирует held-out fields, но не заявляет измеренную оптическую точность.
 - S07 не заявляет восстановленную метрическую точность без реальных image-derived target observations; полноценный robust BA и Gazebo image solver остаются дальнейшей работой.
-- S08 observer принимает image-derived corner detections, но detector backend/OpenCV AprilTag runtime, six-camera Gazebo image pipeline, blur/occlusion recall и measured Hz пока не подключены; это не hardware readiness.
-- OpenCV AprilTag 36h11 probe was attempted but crashed natively (exit 139) in the installed build; no crashing detector backend was retained or presented as verified.
-- S11 detector weights, multi-camera geometric association, GPU benchmark и ≥10 Hz wall-time acceptance ещё не реализованы.
+- S08 observer и OpenCV detector подключены к one-camera Gazebo image/CameraInfo smoke path; six-camera live image recall, blur/occlusion recall и measured trajectory accuracy пока не приняты; это не hardware readiness.
+- Legacy detector API probe ранее crash-нулся (exit 139), но изолированный `cv2.aruco.detectMarkers` backend выполняет текущий baseline smoke path; shutdown GIL issue остаётся ограничением.
+- S11 detector weights/runtime отсутствуют; metric association boundary и image/label dataset готовы, GPU benchmark, trained inference и ≥10 Hz wall-time acceptance не реализованы.
 - S11 multi-camera association boundary и ID-switch counter покрыты тестом; detector weights, full projection/triangulation and wall-time acceptance remain unverified.
 - S12 browser UI/E2E visual walkthrough не реализованы; backend не предоставляет hardware capability и не выполняет shell commands.
 - S13 dashboard endpoint реализован, но полноценный live Gazebo data wiring, визуальный screenshot walkthrough и six-preview rendering ещё не подтверждены.
