@@ -10,7 +10,8 @@ def run_matrix(seed=42):
         rows.append({'scenario':f'drop_{int(drop*100)}pct','delivered':len(out),'dropped':100-len(out),'pass':len(out)<100})
     for delay in (20,50,100,200):
         out=FaultInjector(FaultConfig(seed=seed,max_delay_ms=delay)).apply([{'capture_time_ns':0,'sequence':0}])
-        rows.append({'scenario':f'delay_{delay}ms','transport_delay_bounded':out[0]['receive_time_ns']>=0,'pass':True})
+        observed=out[0]['receive_time_ns']
+        rows.append({'scenario':f'delay_{delay}ms','observed_delay_ms':observed/1e6,'transport_delay_bounded':0<=observed<=delay*1e6,'pass':0<=observed<=delay*1e6})
     rows.append({'scenario':'reorder','pass':len(FaultInjector(FaultConfig(seed=seed,reorder_probability=1)).apply([{'capture_time_ns':i,'sequence':i} for i in range(3)]))==3})
     log=ReplayLog([TimingMetadata(0,0,1,2,'replay',0,0)],'cfg','cal','model')
     schedule=ReplayScheduler(log).schedule(reset=True)
