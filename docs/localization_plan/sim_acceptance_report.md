@@ -11,7 +11,7 @@
 | Friendly fusion degradation | PARTIAL | synthetic evaluator: 60 matched, XY P95 ~0 m, age P95 0 ms; no Gazebo image accuracy |
 | Opponent >=10 Hz and ID switches | PARTIAL | synthetic pipeline measures >=10 Hz; no trained detector, multi-camera ID-switch set or wall-time camera pipeline |
 | Settings/debug UI | PARTIAL | localhost `/` and `/api/status` smoke-check pass; no live six-preview wiring or visual walkthrough |
-| 30-minute six-camera end-to-end run | FAIL | current baseline wall FPS ~3.316–3.648 and no full pipeline |
+| 30-minute six-camera end-to-end run | PARTIAL | 30-minute simulation-time soak is bounded; real wall-time Gazebo end-to-end run still not passed |
 | Gazebo baseline SDF | PASS | `gz sdf -k worlds/mocap_arena.sdf` => Valid |
 
 Commands:
@@ -29,6 +29,11 @@ python3 - <<'PY'                            # S14 bounded synthetic benchmark
 from simulation.benchmark import run
 print(run(.05))
 PY
+python3 - <<'PY'                            # 30-minute simulation-time soak
+from simulation.benchmark import soak
+print(soak(30, drop_period=17))
+PY
+  # steps=27000, bounded=true, drops=1588, raw_frames_retained=false
 ```
 
 Ground truth is evaluation-only. No physical cameras, IMX296/libcamera, udev,
