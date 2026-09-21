@@ -2,11 +2,13 @@
 """Run the real simulation image -> detector -> PnP path on Gazebo topics.
 
 This intentionally does not subscribe to world pose topics and does not use
-ground truth.  Camera transforms and K/D are loaded from the calibration
-snapshot, so the result is a runtime image-path smoke check, not acceptance.
+ground truth.  Camera transforms come from the simulation calibration snapshot;
+K/D are taken from the live CameraInfo topic, so the result is a runtime
+image-path smoke check, not acceptance.
 """
 import argparse
 import json
+import os
 import sys
 import threading
 import time
@@ -14,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 from gz.msgs10.image_pb2 import Image
+from gz.msgs10.camera_info_pb2 import CameraInfo
 from gz.transport13 import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -36,16 +39,23 @@ def main():
     args = p.parse_args()
     config = json.loads(Path(args.config).read_text())
     camera = next(c for c in config["cameras"] if c["name"] == args.camera)
-    K = np.asarray(camera["K"], dtype=float).reshape(3, 3)
-    observer = PnpAprilTagObserver(
-        TagConfig(calibration_version="config-cameras-json"), K, camera["D"],
-        {"rotation": camera["R_world_optical"], "translation": camera["position_world"]},
-        {"rotation": config["tag"]["R_base_tag"], "translation": config["tag"]["T_base_tag_translation"]},
-    )
+    observer = None
     detector = AprilTagImageDetector()
-    node = Node(); done = threading.Event(); lock = threading.Lock()
+    node = Node(); info_ready = threading.Event(); lock = threading.Lock()
     stats = {"frames": 0, "detections": 0, "accepted": 0, "latencies_ms": [], "ids": {}}
     start = time.monotonic()
+
+    def info_callback(msg):
+        nonlocal observer
+        k = list(msg.intrinsics.k)
+        if len(k) != 9:
+            return
+        observer = PnpAprilTagObserver(
+            TagConfig(calibration_version="gazebo-camera-info"), np.asarray(k).reshape(3, 3), list(msg.distortion.k),
+            {"rotation": camera["R_world_optical"], "translation": camera["position_world"]},
+            {"rotation": config["tag"]["R_base_tag"], "translation": config["tag"]["T_base_tag_translation"]},
+        )
+        info_ready.set()
 
     def callback(msg):
         now = time.monotonic_ns()
@@ -61,16 +71,21 @@ def main():
                 stats["ids"][str(hit.tag_id)] = stats["ids"].get(str(hit.tag_id), 0) + 1
                 detection = Detection(args.camera, stats["frames"], hit.tag_id, hit.corners,
                     capture, now, time.monotonic_ns())
-                if observer.observe(detection) is not None:
+                if observer is not None and observer.observe(detection) is not None:
                     stats["accepted"] += 1
             stats["latencies_ms"].append((time.monotonic_ns() - now) / 1e6)
 
-    if not node.subscribe(Image, f"/cameras/{args.camera}/image", callback):
+    info_topic=f"/cameras/{args.camera}/camera_info"; image_topic=f"/cameras/{args.camera}/image"
+    if not node.subscribe(CameraInfo, info_topic, info_callback):
+        raise RuntimeError("unable to subscribe to camera_info topic")
+    if not node.subscribe(Image, image_topic, callback):
         raise RuntimeError("unable to subscribe to image topic")
+    if not info_ready.wait(10):
+        raise RuntimeError("CameraInfo was not received")
     time.sleep(args.seconds)
     # Detach the callback before interpreter teardown; gz-transport otherwise
     # can destroy pybind objects from a worker thread and abort on GIL checks.
-    node.unsubscribe(f"/cameras/{args.camera}/image")
+    node.unsubscribe(info_topic); node.unsubscribe(image_topic)
     time.sleep(0.1)
     with lock:
         elapsed = max(time.monotonic() - start, 1e-9)
@@ -78,7 +93,11 @@ def main():
         p95 = lat[min(len(lat) - 1, int(len(lat) * .95))] if lat else None
         print(json.dumps({**stats, "wall_seconds": elapsed, "wall_fps": stats["frames"] / elapsed,
             "detector_p95_ms": p95, "backend": detector.backend,
-            "ground_truth_used_by_runtime": False, "hardware_verified": False}, sort_keys=True))
+            "ground_truth_used_by_runtime": False, "hardware_verified": False}, sort_keys=True), flush=True)
+    # gz-transport 13 can still tear down a worker-owned pybind object after
+    # unsubscribe. Exit after the flushed report to keep this diagnostic's
+    # result usable; the Gazebo shutdown issue remains documented separately.
+    os._exit(0)
 
 
 if __name__ == "__main__":

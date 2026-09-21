@@ -17,6 +17,7 @@
 - [x] S11 correction: opponent tracker accepts metric contact points, rejects non-monotonic timestamps, and multi-camera association gates metric positions; camera handoff no longer counts as an ID switch (`localization_contracts/opponent.py`).
 - [x] S10 добавлен reproducible image/YOLO-label builder (`simulation.dataset.build_image_dataset`): PNGs, labels, session-level train/val/test split and leakage-safe manifest; weights/training status remain explicitly unset.
 - [x] Dashboard теперь имеет dynamic status polling (500 ms), XY map marker и явный LOST color path; это UI capability smoke coverage, не подтверждение live Gazebo data wiring.
+- [x] Image pipeline теперь требует и принимает live `/cameras/camera_N/camera_info` K/D перед PnP; отсутствие CameraInfo приводит к диагностической ошибке.
 - [ ] Не закрыто: настоящий detector, PnP/K/D, T_arena_camera/T_base_marker и ROS 2 Odometry.
 - [ ] Не закрыто: image-derived calibration/BA, шесть live image channels, настоящий YOLO и 30-minute wall-time profile.
 - [ ] S07 remains partial: current solver is robust per-view PnP aggregation, not joint bundle adjustment; held-out calibration accuracy and hidden-mount-error recovery remain unverified.
