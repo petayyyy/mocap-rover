@@ -37,6 +37,9 @@ from gz.transport13 import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from analyze_tag_coverage import analyze
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from localization_contracts.camera_model import CameraModel, infer_model
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORLD_SIZE = 12.0
@@ -100,22 +103,34 @@ def export_camera_config(world_path, destination):
             0.0, text_float(intrinsics, "fy"), text_float(intrinsics, "cy"),
             0.0, 0.0, 1.0,
         ]
-        d = [
-            text_float(distortion, "k1"), text_float(distortion, "k2"),
-            text_float(distortion, "p1"), text_float(distortion, "p2"),
-            text_float(distortion, "k3"),
-        ]
+        # A camera with no <distortion> renders an ideal gnomonical projection,
+        # so the runtime must solve with zero distortion.  Copying non-zero
+        # coefficients out of the world is only safe when the renderer and
+        # OpenCV agree on the model, which validate() below checks.
+        if distortion is None:
+            d = [0.0] * 5
+        else:
+            d = [
+                text_float(distortion, "k1"), text_float(distortion, "k2"),
+                text_float(distortion, "p1"), text_float(distortion, "p2"),
+                text_float(distortion, "k3"),
+            ]
         cameras.append({
             "name": name,
             "position_world": pose[:3],
             "R_world_optical": matmul(rotation(*pose[3:]), gazebo_from_optical),
             "K": k,
             "D": d,
+            "distortion_model": infer_model(d),
             "image_size": [int(image.findtext("width")), int(image.findtext("height"))],
             "horizontal_fov": text_float(camera, "horizontal_fov"),
             "image_topic": sensor.findtext("topic"),
             "camera_info_topic": camera.findtext("camera_info_topic"),
         })
+    # Refuse to start a run on a projection model that cannot reach its own
+    # image corners: PnP would fail silently over most of every frame.
+    for entry in cameras:
+        CameraModel.from_config(entry).validate().raise_for_status()
     digest = hashlib.sha256(Path(world_path).read_bytes()).hexdigest()[:12]
     config = {
         "world": world.get("name"),
@@ -125,6 +140,7 @@ def export_camera_config(world_path, destination):
         "cameras": cameras,
         "role": "image_calibrated",
         "calibration_version": f"gazebo-l2-layout@{digest}",
+        "camera_model_validated": True,
     }
     Path(destination).write_text(json.dumps(config, indent=2) + "\n")
     return config
@@ -211,6 +227,24 @@ def main():
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     except Exception:
         revision = None
+    # A revision alone lies whenever the hot path is edited without a commit,
+    # which is exactly how the 20260925 runs became incomparable.  Record the
+    # dirty flag and hash every file that decides what the run measures.
+    try:
+        dirty = bool(subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=ROOT, text=True).strip())
+    except Exception:
+        dirty = None
+    code_digest = {}
+    for relative in sorted(
+        [p.relative_to(ROOT) for p in (ROOT / "localization_contracts").glob("*.py")]
+        + [Path("scripts/run_localization.py"), Path("scripts/run_tag_coverage_experiment.py"),
+           Path("scripts/analyze_tag_coverage.py")]
+    ):
+        candidate = ROOT / relative
+        if candidate.exists():
+            code_digest[str(relative)] = hashlib.sha256(
+                candidate.read_bytes()).hexdigest()[:12]
     manifest = {
         "schema": "tag-coverage-experiment-v1",
         "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -234,6 +268,8 @@ def main():
             "min_side_px": args.tag_min_side_px,
         },
         "git_revision": revision,
+        "git_dirty": dirty,
+        "code_digest": code_digest,
     }
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 

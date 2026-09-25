@@ -4829,13 +4829,11 @@
         <falloff>1.2</falloff>
       </spot>
     </light>
-    <!-- IMX219-160 +3, +3; vertical. Optical axis is link-local +X. -->
     <model name="camera_1">
       <static>true</static>
       <pose>9 9 2.90 0 1.5707963267948966 0</pose>
       <link name="camera_link">
         <visual name="rpi_camera_visual">
-          <!-- Source: /home/popka/Drone/mocap-rover/models/rpi_camera -->
           <pose>0 0 0 0 0 -1.5707963267948966</pose>
           <geometry>
             <mesh>
@@ -4849,7 +4847,6 @@
           <topic>/cameras/camera_1/image</topic>
           <visualize>true</visualize>
           <camera>
-            <!-- 105.314 deg, derived from fx=488.3109 px at 1280 px width. -->
             <horizontal_fov>1.8380719996523274</horizontal_fov>
             <camera_info_topic>/cameras/camera_1/camera_info</camera_info_topic>
             <image>
@@ -4861,17 +4858,9 @@
               <near>0.03</near>
               <far>20</far>
             </clip>
-            <distortion>
-              <k1>-0.3112978153440105</k1>
-              <k2>0.15431516540306534</k2>
-              <k3>-0.05947053168235783</k3>
-              <p1>-0.0014882893582261717</p1>
-              <p2>0.0022164735436313475</p2>
-              <center>0.5061304061577742 0.5348071768721625</center>
-            </distortion>
             <lens>
               <type>gnomonical</type>
-              <scale_to_hfov>true</scale_to_hfov>
+              <scale_to_hfov>false</scale_to_hfov>
               <intrinsics>
                 <fx>488.31088823052755</fx>
                 <fy>493.6294483217684</fy>
@@ -4892,13 +4881,11 @@
         </sensor>
       </link>
     </model>
-    <!-- IMX219-160 -3, +3; vertical. Optical axis is link-local +X. -->
     <model name="camera_2">
       <static>true</static>
       <pose>3 9 2.90 0 1.5707963267948966 0</pose>
       <link name="camera_link">
         <visual name="rpi_camera_visual">
-          <!-- Source: /home/popka/Drone/mocap-rover/models/rpi_camera -->
           <pose>0 0 0 0 0 -1.5707963267948966</pose>
           <geometry>
             <mesh>
@@ -4912,7 +4899,6 @@
           <topic>/cameras/camera_2/image</topic>
           <visualize>true</visualize>
           <camera>
-            <!-- 105.314 deg, derived from fx=488.3109 px at 1280 px width. -->
             <horizontal_fov>1.8380719996523274</horizontal_fov>
             <camera_info_topic>/cameras/camera_2/camera_info</camera_info_topic>
             <image>
@@ -4924,17 +4910,9 @@
               <near>0.03</near>
               <far>20</far>
             </clip>
-            <distortion>
-              <k1>-0.3112978153440105</k1>
-              <k2>0.15431516540306534</k2>
-              <k3>-0.05947053168235783</k3>
-              <p1>-0.0014882893582261717</p1>
-              <p2>0.0022164735436313475</p2>
-              <center>0.5061304061577742 0.5348071768721625</center>
-            </distortion>
             <lens>
               <type>gnomonical</type>
-              <scale_to_hfov>true</scale_to_hfov>
+              <scale_to_hfov>false</scale_to_hfov>
               <intrinsics>
                 <fx>488.31088823052755</fx>
                 <fy>493.6294483217684</fy>
@@ -4955,13 +4933,11 @@
         </sensor>
       </link>
     </model>
-    <!-- IMX219-160 -3, -3; vertical. Optical axis is link-local +X. -->
     <model name="camera_3">
       <static>true</static>
       <pose>3 3 2.90 0 1.5707963267948966 0</pose>
       <link name="camera_link">
         <visual name="rpi_camera_visual">
-          <!-- Source: /home/popka/Drone/mocap-rover/models/rpi_camera -->
           <pose>0 0 0 0 0 -1.5707963267948966</pose>
           <geometry>
             <mesh>
@@ -4975,7 +4951,6 @@
           <topic>/cameras/camera_3/image</topic>
           <visualize>true</visualize>
           <camera>
-            <!-- 105.314 deg, derived from fx=488.3109 px at 1280 px width. -->
             <horizontal_fov>1.8380719996523274</horizontal_fov>
             <camera_info_topic>/cameras/camera_3/camera_info</camera_info_topic>
             <image>
@@ -4987,17 +4962,9 @@
               <near>0.03</near>
               <far>20</far>
             </clip>
-            <distortion>
-              <k1>-0.3112978153440105</k1>
-              <k2>0.15431516540306534</k2>
-              <k3>-0.05947053168235783</k3>
-              <p1>-0.0014882893582261717</p1>
-              <p2>0.0022164735436313475</p2>
-              <center>0.5061304061577742 0.5348071768721625</center>
-            </distortion>
             <lens>
               <type>gnomonical</type>
-              <scale_to_hfov>true</scale_to_hfov>
+              <scale_to_hfov>false</scale_to_hfov>
               <intrinsics>
                 <fx>488.31088823052755</fx>
                 <fy>493.6294483217684</fy>
@@ -5018,13 +4985,11 @@
         </sensor>
       </link>
     </model>
-    <!-- IMX219-160 +3, -3; vertical. Optical axis is link-local +X. -->
     <model name="camera_4">
       <static>true</static>
       <pose>9 3 2.90 0 1.5707963267948966 0</pose>
       <link name="camera_link">
         <visual name="rpi_camera_visual">
-          <!-- Source: /home/popka/Drone/mocap-rover/models/rpi_camera -->
           <pose>0 0 0 0 0 -1.5707963267948966</pose>
           <geometry>
             <mesh>
@@ -5038,7 +5003,6 @@
           <topic>/cameras/camera_4/image</topic>
           <visualize>true</visualize>
           <camera>
-            <!-- 105.314 deg, derived from fx=488.3109 px at 1280 px width. -->
             <horizontal_fov>1.8380719996523274</horizontal_fov>
             <camera_info_topic>/cameras/camera_4/camera_info</camera_info_topic>
             <image>
@@ -5050,17 +5014,9 @@
               <near>0.03</near>
               <far>20</far>
             </clip>
-            <distortion>
-              <k1>-0.3112978153440105</k1>
-              <k2>0.15431516540306534</k2>
-              <k3>-0.05947053168235783</k3>
-              <p1>-0.0014882893582261717</p1>
-              <p2>0.0022164735436313475</p2>
-              <center>0.5061304061577742 0.5348071768721625</center>
-            </distortion>
             <lens>
               <type>gnomonical</type>
-              <scale_to_hfov>true</scale_to_hfov>
+              <scale_to_hfov>false</scale_to_hfov>
               <intrinsics>
                 <fx>488.31088823052755</fx>
                 <fy>493.6294483217684</fy>
@@ -5081,14 +5037,11 @@
         </sensor>
       </link>
     </model>
-    <!-- IMX219-160 center-left; coverage-optimized: 40 deg from nadir,
-         yaw +35 deg. Pair spacing 0.60 m. -->
     <model name="camera_5">
       <static>true</static>
       <pose>5.70 6 2.90 0 0.8726646259971648 0.6108652381980153</pose>
       <link name="camera_link">
         <visual name="rpi_camera_visual">
-          <!-- Source: /home/popka/Drone/mocap-rover/models/rpi_camera -->
           <pose>0 0 0 0 0 -1.5707963267948966</pose>
           <geometry>
             <mesh>
@@ -5102,7 +5055,6 @@
           <topic>/cameras/camera_5/image</topic>
           <visualize>true</visualize>
           <camera>
-            <!-- 105.314 deg, derived from fx=488.3109 px at 1280 px width. -->
             <horizontal_fov>1.8380719996523274</horizontal_fov>
             <camera_info_topic>/cameras/camera_5/camera_info</camera_info_topic>
             <image>
@@ -5114,17 +5066,9 @@
               <near>0.03</near>
               <far>20</far>
             </clip>
-            <distortion>
-              <k1>-0.3112978153440105</k1>
-              <k2>0.15431516540306534</k2>
-              <k3>-0.05947053168235783</k3>
-              <p1>-0.0014882893582261717</p1>
-              <p2>0.0022164735436313475</p2>
-              <center>0.5061304061577742 0.5348071768721625</center>
-            </distortion>
             <lens>
               <type>gnomonical</type>
-              <scale_to_hfov>true</scale_to_hfov>
+              <scale_to_hfov>false</scale_to_hfov>
               <intrinsics>
                 <fx>488.31088823052755</fx>
                 <fy>493.6294483217684</fy>
@@ -5145,14 +5089,11 @@
         </sensor>
       </link>
     </model>
-    <!-- IMX219-160 center-right; antipodal view: 40 deg from nadir,
-         yaw 215 deg. -->
     <model name="camera_6">
       <static>true</static>
       <pose>6.30 6 2.90 0 0.8726646259971648 3.7524578917878086</pose>
       <link name="camera_link">
         <visual name="rpi_camera_visual">
-          <!-- Source: /home/popka/Drone/mocap-rover/models/rpi_camera -->
           <pose>0 0 0 0 0 -1.5707963267948966</pose>
           <geometry>
             <mesh>
@@ -5166,7 +5107,6 @@
           <topic>/cameras/camera_6/image</topic>
           <visualize>true</visualize>
           <camera>
-            <!-- 105.314 deg, derived from fx=488.3109 px at 1280 px width. -->
             <horizontal_fov>1.8380719996523274</horizontal_fov>
             <camera_info_topic>/cameras/camera_6/camera_info</camera_info_topic>
             <image>
@@ -5178,17 +5118,9 @@
               <near>0.03</near>
               <far>20</far>
             </clip>
-            <distortion>
-              <k1>-0.3112978153440105</k1>
-              <k2>0.15431516540306534</k2>
-              <k3>-0.05947053168235783</k3>
-              <p1>-0.0014882893582261717</p1>
-              <p2>0.0022164735436313475</p2>
-              <center>0.5061304061577742 0.5348071768721625</center>
-            </distortion>
             <lens>
               <type>gnomonical</type>
-              <scale_to_hfov>true</scale_to_hfov>
+              <scale_to_hfov>false</scale_to_hfov>
               <intrinsics>
                 <fx>488.31088823052755</fx>
                 <fy>493.6294483217684</fy>
@@ -5209,12 +5141,8 @@
         </sensor>
       </link>
     </model>
-    <!-- Static Unitree L2 on a 0.25 m ceiling drop at the arena center.
-         Its ray origin is 0.15 m below the camera centers. Since the scan is a
-         downward closed hemisphere, the cameras above it cannot enter the scan. -->
     <model name="arena_unitree_l2">
       <static>true</static>
-      <!-- Roll=pi turns the source model's upward scan hemisphere toward the floor. -->
       <pose>6 6 2.75 3.141592653589793 0 0</pose>
       <link name="l2_lidar_link">
         <visual name="l2_base_visual">
@@ -5233,7 +5161,6 @@
             </mesh>
           </geometry>
         </visual>
-        <!-- Unitree L2 normal 3D mode: 360 deg azimuth, horizon to zenith. -->
         <sensor name="l2_normal" type="gpu_lidar">
           <topic>/unitree_l2/normal/scan</topic>
           <always_on>true</always_on>
