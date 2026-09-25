@@ -12,8 +12,8 @@ from gz.msgs10.twist_pb2 import Twist
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--move',action='store_true',help='Drive each rover briefly; use a fresh world with clear space')
 parser.add_argument('--output',default='/tmp/mocap-camera-check')
-parser.add_argument('--width',type=int,default=1600)
-parser.add_argument('--height',type=int,default=1200)
+parser.add_argument('--width',type=int,default=1440)
+parser.add_argument('--height',type=int,default=1080)
 parser.add_argument('--measure-seconds',type=float,default=0,help='measure wall FPS for each image topic')
 args=parser.parse_args()
 node=Node(); images={}; poses={}; ready=threading.Event(); callbacks=[]
@@ -37,7 +37,7 @@ for i,msg in images.copy().items():
     assert (msg.width,msg.height)==(args.width,args.height), (msg.width,msg.height)
     # Gazebo RGB_INT8 = 3, raw RGB rows may contain padding.
     assert msg.pixel_format_type==3, msg.pixel_format_type
-    raw=b''.join(msg.data[r*msg.step:r*msg.step+msg.width*3] for r in range(msg.height))
+    data=msg.data; raw=data if msg.step==msg.width*3 else b''.join(data[r*msg.step:r*msg.step+msg.width*3] for r in range(msg.height))
     (out/f'camera_{i}.ppm').write_bytes(f'P6\n{msg.width} {msg.height}\n255\n'.encode()+raw)
 print('Six RGB streams OK; world poses:',poses)
 print('Snapshots:',out)

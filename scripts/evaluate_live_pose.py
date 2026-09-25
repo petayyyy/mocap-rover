@@ -20,10 +20,13 @@ def main(seconds=5., camera_id='camera_1', config_path='config/cameras.json'):
     node=Node()
     def info_cb(msg):
         nonlocal pipeline
-        if len(msg.intrinsics.k)!=9: return
-        pipeline=OneCameraImagePipeline(camera_id,np.asarray(list(msg.intrinsics.k)).reshape(3,3),list(msg.distortion.k),
+        if pipeline is not None or len(msg.intrinsics.k)!=9: return
+        tag_entries=cfg['tags']; family=tag_entries[0]['family']; marker_ids=tuple(int(t['id']) for t in tag_entries)
+        pipeline=OneCameraImagePipeline(camera_id,np.asarray(cam['K']).reshape(3,3),cam['D'],
             {'rotation':cam['R_world_optical'],'translation':cam['position_world']},
-            {'rotation':cfg['tag']['R_base_tag'],'translation':cfg['tag']['T_base_tag_translation']},'gazebo-camera-info',detector_scale=.5)
+            {int(t['id']):{'rotation':t['R_base_tag'],'translation':t['T_base_tag_translation']} for t in tag_entries},
+            'gazebo-camera-info',family=family,tag_size_m=float(tag_entries[0]['size']),
+            marker_ids=marker_ids,detector_scale=1.0,detector_profile='coverage')
         info.set()
     def pose_cb(msg):
         nonlocal truth
@@ -33,7 +36,7 @@ def main(seconds=5., camera_id='camera_1', config_path='config/cameras.json'):
     def image_cb(msg):
         nonlocal frames
         if pipeline is None or msg.pixel_format_type!=3: return
-        raw=b''.join(msg.data[r*msg.step:r*msg.step+msg.width*3] for r in range(msg.height)); image=np.frombuffer(raw,dtype=np.uint8).reshape(msg.height,msg.width,3)
+        data=msg.data; raw=data if msg.step==msg.width*3 else b''.join(data[r*msg.step:r*msg.step+msg.width*3] for r in range(msg.height)); image=np.frombuffer(raw,dtype=np.uint8).reshape(msg.height,msg.width,3)
         stamp=int(msg.header.stamp.sec)*1_000_000_000+int(msg.header.stamp.nsec); accepted=pipeline.process(image,stamp)
         frames+=1
         with lock: ref=truth

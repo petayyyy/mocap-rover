@@ -39,8 +39,15 @@ def main():
     args = p.parse_args()
     config = json.loads(Path(args.config).read_text())
     camera = next(c for c in config["cameras"] if c["name"] == args.camera)
+    tag_entries = config.get("tags", [dict(config["tag"], id=config["tag"].get("id", 0))])
+    family = tag_entries[0]["family"]
+    marker_ids = tuple(int(t["id"]) for t in tag_entries)
+    tag_size = float(tag_entries[0]["size"])
+    tag_transforms = {int(t["id"]): {
+        "rotation": t["R_base_tag"], "translation": t["T_base_tag_translation"]
+    } for t in tag_entries}
     observer = None
-    detector = AprilTagImageDetector()
+    detector = AprilTagImageDetector(family, profile="coverage", allowed_ids=marker_ids)
     node = Node(); info_ready = threading.Event(); lock = threading.Lock()
     stats = {"frames": 0, "detections": 0, "accepted": 0, "latencies_ms": [], "ids": {}}
     start = time.monotonic()
@@ -51,9 +58,11 @@ def main():
         if len(k) != 9:
             return
         observer = PnpAprilTagObserver(
-            TagConfig(calibration_version="gazebo-camera-info"), np.asarray(k).reshape(3, 3), list(msg.distortion.k),
+            TagConfig(family=family, ids=marker_ids, size_m=tag_size,
+                      calibration_version="gazebo-camera-info"),
+            np.asarray(k).reshape(3, 3), list(msg.distortion.k),
             {"rotation": camera["R_world_optical"], "translation": camera["position_world"]},
-            {"rotation": config["tag"]["R_base_tag"], "translation": config["tag"]["T_base_tag_translation"]},
+            tag_transforms,
         )
         info_ready.set()
 
@@ -61,7 +70,8 @@ def main():
         now = time.monotonic_ns()
         if msg.pixel_format_type != 3:
             return
-        raw = b"".join(msg.data[r * msg.step:r * msg.step + msg.width * 3] for r in range(msg.height))
+        data = msg.data
+        raw = data if msg.step == msg.width * 3 else b"".join(data[r * msg.step:r * msg.step + msg.width * 3] for r in range(msg.height))
         image = np.frombuffer(raw, dtype=np.uint8).reshape(msg.height, msg.width, 3)
         hits = detector.detect(image)
         capture = stamp_ns(msg, now)

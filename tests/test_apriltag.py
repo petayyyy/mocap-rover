@@ -42,4 +42,23 @@ class SimulationS08(unittest.TestCase):
         self.assertIsNotNone(result); self.assertTrue(result.pose_6d_valid)
         self.assertAlmostEqual(result.position_m[0],.12,places=2); self.assertAlmostEqual(result.position_m[1],-.08,places=2); self.assertAlmostEqual(result.position_m[2],2.,places=2)
 
+    def test_ippe_ambiguity_prefers_planar_rover_branch(self):
+        import cv2
+        K=np.array([[488.31,0,647.85],[0,493.63,513.41],[0,0,1.]])
+        D=np.array([-.3113,.1543,-.00149,.00222,-.05947])
+        Rwc=np.array([[0,-1,0],[-1,0,0],[0,0,-1.]],float)
+        camera=np.array([3.,3.,2.9]); base=np.array([1.,1.,.14]); tag=base+[0,0,.2254]
+        obj=np.array([[-.2,.2,0],[.2,.2,0],[.2,-.2,0],[-.2,-.2,0]],float)
+        Rct=Rwc.T; tct=Rwc.T@(tag-camera); rv,_=cv2.Rodrigues(Rct)
+        corners,_=cv2.projectPoints(obj,rv,tct,K,D)
+        corners=corners.reshape(4,2)+np.random.default_rng(1).normal(0,.15,(4,2))
+        observer=PnpAprilTagObserver(TagConfig(calibration_version='ambiguous'),K,D,
+            {'rotation':Rwc,'translation':camera},
+            {'rotation':np.eye(3),'translation':[0,0,.2254]})
+        result=observer.observe(Detection('camera_3',4,0,tuple(map(tuple,corners)),1,2,3))
+        self.assertIsNotNone(result)
+        self.assertLess(np.linalg.norm(np.asarray(result.position_m)-base),.02)
+        self.assertLess(result.pixel_features['planar_tilt_deg'],2.)
+        self.assertEqual(result.pixel_features['pnp_candidate_count'],2)
+
 if __name__ == "__main__": unittest.main()

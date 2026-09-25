@@ -14,7 +14,7 @@ def main():
     registry=CameraRegistry.virtual_default(); node=Node(); lock=threading.Lock(); counts={cid:0 for cid in registry.bindings}; dimensions={cid:(0,0) for cid in registry.bindings}; started=time.monotonic()
     def callback(msg,cid):
         if msg.pixel_format_type!=3: return
-        raw=b''.join(msg.data[r*msg.step:r*msg.step+msg.width*3] for r in range(msg.height)); path=a.output/f'{cid}.ppm'; path.write_bytes(f'P6\n{msg.width} {msg.height}\n255\n'.encode()+raw)
+        data=msg.data; raw=data if msg.step==msg.width*3 else b''.join(data[r*msg.step:r*msg.step+msg.width*3] for r in range(msg.height)); path=a.output/f'{cid}.ppm'; path.write_bytes(f'P6\n{msg.width} {msg.height}\n255\n'.encode()+raw)
         with lock:
             counts[cid]+=1
             dimensions[cid]=(msg.width,msg.height)

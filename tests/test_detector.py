@@ -12,7 +12,7 @@ class SimulationS08Detector(unittest.TestCase):
         except ImportError:
             self.skipTest("OpenCV unavailable")
         marker = np.zeros((240, 240), dtype=np.uint8)
-        cv2.aruco.drawMarker(
+        (getattr(cv2.aruco, "drawMarker", None) or cv2.aruco.generateImageMarker)(
             cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11), 0, 240, marker, 1
         )
         canvas = np.full((480, 640), 255, dtype=np.uint8)
@@ -20,7 +20,38 @@ class SimulationS08Detector(unittest.TestCase):
         detections = AprilTagImageDetector().detect(canvas)
         self.assertEqual([d.tag_id for d in detections], [0])
         self.assertEqual(len(detections[0].corners), 4)
-        self.assertEqual(AprilTagImageDetector().backend, "opencv-aruco-apriltag-36h11-legacy")
+        self.assertIn(AprilTagImageDetector().backend, ("opencv-aruco-apriltag-36h11-legacy", "opencv-aruco-apriltag-36h11-modern"))
+
+    def test_aruco_4x4_50_alias_and_allowed_ids(self):
+        import cv2
+        marker = np.zeros((120, 120), dtype=np.uint8)
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        (getattr(cv2.aruco, "drawMarker", None) or cv2.aruco.generateImageMarker)(
+            dictionary, 23, 120, marker, 1
+        )
+        canvas = np.full((240, 320), 205, dtype=np.uint8)
+        canvas[60:180, 100:220] = marker
+        detector = AprilTagImageDetector("4x4_dict_50", allowed_ids=(23,))
+        self.assertEqual(detector.family, "aruco4x4_50")
+        self.assertEqual([d.tag_id for d in detector.detect(canvas)], [23])
+        self.assertEqual(AprilTagImageDetector("DICT_4X4_50", allowed_ids=(7,)).detect(canvas), ())
+
+    def test_coverage_profile_keeps_small_markers(self):
+        import cv2
+        for family, dictionary_id in (
+            ("tag36h11", cv2.aruco.DICT_APRILTAG_36h11),
+            ("aruco4x4_50", cv2.aruco.DICT_4X4_50),
+        ):
+            marker = np.zeros((20, 20), dtype=np.uint8)
+            (getattr(cv2.aruco, "drawMarker", None) or cv2.aruco.generateImageMarker)(
+                cv2.aruco.getPredefinedDictionary(dictionary_id), 0, 20, marker, 1
+            )
+            canvas = np.full((480, 640), 255, dtype=np.uint8)
+            canvas[230:250, 310:330] = marker
+            found = AprilTagImageDetector(
+                family, profile="coverage", allowed_ids=(0,)
+            ).detect(canvas)
+            self.assertEqual([d.tag_id for d in found], [0])
 
     def test_detector_uses_bounded_contrast_preprocessing(self):
         import cv2, os
@@ -41,7 +72,7 @@ class SimulationS08Detector(unittest.TestCase):
             self.skipTest("OpenCV unavailable")
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         marker = np.zeros((240, 240), dtype=np.uint8)
-        cv2.aruco.drawMarker(dictionary, 0, 240, marker, 1)
+        (getattr(cv2.aruco, "drawMarker", None) or cv2.aruco.generateImageMarker)(dictionary, 0, 240, marker, 1)
         canvas = np.full((480, 640), 255, dtype=np.uint8); canvas[120:360, 200:440] = marker
         hit = AprilTagImageDetector().detect(canvas)[0]
         K=np.array([[500.,0,320],[0,500.,240],[0,0,1.]])

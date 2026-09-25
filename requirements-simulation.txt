@@ -1,0 +1,8 @@
+# Python venv --system-site-packages keeps Ubuntu Gazebo transport bindings.
+# System /usr/bin/python3 remains the Gazebo / AprilTag / calibration runtime.
+numpy==1.26.4
+opencv-python==4.10.0.84
+torch==2.6.0
+torchvision==0.21.0
+ultralytics==8.3.203
+threadpoolctl==3.6.0

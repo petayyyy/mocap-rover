@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>mocap-rover simulation</title>
+<style>
+body{margin:24px;background:#151a22;color:#e2e9f3;font:15px system-ui}h1{font-size:24px}h2{font-size:18px}
+.layout{display:flex;gap:24px;flex-wrap:wrap}#map{background:#202833;max-width:100%;border:1px solid #718196}
+#previews{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px}figure{margin:0;padding:10px;background:#202833}figure img{display:block;width:100%;aspect-ratio:4/3;object-fit:contain}small{display:block;overflow-wrap:anywhere}
+pre{white-space:pre-wrap;max-width:900px}textarea{width:100%;box-sizing:border-box;background:#101720;color:#d8e7ff}button,input{margin:8px;padding:8px}#health{font-weight:bold}.legend{color:#7bdaff}details{margin:18px 0}
+</style>
+</head>
+<body>
+<h1>Localization dashboard</h1><p id="health">Ожидание данных…</p>
+<div class="layout"><section><h2>XY map — арена 12 × 12 м</h2>
+<svg id="map" viewBox="-5 -5 130 130" width="430" height="430" aria-label="Положения роверов в метрах">
+<defs><pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M10 0H0V10" fill="none" stroke="#3c4858" stroke-width=".2"/></pattern></defs>
+<rect width="120" height="120" fill="url(#grid)" stroke="#75879c" stroke-width=".5"/>
+<g id="cameras-map"></g><g id="tracks-map"></g>
+<text x="1" y="124" font-size="3" fill="#cad6e5">0</text><text x="114" y="124" font-size="3" fill="#cad6e5">X, м</text><text x="-4" y="1" font-size="3" fill="#cad6e5">Y</text>
+</svg><p class="legend">Бирюзовый — свой; оранжевый — второй. Эллипс — 2σ.</p>
+</section><section><h2>Одометрия</h2><pre id="summary">Нет наблюдений</pre><details><summary>Диагностика</summary><pre id="status"></pre></details></section></div>
+<section id="previews">{{CAMERA_SLOTS}}</section>
+<section><h2>Настройки и калибровка</h2>
+<p>JSON содержит K/D и положение каждой камеры, а также преобразования меток. Применение сбрасывает сопровождение. Фокусное расстояние объектива в мм — справочная характеристика, оно не заменяет измеренную K.</p>
+<input id="calibration-file" type="file" accept=".json"><button id="load-settings">Загрузить текущие</button>
+<textarea id="settings-json" rows="12" aria-label="Калибровка JSON"></textarea>
+<button id="apply-settings">Применить</button><button id="rollback-settings">Откатить</button><pre id="settings-ack"></pre>
+</section>
+<script>
+const $=id=>document.getElementById(id), ns='http://www.w3.org/2000/svg', trails={}, lastStamp={};let busy=false;
+function element(tag,attrs,parent){let e=document.createElementNS(ns,tag);for(let [k,v]of Object.entries(attrs))e.setAttribute(k,v);parent.appendChild(e);return e}
+function mapTracks(tracks){$('tracks-map').replaceChildren();for(let [name,row]of Object.entries(tracks)){
+ let s=row.state||row;if(!Number.isFinite(s.x)||!Number.isFinite(s.y))continue;let x=s.x*10,y=(12-s.y)*10,color=row.valid===false?'#f76565':name==='opponent'?'#ffbf74':'#65e7e0';
+ trails[name]??=[];if(lastStamp[name]!==s.stamp_ns){trails[name].push([x,y]);lastStamp[name]=s.stamp_ns;if(trails[name].length>240)trails[name].shift()}
+ element('polyline',{points:trails[name].map(p=>p.join(',')).join(' '),fill:'none',stroke:color,'stroke-width':.45},$('tracks-map'));
+ let radius=20*Math.sqrt(Math.max(0,s.covariance||0));element('ellipse',{cx:x,cy:y,rx:radius,ry:radius,fill:'none',stroke:color,'stroke-width':.3},$('tracks-map'));
+ element('circle',{cx:x,cy:y,r:1.5,fill:color},$('tracks-map'));
+ if(row.yaw_valid!==false&&Number.isFinite(s.yaw))element('line',{x1:x,y1:y,x2:x+4*Math.cos(s.yaw),y2:y-4*Math.sin(s.yaw),stroke:color,'stroke-width':.7},$('tracks-map'));
+ element('text',{x:x+2,y:y-2,fill:color,'font-size':2.7},$('tracks-map')).textContent=name;
+}}
+function cameraMap(config){$('cameras-map').replaceChildren();for(let c of config.cameras||[]){if(!c.position_world)continue;let [x,y]=c.position_world;element('rect',{x:x*10-1,y:(12-y)*10-1,width:2,height:2,fill:'#788da8'},$('cameras-map'))}}
+async function refresh(){if(busy)return;busy=true;try{
+ let x=await fetch('/api/status').then(r=>r.json());$('status').textContent=JSON.stringify(x,null,2);$('health').textContent=(x.errors?.length?'ОШИБКА: '+x.errors.join('; '):(x.phase||'SIMULATION'))+' · '+(x.calibration_version||'калибровка не указана');
+ let tracks=x.tracks||(x.track?{tag_rover:{state:x.track,valid:x.track.tracking_state!=='LOST'}}:{});mapTracks(tracks);
+ $('summary').textContent=Object.entries(tracks).map(([name,r])=>{let s=r.state||r;return `${name}: ${r.tracking_state||s.tracking_state||'—'}\nX=${s.x?.toFixed(3)} Y=${s.y?.toFixed(3)} м\nПубликация wall: ${r.output_wall_hz?.toFixed(1)??'—'} Гц; измерения wall: ${r.measurement_wall_hz?.toFixed(1)??'—'} Гц\nВозраст (sim): ${r.measurement_age_ms?.toFixed(1)??'—'} мс`}).join('\n\n')||'Нет наблюдений';
+ let cameras=await fetch('/api/cameras').then(r=>r.json());for(let c of cameras){let e=$(c.camera_id+'-state');if(e)e.textContent=JSON.stringify(c.channels||c)}
+ document.querySelectorAll('#previews img').forEach(im=>{im.src=im.src.split('?')[0]+'?t='+Date.now()});
+}catch(e){$('health').textContent='Связь с runtime потеряна: '+e.message}finally{busy=false}}
+const editor=$('settings-json');$('load-settings').onclick=async()=>{let cfg=await fetch('/api/settings').then(r=>r.json());editor.value=JSON.stringify(cfg,null,2);cameraMap(cfg)};
+$('calibration-file').onchange=async e=>{if(e.target.files[0])editor.value=await e.target.files[0].text()};
+async function apply(body){try{JSON.parse(body);let r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body});$('settings-ack').textContent=await r.text();if(r.ok){for(let k of Object.keys(trails)){delete trails[k];delete lastStamp[k]}$('load-settings').click()}}catch(e){$('settings-ack').textContent=String(e)}}
+$('apply-settings').onclick=()=>apply(editor.value);$('rollback-settings').onclick=()=>apply(JSON.stringify({action:'rollback'}));
+fetch('/api/settings').then(r=>r.json()).then(cameraMap).catch(()=>{});refresh();setInterval(refresh,500);
+</script></body></html>

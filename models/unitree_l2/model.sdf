@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version="1.9">
+  <model name="unitree_l2">
+    <self_collide>false</self_collide>
+    <static>false</static>
+
+    <!--
+      The OBJ files share a common origin and are expressed in millimetres.
+      Their mechanical rotor axis is link-local +Z; +X is the point-cloud
+      forward direction and +Z is up, matching Gazebo's lidar convention.
+    -->
+    <link name="l2_base_link">
+      <gravity>false</gravity>
+      <self_collide>false</self_collide>
+      <inertial>
+        <!-- The complete Unitree L2 weighs 230 g. Keep this simulation module
+             effectively massless until Gigaobrik's mass properties are retuned:
+             the off-centre real payload otherwise pitches the free-falling
+             vehicle before it reaches the ground. -->
+        <mass>0.000001</mass>
+        <inertia>
+          <ixx>1e-12</ixx><iyy>1e-12</iyy><izz>1e-12</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="l2_base_visual">
+        <geometry>
+          <mesh>
+            <scale>0.001 0.001 0.001</scale>
+            <uri>model://unitree_l2/meshes/unitree_l2_base.obj</uri>
+          </mesh>
+        </geometry>
+      </visual>
+    </link>
+
+    <link name="l2_rotor_link">
+      <gravity>false</gravity>
+      <self_collide>false</self_collide>
+      <inertial>
+        <mass>0.000001</mass>
+        <inertia>
+          <ixx>1e-12</ixx><iyy>1e-12</iyy><izz>1e-12</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="l2_rotor_visual">
+        <geometry>
+          <mesh>
+            <scale>0.001 0.001 0.001</scale>
+            <uri>model://unitree_l2/meshes/unitree_l2_rotor.obj</uri>
+          </mesh>
+        </geometry>
+      </visual>
+    </link>
+    <joint name="l2_rotor_joint" type="revolute">
+      <parent>l2_base_link</parent>
+      <child>l2_rotor_link</child>
+      <!-- Both meshes now have the same origin, so this is intentionally zero. -->
+      <pose>0 0 0 0 0 0</pose>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <!-- The animation plugin wraps the angle into this interval. -->
+          <lower>-3.141592653589793</lower>
+          <upper>3.141592653589793</upper>
+          <effort>1</effort>
+          <velocity>40</velocity>
+        </limit>
+        <dynamics><damping>0</damping><friction>0</friction></dynamics>
+      </axis>
+    </joint>
+
+    <!-- Stable optical / point-cloud frame: the ray model is deliberately not
+         parented to the animated mesh, because L2 packets are expressed in a
+         non-rotating sensor frame. -->
+    <link name="l2_lidar_link">
+      <gravity>false</gravity>
+      <self_collide>false</self_collide>
+      <inertial>
+        <mass>0.000001</mass>
+        <inertia>
+          <ixx>1e-12</ixx><iyy>1e-12</iyy><izz>1e-12</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <!-- Default L2 3D mode: horizontal plane through the forward axis up to
+           the zenith. The production ROS cloud adapter keeps all 64 channels
+           and decimates each azimuth row by cos(elevation): dense near the
+           equator and sparse at the pole, rather than wasting samples where
+           rays nearly intersect. -->
+      <sensor name="l2_normal" type="gpu_lidar">
+        <topic>/unitree_l2/normal/scan</topic>
+        <always_on>false</always_on>
+        <update_rate>5.55</update_rate>
+        <visualize>true</visualize>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>288</samples><resolution>1</resolution>
+              <min_angle>-3.141592653589793</min_angle>
+              <max_angle>3.141592653589793</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>64</samples><resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>1.570796326794897</max_angle>
+            </vertical>
+          </scan>
+          <range><min>0.05</min><max>30.0</max><resolution>0.0045</resolution></range>
+        </ray>
+      </sensor>
+
+      <!-- L2 NAGE (negative-angle) mode. The selected ROS test bridge subscribes
+           to exactly one of the two lidar topics, so only that mode renders. -->
+      <sensor name="l2_negative" type="gpu_lidar">
+        <topic>/unitree_l2/negative/scan</topic>
+        <always_on>false</always_on>
+        <update_rate>5.55</update_rate>
+        <visualize>true</visualize>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>288</samples><resolution>1</resolution>
+              <min_angle>-3.141592653589793</min_angle>
+              <max_angle>3.141592653589793</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>64</samples><resolution>1</resolution>
+              <min_angle>-0.104719755119660</min_angle>
+              <max_angle>1.570796326794897</max_angle>
+            </vertical>
+          </scan>
+          <range><min>0.05</min><max>30.0</max><resolution>0.0045</resolution></range>
+        </ray>
+      </sensor>
+
+      <sensor name="l2_imu" type="imu">
+        <topic>/unitree_l2/imu</topic>
+        <always_on>1</always_on>
+        <update_rate>500</update_rate>
+      </sensor>
+    </link>
+    <joint name="l2_lidar_joint" type="fixed">
+      <parent>l2_base_link</parent>
+      <child>l2_lidar_link</child>
+    </joint>
+
+    <!-- Cosmetic kinematic animation for the visible low-speed measurement
+         core. The 216-Hz internal mirror is represented by the 3D ray grid,
+         not by a second visible moving mesh. -->
+    <plugin filename="libUnitreeL2Rotor.so" name="sverk::sim::UnitreeL2Rotor">
+      <joint_name>l2_rotor_joint</joint_name>
+      <rotation_hz>5.55</rotation_hz>
+    </plugin>
+  </model>
+</sdf>

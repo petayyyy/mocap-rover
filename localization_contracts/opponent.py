@@ -49,7 +49,7 @@ class MultiCameraAssociator:
         valid.sort(key=lambda d:(d.stamp_ns,-d.confidence))
         newest=valid[-1]
         if self.last is not None:
-            if newest.stamp_ns-self.last.stamp_ns > self.max_time_skew_ns: return None
+            if newest.stamp_ns < self.last.stamp_ns: return None
             if newest.position_m is not None and self.last.position_m is not None:
                 jump=math.hypot(newest.position_m[0]-self.last.position_m[0],newest.position_m[1]-self.last.position_m[1])
                 if jump>self.max_metric_jump_m: return None

@@ -11,3 +11,11 @@ class SimulationS12(unittest.TestCase):
  def test_runtime_binding_receives_apply_and_rollback(self):
   b=SettingsBackend(load_config('config/contracts.json')); seen=[]; b.bind_runtime(lambda c:seen.append(('apply',c['capture']['width'])),lambda c:seen.append(('rollback',c['capture']['width'])))
   b.stage({'capture':{'width':901}}); self.assertTrue(b.apply().ok); self.assertEqual(seen[-1],('apply',901)); self.assertTrue(b.rollback().ok); self.assertEqual(seen[-1][0],'rollback')
+
+class RuntimeFailureRegression(unittest.TestCase):
+ def test_rejected_runtime_apply_leaves_active_config_and_revision(self):
+  config=load_config('config/contracts.json'); b=SettingsBackend(config)
+  def reject(_): raise RuntimeError('worker refused calibration')
+  b.bind_runtime(reject); b.stage({'capture':{'width':901}})
+  ack=b.apply(); self.assertFalse(ack.ok)
+  self.assertEqual(b.store.active,config); self.assertEqual(b.revision,0)

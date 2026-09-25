@@ -11,4 +11,19 @@ class SimulationDashboard(unittest.TestCase):
   r=CameraRegistry.virtual_default(); DashboardHandler.previews_provider=staticmethod(lambda:[r.preview(cid,PreviewMetadata(1600,1200)) for cid in sorted(r.bindings)]); s=serve("127.0.0.1",0); threading.Thread(target=s.serve_forever,daemon=True).start(); data=json.load(urlopen(f"http://127.0.0.1:{s.server_port}/api/previews")); self.assertEqual(len(data),6); self.assertNotIn('payload',data[0]); self.assertEqual(data[0]['pixel_format'],'R8G8B8'); s.shutdown(); s.server_close()
  def test_preview_file_endpoint_is_explicit_and_local(self):
   with tempfile.NamedTemporaryFile(suffix='.ppm') as f:
-   f.write(b'P6\n1 1\n255\n\0\0\0'); f.flush(); DashboardHandler.preview_files_provider=staticmethod(lambda:{'camera_1':f.name}); s=serve('127.0.0.1',0); threading.Thread(target=s.serve_forever,daemon=True).start(); response=urlopen(f'http://127.0.0.1:{s.server_port}/preview/camera_1'); self.assertEqual(response.headers['Content-Type'],'image/x-portable-pixmap'); self.assertTrue(response.read().startswith(b'P6')); s.shutdown(); s.server_close()
+   f.write(b'P6\n1 1\n255\n\0\0\0'); f.flush(); DashboardHandler.preview_files_provider=staticmethod(lambda:{'camera_1':f.name}); s=serve('127.0.0.1',0); threading.Thread(target=s.serve_forever,daemon=True).start(); response=urlopen(f'http://127.0.0.1:{s.server_port}/preview/camera_1'); self.assertEqual(response.headers['Content-Type'],'image/jpeg'); self.assertTrue(response.read().startswith(b'\xff\xd8')); s.shutdown(); s.server_close()
+
+class DashboardSettingsRegression(unittest.TestCase):
+ def test_settings_object_validation_and_ack(self):
+  from urllib.request import Request
+  from urllib.error import HTTPError
+  DashboardHandler.settings_apply=staticmethod(lambda value:{'ok':True,'received':value})
+  server=serve('127.0.0.1',0); threading.Thread(target=server.serve_forever,daemon=True).start()
+  url=f'http://127.0.0.1:{server.server_port}/api/settings'
+  try:
+   data=json.load(urlopen(Request(url,data=b'{"version":"test"}',headers={'Content-Type':'application/json'})))
+   self.assertTrue(data['ok'])
+   with self.assertRaises(HTTPError) as error: urlopen(Request(url,data=b'[]',headers={'Content-Type':'application/json'}))
+   self.assertEqual(error.exception.code,400)
+  finally:
+   server.shutdown();server.server_close();DashboardHandler.settings_apply=None

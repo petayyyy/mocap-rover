@@ -15,10 +15,12 @@ class SettingsBackend:
   if expected_revision is not None and expected_revision != self.revision:
    self.last_ack=Ack(self.revision,False,'stale config revision'); return self.last_ack
   try:
+   candidate=self.store.staged
+   if candidate is None: raise ConfigError('nothing staged')
+   if self._runtime_apply is not None: self._runtime_apply(candidate)
    applied=self.store.apply()
-   if self._runtime_apply is not None: self._runtime_apply(applied)
    self.revision+=1; self.last_ack=Ack(self.revision,True); return self.last_ack
-  except ConfigError as e: self.last_ack=Ack(self.revision,False,str(e)); return self.last_ack
+  except Exception as e: self.last_ack=Ack(self.revision,False,str(e)); return self.last_ack
  def rollback(self):
   self.store.rollback()
   if self._runtime_rollback is not None: self._runtime_rollback(self.store.active)

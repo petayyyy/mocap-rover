@@ -23,9 +23,11 @@ parser.add_argument('--pitch-deg', type=float, default=5, help='World Y rotation
 parser.add_argument('--yaw-deg', type=float, default=0.5, help='World Z rotation bound')
 parser.add_argument('--ideal-cameras', action='store_true')
 parser.add_argument('--tag-rover-inverted', action='store_true', help='Start tag rover upside down to test bottom ID 1')
-parser.add_argument('--profile', choices=['demo_baseline','imx296_narrow','imx296_global_30'], default='demo_baseline')
+parser.add_argument('--profile', choices=['demo_baseline','imx296_narrow','imx296_global_30'], default='imx296_global_30')
 parser.add_argument('--lighting', choices=['colored', 'neutral'], default='colored')
 parser.add_argument('--light-intensity', type=float, default=1.0, help='Scale of overhead lights, 0..4')
+parser.add_argument('--shadow-lights', type=int, choices=range(10), default=2,
+                    help='Number of spotlights casting shadows; all nine still illuminate the scene')
 parser.add_argument('--output-dir', type=Path, default=ROOT,
                     help='Separate scenario directory containing worlds/ and config/')
 args = parser.parse_args()
@@ -105,14 +107,14 @@ box(link,'ceiling','12.2 12.2 0.04','6 6 3.02 0 0 0','0.1 0.12 0.15 1',transpare
 for idx,(x,y) in enumerate(( (x,y) for y in (1.5,6,10.5) for x in (1.5,6,10.5) )):
     color=light_colors[idx] if args.lighting=='colored' else '0.85 0.85 0.85 1'
     light=el(w,'light',name=f'overhead_{idx}',type='spot'); el(light,'pose',f'{x} {y} 2.82 0 0 0')
-    el(light,'intensity',args.light_intensity); el(light,'diffuse',color); el(light,'specular',color); el(light,'direction','0 0 -1'); el(light,'cast_shadows','true')
+    el(light,'intensity',args.light_intensity); el(light,'diffuse',color); el(light,'specular',color); el(light,'direction','0 0 -1'); el(light,'cast_shadows','true' if idx < args.shadow_lights else 'false')
     attenuation=el(light,'attenuation')
     for key,value in [('range',12),('constant',0.3),('linear',0.035),('quadratic',0.012)]: el(attenuation,key,value)
     spot=el(light,'spot'); el(spot,'inner_angle',0.48); el(spot,'outer_angle',1.12); el(spot,'falloff',1.2)
     visual=box(link,f'fixture_{idx}','0.28 0.18 0.035',f'{x} {y} 2.97 0 0 0',color,False)
     el(visual.find('material'),'emissive',color)
 
-hfov=2*math.atan(8.2/(2*2.9)); fx=1600/(2*math.tan(hfov/2)); cameras=[]
+hfov=2*math.atan(8.2/(2*2.9)); fx=image_width/(2*math.tan(hfov/2)); cameras=[]
 for idx,(x,y) in enumerate(((x,y) for y in (2,6,10) for x in (3,9)),1):
     name=f'camera_{idx}'
     offset=[rng.uniform(-args.position_cm,args.position_cm)/100 for _ in range(3)]
@@ -142,6 +144,10 @@ for name,x,y,color,tag in [('tag_rover',3,2,'0.075 0.09 0.11 1',True),('yolo_rov
         }
         box(l,'bottom_tag_board','0.5 0.5 0.01','0 0 0.02 0 0 0','1 1 1 1')
         for tag_id,bits in patterns.items():
+            # OpenCV's canonical AprilTag dictionary axes are 180 degrees
+            # from these source bitmaps. Rotate the PRINT, preserving the
+            # configured tag->base axes and the bottom face's proper rotation.
+            bits=[line[::-1] for line in bits[::-1]]
             for row,line in enumerate(bits):
                 for col,bit in enumerate(line):
                     if bit=='1':

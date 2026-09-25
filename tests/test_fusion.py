@@ -24,6 +24,37 @@ class SimulationS09(unittest.TestCase):
   s=ObservationSelector(.15); a=self.obs(1,0,0); b=self.obs(2,0,1)
   from dataclasses import replace
   a=replace(a,quality=.8,camera_id='camera_1'); b=replace(b,quality=.9,camera_id='camera_2'); self.assertEqual(s.select([a,b]).camera_id,'camera_2'); b2=replace(b,quality=.85); self.assertEqual(s.select([a,b2]).camera_id,'camera_2')
+ def test_synchronous_arbiter_is_quality_not_thread_order(self):
+  from dataclasses import replace
+  base=self.obs(1,100,0)
+  weak=replace(base,camera_id='camera_1',measurement_id='weak',quality=.3,
+               pixel_features={**base.pixel_features,'reprojection_error_px':1.0,'side_px':40})
+  strong=replace(base,camera_id='camera_2',measurement_id='strong',quality=.7,
+                 pixel_features={**base.pixel_features,'reprojection_error_px':.3,'side_px':60})
+  arb=SynchronousObservationArbiter(('camera_1','camera_2'))
+  self.assertEqual(arb.report('camera_1',100,[weak]),[])
+  ready=arb.report('camera_2',100,[strong])
+  self.assertEqual(ready[0][1].measurement_id,'strong')
+  self.assertEqual([x.measurement_id for x in ready[0][2]],['weak'])
+ def test_synchronous_arbiter_advancing_camera_closes_skipped_frame(self):
+  from dataclasses import replace
+  base=self.obs(1,100,0); base=replace(base,camera_id='camera_1')
+  arb=SynchronousObservationArbiter(('camera_1','camera_2'))
+  arb.report('camera_1',100,[base]); first=arb.report('camera_2',90,[])
+  ready=arb.report('camera_2',110,[])
+  self.assertEqual(first[0][0],90)
+  self.assertEqual(ready[0][0],100)
+  self.assertEqual(ready[0][1].camera_id,'camera_1')
+ def test_synchronous_arbiter_bounds_stalled_camera_and_drops_late_report(self):
+  from dataclasses import replace
+  arb=SynchronousObservationArbiter(('camera_1','camera_2'),max_pending=2)
+  base=self.obs(1,100,0)
+  self.assertEqual(arb.report('camera_1',100,[replace(base,camera_id='camera_1')]),[])
+  arb.report('camera_1',200,[replace(base,camera_id='camera_1',capture_time_ns=200)])
+  ready=arb.report('camera_1',300,[replace(base,camera_id='camera_1',capture_time_ns=300)])
+  self.assertEqual(ready[0][0],100)
+  self.assertEqual(arb.report('camera_2',100,[]),[])
+  self.assertEqual(arb.late_reports,1)
  def test_common_track_status_contract(self):
   f=PlanarFusion(); f.update(self.obs(1,0,0)); s=f.status(10); self.assertEqual(s.tracking_state,'COASTING'); self.assertEqual(s.pose_frame,'arena'); self.assertEqual(s.calibration_version,'c')
 if __name__=='__main__': unittest.main()

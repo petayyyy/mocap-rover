@@ -1,4 +1,10 @@
 {
+  "profile": "imx296_global_30",
+  "image_size": [
+    1440,
+    1080
+  ],
+  "camera_fps": 30,
   "tag_rover_inverted": false,
   "style": "steel",
   "lighting": "colored",
