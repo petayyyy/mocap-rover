@@ -23,7 +23,7 @@ class AprilTagImageDetector:
     """Compatibility name for a detector supporting both marker families."""
 
     def __init__(self, family="tag36h11", border_bits=1, scale=1.0,
-                 profile="coverage", allowed_ids=None):
+                 profile="coverage", allowed_ids=None, min_perimeter_px=19.0):
         self.family = normalize_marker_family(family)
         self.border_bits = int(border_bits)
         if profile not in {"coverage", "balanced", "fast"}:
@@ -33,6 +33,12 @@ class AprilTagImageDetector:
         if not 0 < scale <= 1:
             raise ValueError("scale must be in (0,1]")
         self.scale = float(scale)
+        # OpenCV's minMarkerPerimeterRate is relative to the image, so the same
+        # setting means 19 px of perimeter on a 1280 px frame and 3.6 px inside
+        # a 240 px ROI.  Measured on a cluttered synthetic frame, that turns a
+        # 7 ms ROI detection into 13 s: the threshold has to be absolute and
+        # recomputed for whatever the detector is actually looking at.
+        self.min_perimeter_px = float(min_perimeter_px)
         try:
             import cv2
 
@@ -56,33 +62,36 @@ class AprilTagImageDetector:
         self._parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
         # Coverage profile deliberately admits small/weak candidates. Metric
         # confidence is handled downstream by PnP checks and covariance.
+        coverage = profile == "coverage"
         for name, value in (
-            # Below 0.015 noisy 640x480 frames create thousands of tiny quads
-            # and destroy effective FPS without recovering useful markers.
-            ("minMarkerPerimeterRate", 0.015),
             ("maxMarkerPerimeterRate", 4.0),
             ("polygonalApproxAccuracyRate", 0.05),
-            ("minCornerDistanceRate", 0.015),
+            ("minCornerDistanceRate", 0.05),
             ("minDistanceToBorder", 1),
-            ("errorCorrectionRate", 0.8 if profile == "coverage" else 0.6),
-            ("maxErroneousBitsInBorderRate", 0.5),
-            ("detectInvertedMarker", True),
+            ("errorCorrectionRate", 0.7 if coverage else 0.6),
+            ("maxErroneousBitsInBorderRate", 0.35),
+            # A ceiling rig never sees an inverted marker, and enabling this
+            # only adds candidates whose corners wind the other way.
+            ("detectInvertedMarker", False),
             ("markerBorderBits", self.border_bits),
-            ("perspectiveRemovePixelPerCell", 8 if profile == "coverage" else 4),
+            ("perspectiveRemovePixelPerCell", 6 if coverage else 4),
             ("perspectiveRemoveIgnoredMarginPerCell", 0.13),
-            ("minOtsuStdDev", 2.0 if profile == "coverage" else 5.0),
-            ("cornerRefinementWinSize", 5),
-            ("cornerRefinementMaxIterations", 40),
-            ("cornerRefinementMinAccuracy", 0.01),
-            ("adaptiveThreshWinSizeMin", 3),
-            ("adaptiveThreshWinSizeMax", 61 if profile == "coverage" else 39),
-            ("adaptiveThreshWinSizeStep", 4),
+            ("minOtsuStdDev", 3.0 if coverage else 5.0),
+            # Subpixel refinement runs on every candidate, so a wide window
+            # with 40 iterations is paid for the noise as well as the marker.
+            ("cornerRefinementWinSize", 4 if coverage else 3),
+            ("cornerRefinementMaxIterations", 25 if coverage else 15),
+            ("cornerRefinementMinAccuracy", 0.02),
+            # 3..61 step 4 is fifteen threshold passes over the whole frame.
+            ("adaptiveThreshWinSizeMin", 5),
+            ("adaptiveThreshWinSizeMax", 29 if coverage else 21),
+            ("adaptiveThreshWinSizeStep", 8),
             ("aprilTagQuadDecimate", 1.0),
             ("aprilTagQuadSigma", 0.0),
-            ("aprilTagMinClusterPixels", 3),
-            ("aprilTagMaxNmaxima", 15),
-            ("aprilTagMinWhiteBlackDiff", 3),
-            ("aprilTagDeglitch", 1 if profile == "coverage" else 0),
+            ("aprilTagMinClusterPixels", 5),
+            ("aprilTagMaxNmaxima", 10),
+            ("aprilTagMinWhiteBlackDiff", 5),
+            ("aprilTagDeglitch", 0),
             # ArUco3 is faster for large markers but OpenCV's implementation
             # drops the 12--32 px markers that dominate the coverage boundary.
             ("useAruco3Detection", False),
@@ -94,6 +103,18 @@ class AprilTagImageDetector:
             if hasattr(aruco, "ArucoDetector")
             else None
         )
+        self._perimeter_reference = None
+
+    def _set_perimeter_rate(self, width, height):
+        """Keep the minimum candidate perimeter constant in pixels."""
+        reference = max(int(width), int(height))
+        if reference == self._perimeter_reference:
+            return
+        rate = min(max(self.min_perimeter_px / max(reference, 1), 1e-4), 1.0)
+        self._parameters.minMarkerPerimeterRate = rate
+        if self._modern is not None:
+            self._modern.setDetectorParameters(self._parameters)
+        self._perimeter_reference = reference
 
     @property
     def backend(self):
@@ -112,12 +133,28 @@ class AprilTagImageDetector:
             smoothed, 0, 255, self._cv2.THRESH_BINARY + self._cv2.THRESH_OTSU
         )[1]
 
-    def detect(self, image) -> tuple[PixelDetection, ...]:
+    def detect(self, image, roi=None) -> tuple[PixelDetection, ...]:
+        """Detect markers, optionally inside ``roi = (x, y, w, h)``.
+
+        Corners always come back in full-image coordinates, so a caller can
+        switch between full-frame acquisition and ROI tracking without the
+        geometry downstream knowing which one ran.
+        """
         array = np.asarray(image)
         if array.ndim not in (2, 3) or array.size == 0:
             raise ValueError("image must be a non-empty grayscale or BGR array")
         if array.ndim == 3:
             array = self._cv2.cvtColor(array, self._cv2.COLOR_RGB2GRAY)
+        offset = (0.0, 0.0)
+        if roi is not None:
+            x, y, w, h = (int(round(v)) for v in roi)
+            x = max(0, min(x, array.shape[1] - 1))
+            y = max(0, min(y, array.shape[0] - 1))
+            w = max(1, min(w, array.shape[1] - x))
+            h = max(1, min(h, array.shape[0] - y))
+            array = np.ascontiguousarray(array[y:y + h, x:x + w])
+            offset = (float(x), float(y))
+        self._set_perimeter_rate(array.shape[1], array.shape[0])
         original = array
         if self.scale != 1.0:
             array = self._cv2.resize(
@@ -178,7 +215,9 @@ class AprilTagImageDetector:
                 pass
             out.append(
                 PixelDetection(
-                    marker_id, tuple((float(x), float(y)) for x, y in points)
+                    marker_id,
+                    tuple((float(x) + offset[0], float(y) + offset[1])
+                          for x, y in points),
                 )
             )
         return tuple(out)
