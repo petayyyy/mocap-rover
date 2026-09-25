@@ -156,6 +156,7 @@ def analyze(run_dir):
         )
         row["tag_ids"] = ";".join(map(str, frame.get("tag_ids", [])))
         row["pnp_rejections"] = json.dumps(frame.get("pnp_rejections", {}), sort_keys=True)
+        row["roi"] = ";".join(str(v) for v in (frame.get("roi") or []))
         row["pnp_diagnostics"] = json.dumps(frame.get("pnp_diagnostics", []), sort_keys=True)
         if target:
             row.update(target)
@@ -241,7 +242,8 @@ def analyze(run_dir):
     frame_fields = [
         "camera_id", "sequence", "capture_ns", "detections", "tag_ids",
         "pnp_valid", "fusion_accepted", "best_quality",
-        "best_reprojection_px", "pnp_rejections", "pnp_diagnostics", "latency_ms", "truth_x", "truth_y",
+        "best_reprojection_px", "mode", "roi", "pnp_rejections",
+        "pnp_diagnostics", "latency_ms", "truth_x", "truth_y",
         "truth_z", "truth_yaw", "truth_vx", "truth_vy", "waypoint_index",
         "xy_error_m", "yaw_error_deg",
     ]

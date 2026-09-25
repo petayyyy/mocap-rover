@@ -16,6 +16,7 @@ from gz.msgs10.image_pb2 import Image
 from gz.msgs10.clock_pb2 import Clock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from localization_contracts import roi_tracker
 from localization_contracts.camera_model import CameraModel
 from localization_contracts.capture import LatestFrames, rgb_array
 from localization_contracts.image_pipeline import OneCameraImagePipeline
@@ -73,6 +74,14 @@ def main():
                    help="How long a track may run on continuation sources alone")
     p.add_argument("--lost-ms", type=float, default=1500.0)
     p.add_argument("--max-speed-mps", type=float, default=13.0)
+    # Two-mode detection. A confident track puts the marker inside a small
+    # window, and a 240x240 window costs 0.38 ms against 3.0 ms for the frame.
+    p.add_argument("--roi-min-px", type=int, default=160)
+    p.add_argument("--roi-max-px", type=int, default=480)
+    p.add_argument("--watchdog-period-s", type=float, default=2.0,
+                   help="How often a camera the prediction misses still looks")
+    p.add_argument("--no-roi-tracking", action="store_true",
+                   help="Always run the full-frame detector")
     p.add_argument(
         "--clock-topic",
         default="/clock",
@@ -161,6 +170,10 @@ def main():
         "coast_ms": a.coast_ms,
         "identity_max_age_s": a.identity_max_age_s,
         "lost_ms": a.lost_ms,
+        "roi_min_px": a.roi_min_px,
+        "roi_max_px": a.roi_max_px,
+        "roi_tracking": not a.no_roi_tracking,
+        "watchdog_period_s": a.watchdog_period_s,
         "camera_policy": "asynchronous_group_window",
         "covariance_model": "ray_plane_anisotropic_v2",
     }, indent=2) + "\n")
@@ -222,11 +235,35 @@ def main():
             "tag_hits": 0,
             "tag_accepted": 0,
             "yolo_hits": 0,
+            "idle_frames": 0,
             "last_capture_ns": 0,
             "latency_ms": 0,
         }
         for cid in cams
     }
+    planners = {
+        cid: roi_tracker.CameraRoiPlanner(
+            CameraModel.from_config(c), c["R_world_optical"], c["position_world"],
+            min_roi_px=a.roi_min_px, max_roi_px=a.roi_max_px,
+            marker_size_m=tag_size_m, watchdog_period_s=a.watchdog_period_s,
+        )
+        for cid, c in cams.items()
+    }
+    for planner in planners.values():
+        planner.tag_plane_z = a.base_z_nominal + max(
+            float(t["T_base_tag_translation"][2]) for t in tag_entries)
+
+    def track_prediction():
+        """(x, y, sigma) of the tag_rover track, or None when there is none."""
+        with lock:
+            f = filters.get("tag_rover")
+            if f is None or not f.initialized:
+                return None
+            if f.tracking_state(clock["sim"]) == "LOST":
+                return None
+            state, covariance = f.x, f.P
+        return (float(state[0]), float(state[1]),
+                float(math.sqrt(max(covariance[0, 0], covariance[1, 1]))))
     clock = {"sim": 0, "wall": time.monotonic_ns(), "resets": 0}
     tracks = {}
     previews = {}
@@ -380,7 +417,16 @@ def main():
                     cam = cams[cid]
                 if [msg.width, msg.height] != cam["image_size"]:
                     raise ValueError("live image size differs from calibration")
-                hits = pipe.detector.detect(image)
+                # Look where the track says the marker is, not everywhere.
+                plan = planners[cid].plan(
+                    None if a.no_roi_tracking else track_prediction(), begin)
+                if plan.mode == roi_tracker.IDLE:
+                    with lock:
+                        metrics[cid]["idle_frames"] += 1
+                    continue
+                hits = pipe.detector.detect(
+                    image, roi=plan.roi if plan.mode == roi_tracker.ROI else None)
+                planners[cid].report(bool(hits))
                 pnp_count = 0
                 qualities = []
                 reprojection_errors = []
@@ -452,6 +498,8 @@ def main():
                                 else None
                             ),
                             "latency_ms": m["latency_ms"],
+                            "mode": plan.mode,
+                            "roi": list(plan.roi) if plan.roi else None,
                             "pnp_rejections": dict(pnp_rejections),
                             "pnp_diagnostics": pnp_diagnostics,
                         }
