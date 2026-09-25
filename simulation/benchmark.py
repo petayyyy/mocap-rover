@@ -25,7 +25,9 @@ def image_path(duration_s=.1):
     image=np.full((480,640),255,dtype=np.uint8); image[120:360,200:440]=marker
     K=np.array([[500.,0,320],[0,500.,240],[0,0,1.]])
     pipeline=OneCameraImagePipeline('camera_1',K,[0]*5,{'rotation':np.eye(3),'translation':[0,0,0]},
-        {'rotation':np.eye(3),'translation':[0,0,0]},'benchmark-cal')
+        {'rotation':np.eye(3),'translation':[0,0,0]},'benchmark-cal',
+        base_z_nominal_m=500*0.4/240,image_size=[640,480],
+      plane_normal_world=(0,0,-1))
     start=time.monotonic(); lat=[]; outputs=0; accepted_before=0
     while time.monotonic()-start < duration_s:
         t=time.monotonic_ns(); pipeline.process(image,t); lat.append(pipeline.last_latency_ms); item,_=pipeline.publish(t); outputs += int(item is not None)

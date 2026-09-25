@@ -19,21 +19,23 @@ class OneCameraImagePipeline:
     """
     def __init__(self, camera_id, K, D, camera_pose, base_tag, calibration_version,
                  family="tag36h11", tag_size_m=.4, detector_scale=1.0,
-                 quality_min=.07, max_reprojection_px=5.0,
-                 max_planar_tilt_deg=40.0, min_side_px=8.0,
-                 detector_profile="coverage", marker_ids=(0, 1)):
+                 quality_min=.07, max_reprojection_px=2.0,
+                 max_planar_tilt_deg=40.0, min_side_px=20.0,
+                 detector_profile="coverage", marker_ids=(0, 1), **pose_gates):
         self.camera_id=camera_id
         self.family=family; self.marker_ids=tuple(marker_ids); self.tag_size_m=tag_size_m
         self.detector=AprilTagImageDetector(family,scale=detector_scale,
             profile=detector_profile,allowed_ids=self.marker_ids)
+        # base_z_nominal_m, max_incidence_deg and the rest of the physical
+        # gates travel with the calibration, so they have to reach the
+        # observer through every construction path, including reconfigure.
         self._observer_options=dict(quality_min=quality_min,
             max_reprojection_px=max_reprojection_px,
-            max_planar_tilt_deg=max_planar_tilt_deg,min_side_px=min_side_px)
+            max_planar_tilt_deg=max_planar_tilt_deg,min_side_px=min_side_px,
+            **pose_gates)
         self.observer=PnpAprilTagObserver(
             TagConfig(family=family,ids=self.marker_ids,size_m=tag_size_m,calibration_version=calibration_version),
-            K,D,camera_pose,base_tag,quality_min=quality_min,
-            max_reprojection_px=max_reprojection_px,
-            max_planar_tilt_deg=max_planar_tilt_deg,min_side_px=min_side_px)
+            K,D,camera_pose,base_tag,**self._observer_options)
         self.fusion=PlanarFusion()
         self.frames=0; self.detections=0; self.accepted=0; self.last_latency_ms=None; self.last_observation=None
 
@@ -67,13 +69,16 @@ class OneCameraImagePipeline:
 class MultiCameraImagePipeline:
     """Independent six-camera image pipelines with conservative source choice."""
     def __init__(self, cameras, base_tag, calibration_version, detector_scale=1.0,
-                 family="tag36h11", detector_profile="coverage", marker_ids=(0,1)):
+                 family="tag36h11", detector_profile="coverage", marker_ids=(0,1),
+                 **pose_gates):
         self.cameras={}
         for camera_id, spec in cameras.items():
+            options=dict(pose_gates)
+            options.setdefault("image_size",spec.get("image_size"))
             self.cameras[camera_id]=OneCameraImagePipeline(camera_id,spec["K"],spec.get("D",[0]*5),
                 {"rotation":spec["R_world_optical"],"translation":spec["position_world"]},base_tag,calibration_version,
                 detector_scale=detector_scale,family=family,detector_profile=detector_profile,
-                marker_ids=marker_ids)
+                marker_ids=marker_ids,**options)
         self.selector=ObservationSelector(); self.disabled=set()
 
     def disable(self, camera_id):

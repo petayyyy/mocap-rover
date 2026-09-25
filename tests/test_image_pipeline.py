@@ -10,7 +10,9 @@ class SimulationS09ImagePipeline(unittest.TestCase):
   image=np.full((480,640),255,dtype=np.uint8); image[120:360,200:440]=marker
   K=np.array([[500.,0,320],[0,500.,240],[0,0,1.]])
   p=OneCameraImagePipeline('camera_1',K,[0]*5,{'rotation':np.eye(3),'translation':[0,0,0]},
-      {'rotation':np.eye(3),'translation':[0,0,0]},'c1')
+      {'rotation':np.eye(3),'translation':[0,0,0]},'c1',
+      base_z_nominal_m=500*0.4/240,image_size=[640,480],
+      plane_normal_world=(0,0,-1))
   self.assertEqual(len(p.process(image,1_000_000)),1); item,status=p.publish(1_000_000)
   self.assertEqual(status.tracking_state,'TRACKING'); self.assertEqual(status.calibration_version,'c1'); self.assertTrue(item['valid'])
  def test_aruco_4x4_50_detector_to_pnp(self):
@@ -23,7 +25,9 @@ class SimulationS09ImagePipeline(unittest.TestCase):
   p=OneCameraImagePipeline('camera_1',K,[0]*5,
       {'rotation':np.eye(3),'translation':[0,0,0]},
       {7:{'rotation':np.eye(3),'translation':[0,0,0]}},'aruco-c1',
-      family='DICT_4X4_50',marker_ids=(7,))
+      family='DICT_4X4_50',marker_ids=(7,),
+      base_z_nominal_m=500*0.4/160,image_size=[640,480],
+      plane_normal_world=(0,0,-1))
   result=p.process(image,1_000_000)
   self.assertEqual(len(result),1)
   self.assertEqual(result[0].marker_family,'aruco4x4_50')

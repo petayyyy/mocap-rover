@@ -76,8 +76,12 @@ class SimulationS08Detector(unittest.TestCase):
         canvas = np.full((480, 640), 255, dtype=np.uint8); canvas[120:360, 200:440] = marker
         hit = AprilTagImageDetector().detect(canvas)[0]
         K=np.array([[500.,0,320],[0,500.,240],[0,0,1.]])
+        # Toy rig: the camera sits at the origin looking along +Z, so the
+        # marker plane normal points back at it rather than along arena +Z.
         observer=PnpAprilTagObserver(TagConfig(calibration_version="image-c1"), K, [0]*5,
-            {"rotation":np.eye(3),"translation":[0,0,0]})
+            {"rotation":np.eye(3),"translation":[0,0,0]},
+            base_z_nominal_m=500*0.4/240, image_size=[640,480],
+            plane_normal_world=(0,0,-1))
         obs=observer.observe(Detection("camera_1",7,hit.tag_id,hit.corners,1_000_000,1_001_000,1_002_000))
         self.assertTrue(obs.pose_6d_valid); self.assertEqual(obs.capture_time_ns,1_000_000)
         self.assertEqual(obs.method,"apriltag36h11_pnp")

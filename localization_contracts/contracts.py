@@ -44,7 +44,13 @@ class Observation:
         if min(self.capture_time_ns, self.receive_time_ns, self.processed_time_ns, self.timestamp_uncertainty_ns, self.exposure_duration_ns) < 0: raise ValueError("timestamps/durations must be non-negative")
         _vec(self.position_m, 3, "position_m")
         if len(self.covariance_m2) not in (3, 6, 9, 36): raise ValueError("unsupported covariance shape")
-        if not all(_finite(x) and x >= 0 for x in self.covariance_m2): raise ValueError("covariance must be finite and non-negative")
+        if not all(_finite(x) for x in self.covariance_m2): raise ValueError("covariance must be finite")
+        # A dense block carries cross terms, which are signed; only the
+        # variances on the diagonal have to be non-negative.
+        stride = {3: 1, 6: 1, 9: 3, 36: 6}[len(self.covariance_m2)]
+        diagonal = (self.covariance_m2 if stride == 1
+                    else [self.covariance_m2[i * stride + i] for i in range(stride)])
+        if any(x < 0 for x in diagonal): raise ValueError("covariance variances must be non-negative")
         if not 0 <= self.quality <= 1: raise ValueError("quality must be in [0,1]")
         return self
 
@@ -81,5 +87,32 @@ class CalibrationSet:
             if not isinstance(cid, str) or "K" not in c or "position_world" not in c: raise ValueError(f"incomplete calibration: {cid}")
             if len(c["K"]) != 3 or any(len(row) != 3 for row in c["K"]): raise ValueError(f"invalid K: {cid}")
         return self
+
+def covariance_matrix(covariance, size=2):
+    """Read a stored covariance as a dense ``size x size`` matrix.
+
+    Observations carry 3 diagonal terms, a 6-element upper triangle, a full 9
+    or a 36-element pose block.  Marker geometry is strongly anisotropic --
+    range error along the viewing ray and bearing error across it differ by
+    ``1/cos(incidence)`` -- so the cross term has to survive the trip from the
+    observer to the filter.
+    """
+    import numpy as np
+    values = np.asarray(covariance, dtype=float).reshape(-1)
+    size = int(size)
+    if values.size == 3:
+        dense = np.diag(values)
+    elif values.size == 6:
+        dense = np.zeros((3, 3))
+        dense[np.triu_indices(3)] = values
+        dense = dense + dense.T - np.diag(np.diag(dense))
+    elif values.size == 9:
+        dense = values.reshape(3, 3)
+    elif values.size == 36:
+        dense = values.reshape(6, 6)[:3, :3]
+    else:
+        raise ValueError("unsupported covariance shape")
+    return dense[:size, :size]
+
 
 def to_dict(obj): return asdict(obj)

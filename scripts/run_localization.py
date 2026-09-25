@@ -16,6 +16,7 @@ from gz.msgs10.image_pb2 import Image
 from gz.msgs10.clock_pb2 import Clock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from localization_contracts.camera_model import CameraModel
 from localization_contracts.capture import LatestFrames, rgb_array
 from localization_contracts.image_pipeline import OneCameraImagePipeline
 from localization_contracts.fusion import PlanarFusion, SynchronousObservationArbiter
@@ -42,9 +43,23 @@ def main():
     p.add_argument("--detector-profile", choices=("coverage", "balanced", "fast"),
                    default="coverage")
     p.add_argument("--tag-quality-min", type=float, default=0.07)
-    p.add_argument("--tag-max-reprojection-px", type=float, default=5.0)
+    p.add_argument("--tag-max-reprojection-px", type=float, default=2.0)
     p.add_argument("--tag-max-planar-tilt-deg", type=float, default=40.0)
-    p.add_argument("--tag-min-side-px", type=float, default=8.0)
+    p.add_argument("--tag-min-side-px", type=float, default=20.0)
+    # Physical gates. The rover stands on a known plane, so its base height,
+    # the marker plane and the arena bounds are measured constants rather than
+    # free parameters, and a solution that contradicts them is wrong however
+    # small its reprojection error.
+    p.add_argument("--base-z-nominal", type=float, default=0.14,
+                   help="Height of the rover base link above the arena floor")
+    p.add_argument("--base-z-tolerance", type=float, default=0.25,
+                   help="Gross-error bound on the PnP base height")
+    p.add_argument("--max-incidence-deg", type=float, default=65.0)
+    p.add_argument("--pnp-ray-disagreement", type=float, default=0.35,
+                   help="Largest accepted gap between the PnP and ray XY estimates")
+    p.add_argument("--min-edge-distance-px", type=float, default=8.0)
+    p.add_argument("--xy-source", choices=("ray", "pnp"), default="ray",
+                   help="ray intersects the marker bearing with its known plane")
     p.add_argument(
         "--clock-topic",
         default="/clock",
@@ -85,6 +100,10 @@ def main():
             "run image calibration first; nominal/truth files are not runtime calibration"
         )
     cams = {c["name"]: c for c in cfg["cameras"]}
+    # A calibration whose distortion model cannot reach its own image corners
+    # deletes most of every frame from PnP without reporting an error.
+    for camera in cfg["cameras"]:
+        CameraModel.from_config(camera).validate().raise_for_status()
     out = Path(a.output or ("artifacts/live_" + time.strftime("%Y%m%d_%H%M%S")))
     out.mkdir(parents=True, exist_ok=True)
     if any((out / name).exists() for name in ("observations.jsonl", "odometry.jsonl")):
@@ -118,9 +137,23 @@ def main():
         "tag_max_reprojection_px": a.tag_max_reprojection_px,
         "tag_max_planar_tilt_deg": a.tag_max_planar_tilt_deg,
         "tag_min_side_px": a.tag_min_side_px,
+        "base_z_nominal_m": a.base_z_nominal,
+        "base_z_tolerance_m": a.base_z_tolerance,
+        "max_incidence_deg": a.max_incidence_deg,
+        "pnp_ray_disagreement_m": a.pnp_ray_disagreement,
+        "min_edge_distance_px": a.min_edge_distance_px,
+        "xy_source": a.xy_source,
         "synchronous_camera_policy": "best_quality_then_reprojection_then_size",
-        "covariance_model": "coverage_20260925_empirical_v1",
+        "covariance_model": "ray_plane_anisotropic_v2",
     }, indent=2) + "\n")
+    pose_gates = dict(
+        base_z_nominal_m=a.base_z_nominal,
+        base_z_tolerance_m=a.base_z_tolerance,
+        max_incidence_deg=a.max_incidence_deg,
+        pnp_ray_disagreement_m=a.pnp_ray_disagreement,
+        min_edge_distance_px=a.min_edge_distance_px,
+        xy_source=a.xy_source,
+    )
     pipes = {
         cid: OneCameraImagePipeline(
             cid,
@@ -138,6 +171,8 @@ def main():
             max_reprojection_px=a.tag_max_reprojection_px,
             max_planar_tilt_deg=a.tag_max_planar_tilt_deg,
             min_side_px=a.tag_min_side_px,
+            image_size=c["image_size"],
+            **pose_gates,
         )
         for cid, c in cams.items()
     }
@@ -329,27 +364,12 @@ def main():
                         reprojection_errors.append(
                             float(obs.pixel_features["reprojection_error_px"])
                         )
-                        # Empirical model from the coverage CSV. The old 3--6 mm
-                        # covariance was overconfident versus 8--17 cm observed
-                        # errors and made the innovation gate reject good handoffs.
-                        view_factor = 1.6 if cid in ("camera_5", "camera_6") else 1.0
-                        sigma = max(0.025, 0.018 * view_factor / max(obs.quality, 0.12))
-                        yaw_sigma = math.radians(
-                            min(20.0, max(2.0, 4.0 / max(obs.quality, 0.20)))
-                        )
-                        obs = dataclasses.replace(
-                            obs,
-                            covariance_m2=(
-                                sigma * sigma,
-                                sigma * sigma,
-                                4 * sigma * sigma,
-                            ),
-                            pixel_features={
-                                **obs.pixel_features,
-                                "yaw_sigma_rad": yaw_sigma,
-                                "xy_sigma_m": sigma,
-                            },
-                        )
+                        # The observer now derives an anisotropic covariance
+                        # from corner noise, incidence and the known marker
+                        # plane.  The per-camera fudge factor that used to live
+                        # here could not express that the error is elongated
+                        # along the viewing ray, so it was simultaneously
+                        # overconfident across the ray and loose along it.
                         frame_observations.append(obs)
                     else:
                         pnp_rejections[str(diagnostic.get("reason", "unknown"))] += 1
@@ -733,6 +753,8 @@ def main():
                 max_reprojection_px=a.tag_max_reprojection_px,
                 max_planar_tilt_deg=a.tag_max_planar_tilt_deg,
                 min_side_px=a.tag_min_side_px,
+                image_size=c["image_size"],
+                **pose_gates,
             )
         with tempfile.NamedTemporaryFile(mode="w", dir=out, delete=False) as staged:
             staged.write(json.dumps(candidate, indent=2) + "\n")

@@ -47,31 +47,90 @@ class AprilTagObserver:
 
 
 class PnpAprilTagObserver(AprilTagObserver):
-    """AprilTag corner-to-pose boundary using OpenCV's IPPE square solver.
+    """Corner-to-metric-pose boundary for a marker lying on a known plane.
 
-    The detector remains an input to this class: corners are never synthesized
-    here.  ``camera_pose`` is the calibrated ``(R_arena_camera, t_arena_camera)``
-    transform, and ``base_tag`` maps tag coordinates into base coordinates.
-    Both transforms are explicit so top/bottom tags do not require an ad-hoc
-    yaw sign or image mirroring.
+    Two independent XY estimates are formed from the same corners:
+
+    ``pnp``
+        IPPE square PnP.  Six degrees of freedom, so its range is set by the
+        apparent marker size and inherits every focal-length and distortion
+        error.  A range error ``dz`` reaches XY as ``dz * tan(incidence)``,
+        which is why the recorded tilted cameras showed a 0.85 m XY P95 from a
+        0.48 m height bias.
+
+    ``ray``
+        The centre bearing intersected with the plane the marker actually lies
+        on.  The rover is planar and its marker height is known to a
+        centimetre, so this replaces the weakest quantity in the PnP solution
+        with a measured constant.
+
+    The two disagreeing is the strongest available signal that a solution is
+    wrong, so both are always computed and their separation is a gate.  PnP is
+    kept for yaw and for the base-height check; XY is published from the ray by
+    default.
     """
+
+    XY_SOURCES = ("ray", "pnp")
+
     def __init__(self, config, K, D, camera_pose, base_tag=None, quality_min=.07,
-                 max_reprojection_px=5.0, max_planar_tilt_deg=40.0,
-                 min_side_px=8.0):
+                 max_reprojection_px=2.0, max_planar_tilt_deg=40.0,
+                 min_side_px=20.0, *, camera_model=None, image_size=None,
+                 base_z_nominal_m=0.14, base_z_tolerance_m=0.25,
+                 base_z_sigma_gate=6.0,
+                 max_incidence_deg=65.0, pnp_ray_disagreement_m=0.35,
+                 min_edge_distance_px=8.0, valid_radius_margin=0.85,
+                 min_quad_aspect=0.35, xy_source="ray", quality_reference_m=0.02,
+                 plane_normal_world=(0.0, 0.0, 1.0),
+                 sigma_px_corner=None, sigma_plane_m=0.02,
+                 sigma_extrinsic_m=0.01):
         super().__init__(config, float(K[0][0]), float(K[1][1]), float(K[0][2]), float(K[1][2]), quality_min)
         self.K = np.asarray(K, dtype=np.float64).reshape(3, 3)
-        self.D = np.asarray(D, dtype=np.float64).reshape(-1, 1)
+        self.D = np.asarray(D, dtype=np.float64).reshape(-1)
+        if xy_source not in self.XY_SOURCES:
+            raise ValueError(f"xy_source must be one of {self.XY_SOURCES}")
+        self.xy_source = xy_source
         self.max_reprojection_px = float(max_reprojection_px)
         self.max_planar_tilt_rad = math.radians(float(max_planar_tilt_deg))
         self.min_side_px = float(min_side_px)
+        self.base_z_nominal_m = float(base_z_nominal_m)
+        self.base_z_tolerance_m = float(base_z_tolerance_m)
+        self.base_z_sigma_gate = float(base_z_sigma_gate)
+        self.max_incidence_rad = math.radians(float(max_incidence_deg))
+        self.pnp_ray_disagreement_m = float(pnp_ray_disagreement_m)
+        self.min_edge_distance_px = float(min_edge_distance_px)
+        self.valid_radius_margin = float(valid_radius_margin)
+        self.min_quad_aspect = float(min_quad_aspect)
+        self.quality_reference_m = float(quality_reference_m)
+        # The rover stands on a known plane, so its base Z axis must equal that
+        # plane's normal.  Taking abs() of the alignment instead, as this class
+        # used to, also accepts the mirrored reconstruction -- exactly the
+        # branch the planarity gate exists to reject.
+        normal = np.asarray(plane_normal_world, dtype=float).reshape(3)
+        self.plane_normal_world = normal / max(np.linalg.norm(normal), 1e-12)
+        self.sigma_plane_m = float(sigma_plane_m)
+        self.sigma_extrinsic_m = float(sigma_extrinsic_m)
+        # Corner localization noise as a function of apparent marker size.  A
+        # 77 px marker refines to about a third of a pixel; a 22 px one does
+        # not, and pretending otherwise is what made the old fixed 4 mm
+        # covariance reject good handoffs.
+        self.sigma_px_corner = tuple(sigma_px_corner or ((60.0, 0.30), (30.0, 0.50), (0.0, 0.80)))
         self.last_diagnostic = None
         self.R_arena_camera, self.t_arena_camera = self._transform(camera_pose)
+        self.camera_model = camera_model or self._default_model(image_size)
         if isinstance(base_tag, dict) and 'rotation' not in base_tag:
             self.tag_transforms = {int(k): self._matrix(v) for k, v in base_tag.items()}
             self.T_base_tag = np.eye(4)
         else:
             self.T_base_tag = self._matrix(base_tag) if base_tag is not None else np.eye(4)
             self.tag_transforms = {i: self.T_base_tag for i in config.ids}
+
+    def _default_model(self, image_size):
+        from .camera_model import CameraModel
+        if image_size is None:
+            # Nothing declares the frame, so the radius gate cannot run; assume
+            # a frame large enough to hold the principal point symmetrically.
+            image_size = (int(round(2 * self.K[0, 2])) or 2, int(round(2 * self.K[1, 2])) or 2)
+        return CameraModel(self.K, self.D, image_size)
 
     @staticmethod
     def _matrix(value):
@@ -93,6 +152,75 @@ class PnpAprilTagObserver(AprilTagObserver):
             raise ValueError("camera rotation must be proper orthonormal")
         return R, t
 
+    # ------------------------------------------------------------- geometry
+
+    def tag_plane_z(self, tag_id):
+        """Arena height of the marker surface for a level rover."""
+        return self.base_z_nominal_m + float(self.tag_transforms[tag_id][2, 3])
+
+    def corner_sigma_px(self, side_px):
+        for threshold, sigma in self.sigma_px_corner:
+            if side_px >= threshold:
+                return sigma
+        return self.sigma_px_corner[-1][1]
+
+    def _ray_plane(self, centre_px, plane_z):
+        """Intersect the bearing through ``centre_px`` with ``z = plane_z``."""
+        ray = self.camera_model.undistort([centre_px])[0]
+        direction = self.R_arena_camera @ np.array([ray[0], ray[1], 1.0])
+        norm = np.linalg.norm(direction)
+        if norm < 1e-9:
+            return None, None
+        direction = direction / norm
+        drop = plane_z - self.t_arena_camera[2]
+        # A ray parallel to the plane never meets it, and a negative parameter
+        # means the plane is behind the camera.
+        if abs(direction[2]) < 1e-3 or drop / direction[2] <= 0:
+            return None, None
+        point = self.t_arena_camera + direction * (drop / direction[2])
+        incidence = math.acos(min(1.0, abs(direction[2])))
+        return point, incidence
+
+    def _xy_covariance(self, point_xy, incidence, side_px, plane_z):
+        """Anisotropic 2x2 block in arena axes.
+
+        Bearing noise maps to ``h*sigma_theta/cos(incidence)`` across the ray
+        and ``h*sigma_theta/cos^2(incidence)`` along it; the unknown marker
+        height adds ``sigma_plane*tan(incidence)`` along the ray only.
+        """
+        focal = float(min(self.K[0, 0], self.K[1, 1]))
+        sigma_theta = self.corner_sigma_px(side_px) / focal / 2.0
+        height = abs(self.t_arena_camera[2] - plane_z)
+        cos_i = max(math.cos(incidence), 1e-3)
+        sigma_radial = height * sigma_theta / cos_i**2 + self.sigma_plane_m * math.tan(incidence)
+        sigma_tangential = height * sigma_theta / cos_i
+        offset = np.asarray(point_xy, dtype=float) - self.t_arena_camera[:2]
+        norm = np.linalg.norm(offset)
+        if norm < 1e-6:
+            radial = np.array([1.0, 0.0])
+        else:
+            radial = offset / norm
+        tangential = np.array([-radial[1], radial[0]])
+        basis = np.column_stack([radial, tangential])
+        block = basis @ np.diag([sigma_radial**2, sigma_tangential**2]) @ basis.T
+        return block + np.eye(2) * self.sigma_extrinsic_m**2
+
+    def range_sigma_m(self, side_px, range_m):
+        """1-sigma PnP range precision from apparent marker size.
+
+        ``z = f * S / side``, so ``dz = z * dside / side``: a marker half as
+        wide in pixels is twice as uncertain in depth.  A fixed base-height
+        tolerance would either reject every distant marker or accept the
+        1.08 m reconstruction the recorded run produced.
+        """
+        return float(range_m) * self.corner_sigma_px(side_px) / max(float(side_px), 1.0)
+
+    def _reject(self, reason, **fields):
+        self.last_diagnostic = {"accepted": False, "reason": reason, **fields}
+        return None
+
+    # -------------------------------------------------------------- observe
+
     def observe(self, d: Detection):
         self.last_diagnostic = {"accepted": False, "reason": "invalid_detection"}
         if d.tag_id not in self.config.ids or len(d.corners) != 4: return None
@@ -101,9 +229,116 @@ class PnpAprilTagObserver(AprilTagObserver):
         if not np.isfinite(image).all(): return None
         sides = np.asarray([np.linalg.norm(image[(i + 1) % 4] - image[i]) for i in range(4)])
         side = float(np.mean(sides))
-        if side < self.min_side_px or float(np.min(sides) / max(np.max(sides), 1e-9)) < 0.18:
-            self.last_diagnostic = {"accepted": False, "reason": "degenerate_quad", "side_px": side}
+        aspect = float(np.min(sides) / max(np.max(sides), 1e-9))
+        if side < self.min_side_px:
+            return self._reject("too_small", side_px=side)
+        if aspect < self.min_quad_aspect:
+            return self._reject("degenerate_quad", side_px=side, quad_aspect=aspect)
+
+        # A corner outside the model's domain has no meaningful undistorted
+        # ray, and OpenCV answers with a diverged one rather than an error.
+        inside = self.camera_model.inside_valid_radius(image, self.valid_radius_margin)
+        if not bool(np.all(inside)):
+            return self._reject("outside_model_domain", side_px=side)
+        edge = float(np.min(self.camera_model.edge_distance_px(image)))
+        if edge < self.min_edge_distance_px:
+            return self._reject("frame_edge", side_px=side, edge_distance_px=edge)
+
+        plane_z = self.tag_plane_z(d.tag_id)
+        centre = image.mean(axis=0)
+        ray_point, incidence = self._ray_plane(centre, plane_z)
+        if ray_point is None:
+            return self._reject("ray_misses_plane", side_px=side)
+        if incidence > self.max_incidence_rad:
+            return self._reject("incidence", side_px=side,
+                                incidence_deg=math.degrees(incidence))
+
+        pnp = self._solve_pnp(image, d.tag_id, side)
+        if pnp is None:
             return None
+        T_arena_base, reproj, tilt, candidates = pnp
+
+        base_z = float(T_arena_base[2, 3])
+        ray_base = np.array([ray_point[0], ray_point[1],
+                             plane_z - float(self.tag_transforms[d.tag_id][2, 3])])
+        disagreement = float(np.linalg.norm(T_arena_base[:2, 3] - ray_base[:2]))
+        diagnostic = {
+            "side_px": side, "quad_aspect": aspect, "edge_distance_px": edge,
+            "reprojection_error_px": reproj, "planar_tilt_deg": math.degrees(tilt),
+            "incidence_deg": math.degrees(incidence), "candidate_count": candidates,
+            "pnp_base_z_m": base_z, "pnp_xy": [float(v) for v in T_arena_base[:2, 3]],
+            "ray_xy": [float(v) for v in ray_base[:2]],
+            "pnp_ray_disagreement_m": disagreement,
+        }
+        # These are gross-error gates, not precision tests.  Planar PnP depth
+        # is weakly observable near fronto-parallel: rendered markers with a
+        # 6 mm ray error routinely show a 0.1 m base-height error at 1 px
+        # reprojection, so a tight bound throws away good measurements to
+        # punish the one quantity the ray estimate does not use.  The bound is
+        # set to catch a wrong branch or a misidentified plane -- the recorded
+        # failure sat 0.94 m off -- and scales with the depth precision the
+        # apparent marker size can actually deliver.
+        range_m = float(np.linalg.norm(ray_point - self.t_arena_camera))
+        sigma_range = self.range_sigma_m(side, range_m)
+        cos_i, sin_i = math.cos(incidence), math.sin(incidence)
+        base_z_limit = max(self.base_z_tolerance_m,
+                           self.base_z_sigma_gate * sigma_range * cos_i)
+        disagreement_limit = max(self.pnp_ray_disagreement_m,
+                                 self.base_z_sigma_gate * sigma_range * sin_i)
+        diagnostic.update(range_sigma_m=sigma_range, base_z_limit_m=base_z_limit,
+                          pnp_ray_limit_m=disagreement_limit)
+        if abs(base_z - self.base_z_nominal_m) > base_z_limit:
+            return self._reject("base_height", **diagnostic)
+        if disagreement > disagreement_limit:
+            return self._reject("pnp_ray_disagreement", **diagnostic)
+
+        position = ray_base if self.xy_source == "ray" else T_arena_base[:3, 3]
+        yaw = math.atan2(T_arena_base[1, 0], T_arena_base[0, 0])
+        block = self._xy_covariance(position[:2], incidence, side, plane_z)
+        sigma_yaw = min(math.radians(30.0), max(
+            math.radians(0.5),
+            math.sqrt(2.0) * self.corner_sigma_px(side) / max(side, 1.0)
+            / max(math.cos(incidence), 1e-3),
+        ))
+        covariance = (
+            float(block[0, 0]), float(block[0, 1]), 0.0,
+            float(block[1, 0]), float(block[1, 1]), 0.0,
+            0.0, 0.0, float(self.sigma_plane_m**2),
+        )
+
+        # Quality is a monotone reading of the covariance actually published,
+        # not an independent score.  The old product included a planarity term
+        # that collapsed on the weakly observable PnP branch tilt, which is
+        # unrelated to how well the ray fixes XY: rendered views with a 6 mm
+        # ray error scored 0.02 and were thrown away.
+        sigma_xy = math.sqrt(max(block[0, 0], block[1, 1]))
+        quality = max(0.0, min(1.0, self.quality_reference_m
+                               / (self.quality_reference_m + sigma_xy)))
+        diagnostic["quality"] = quality
+        if quality < self.quality_min:
+            return self._reject("quality", **diagnostic)
+
+        self.last_diagnostic = {"accepted": True, "reason": "accepted", **diagnostic}
+        return Observation(
+            SCHEMA_VERSION, d.camera_id, d.frame_seq,
+            f"{d.camera_id}:{d.frame_seq}:{d.tag_id}", "tag_rover",
+            d.capture_time_ns, "sim", d.timestamp_uncertainty_ns,
+            d.exposure_duration_ns, d.receive_time_ns, d.processed_time_ns,
+            self.config.calibration_version, FRAME_ARENA,
+            tuple(float(x) for x in position), covariance, quality,
+            marker_method(self.config.family, pnp=True), self.config.family,
+            d.tag_id, pose_6d_valid=True, attitude_state="valid",
+            pixel_features={
+                "yaw_rad": yaw, "yaw_sigma_rad": sigma_yaw,
+                "xy_sigma_m": float(math.sqrt(max(block[0, 0], block[1, 1]))),
+                "xy_source": self.xy_source,
+                "rotation_arena_base": T_arena_base[:3, :3].tolist(),
+                "pnp_candidate_count": candidates,
+                **diagnostic,
+            },
+        ).validate()
+
+    def _solve_pnp(self, image, tag_id, side):
         try:
             import cv2
         except ImportError as exc:
@@ -111,82 +346,59 @@ class PnpAprilTagObserver(AprilTagObserver):
         s = self.config.size_m / 2.0
         # tag frame: x right, y up, z outward; image order is top-left first.
         object_points = np.asarray([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], dtype=np.float64)
+        distortion = self.camera_model.solve_pnp_distortion()
+        if self.camera_model.model == "fisheye":
+            # solvePnP has no fisheye path: undistort to ideal pinhole rays and
+            # solve against an identity camera instead.
+            rays = self.camera_model.undistort(image)
+            image_pnp = rays * [self.K[0, 0], self.K[1, 1]] + [self.K[0, 2], self.K[1, 2]]
+        else:
+            image_pnp = image
         try:
-            result = cv2.solvePnPGeneric(
-                object_points, image, self.K, self.D,
+            ok, rvecs, tvecs, _ = cv2.solvePnPGeneric(
+                object_points, image_pnp, self.K, distortion,
                 flags=cv2.SOLVEPNP_IPPE_SQUARE,
             )
-            if not result[0]:
-                self.last_diagnostic = {"accepted": False, "reason": "pnp_failed", "side_px": side}
-                return None
-            candidates = []
-            T_arena_camera = np.eye(4)
-            T_arena_camera[:3, :3] = self.R_arena_camera
-            T_arena_camera[:3, 3] = self.t_arena_camera
-            for initial_rvec, initial_tvec in zip(result[1], result[2]):
-                rvec, tvec = cv2.solvePnPRefineLM(
-                    object_points, image, self.K, self.D, initial_rvec, initial_tvec
-                )
-                if not np.isfinite(tvec).all() or float(tvec[2, 0]) <= 0:
-                    continue
-                projected, _ = cv2.projectPoints(object_points, rvec, tvec, self.K, self.D)
-                reproj = float(np.sqrt(np.mean(np.sum(
-                    (projected.reshape(4, 2) - image) ** 2, axis=1
-                ))))
-                R_camera_tag, _ = cv2.Rodrigues(rvec)
-                T_camera_tag = np.eye(4)
-                T_camera_tag[:3, :3] = R_camera_tag
-                T_camera_tag[:3, 3] = tvec.reshape(3)
-                T_arena_base = (
-                    T_arena_camera @ T_camera_tag
-                    @ np.linalg.inv(self.tag_transforms[d.tag_id])
-                )
-                # The arena rover is planar. IPPE returns two valid planar-pose
-                # branches with very similar reprojection errors; select the one
-                # whose reconstructed base Z axis agrees with arena Z.
-                up_z = float(np.clip(T_arena_base[2, 2], -1.0, 1.0))
-                # Some synthetic/unit-test camera frames use the opposite
-                # world-Z convention. Planarity is axis alignment; tag ID and
-                # T_base_tag still determine the directed base orientation.
-                tilt = math.acos(abs(up_z))
-                candidates.append((tilt, reproj, T_arena_base))
         except cv2.error:
-            self.last_diagnostic = {"accepted": False, "reason": "opencv_error", "side_px": side}
-            return None
+            return self._reject("opencv_error", side_px=side)
+        if not ok:
+            return self._reject("pnp_failed", side_px=side)
+        T_arena_camera = np.eye(4)
+        T_arena_camera[:3, :3] = self.R_arena_camera
+        T_arena_camera[:3, 3] = self.t_arena_camera
+        candidates = []
+        for rvec, tvec in zip(rvecs, tvecs):
+            rvec, tvec = cv2.solvePnPRefineLM(
+                object_points, image_pnp, self.K, distortion, rvec.copy(), tvec.copy()
+            )
+            if not np.isfinite(tvec).all() or float(tvec[2, 0]) <= 0:
+                continue
+            projected, _ = cv2.projectPoints(object_points, rvec, tvec, self.K, distortion)
+            reproj = float(np.sqrt(np.mean(np.sum(
+                (projected.reshape(4, 2) - image_pnp) ** 2, axis=1
+            ))))
+            # Refinement started from the ill-conditioned IPPE branch can walk
+            # away entirely and land at a near-zero tilt with a huge residual.
+            # Ordering by tilt first let those win and then killed the frame on
+            # reprojection, which is what removed 4116 otherwise good frames.
+            if reproj > self.max_reprojection_px:
+                continue
+            R_camera_tag, _ = cv2.Rodrigues(rvec)
+            T_camera_tag = np.eye(4)
+            T_camera_tag[:3, :3] = R_camera_tag
+            T_camera_tag[:3, 3] = tvec.reshape(3)
+            T_arena_base = (T_arena_camera @ T_camera_tag
+                            @ np.linalg.inv(self.tag_transforms[tag_id]))
+            alignment = float(np.clip(
+                np.dot(T_arena_base[:3, 2], self.plane_normal_world), -1.0, 1.0))
+            tilt = math.acos(alignment)
+            candidates.append((tilt, reproj, T_arena_base))
         if not candidates:
-            self.last_diagnostic = {"accepted": False, "reason": "no_physical_solution", "side_px": side}
-            return None
+            return self._reject("no_physical_solution", side_px=side)
         tilt, reproj, T_arena_base = min(candidates, key=lambda item: (item[0], item[1]))
-        self.last_diagnostic = {
-            "accepted": False,
-            "reason": "candidate",
-            "side_px": side,
-            "reprojection_error_px": reproj,
-            "planar_tilt_deg": math.degrees(tilt),
-            "candidate_count": len(candidates),
-        }
-        if reproj > self.max_reprojection_px:
-            self.last_diagnostic["reason"] = "reprojection"
-            return None
         if tilt > self.max_planar_tilt_rad:
-            self.last_diagnostic["reason"] = "nonplanar_pose"
-            return None
-        yaw = math.atan2(T_arena_base[1, 0], T_arena_base[0, 0])
-        size_score = min(1.0, side / 80.0)
-        reprojection_score = 1.0 / (1.0 + (reproj / 1.5) ** 2)
-        planarity_score = math.exp(-0.5 * (tilt / math.radians(12.0)) ** 2)
-        quality = max(0., min(1., size_score * reprojection_score * planarity_score))
-        self.last_diagnostic["quality"] = quality
-        if quality < self.quality_min:
-            self.last_diagnostic["reason"] = "quality"
-            return None
-        self.last_diagnostic.update(accepted=True, reason="accepted")
-        return Observation(SCHEMA_VERSION, d.camera_id, d.frame_seq, f"{d.camera_id}:{d.frame_seq}:{d.tag_id}",
-            "tag_rover", d.capture_time_ns, "sim", d.timestamp_uncertainty_ns, d.exposure_duration_ns,
-            d.receive_time_ns, d.processed_time_ns, self.config.calibration_version, FRAME_ARENA,
-            tuple(float(x) for x in T_arena_base[:3, 3]), (0.01, 0.01, 0.04), quality,
-            marker_method(self.config.family, pnp=True), self.config.family, d.tag_id, pose_6d_valid=True,
-            attitude_state="valid", pixel_features={"yaw_rad": yaw, "reprojection_error_px": reproj,
-                "side_px": side, "planar_tilt_deg": math.degrees(tilt),
-                "pnp_candidate_count": len(candidates),
-                "rotation_arena_base": T_arena_base[:3,:3].tolist()}).validate()
+            return self._reject("nonplanar_pose", side_px=side,
+                                reprojection_error_px=reproj,
+                                planar_tilt_deg=math.degrees(tilt),
+                                candidate_count=len(candidates))
+        return T_arena_base, reproj, tilt, len(candidates)

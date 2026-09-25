@@ -52,6 +52,12 @@ class LiveRegressions(unittest.TestCase):
             [0] * 5,
             {"rotation": np.eye(3), "translation": [0, 0, 0]},
             transforms,
+            # Toy rig: camera at the origin looking along +Z at a base 2 m
+            # away, with corners projected in object order, so the recovered
+            # base Z axis runs along world +Z.
+            base_z_nominal_m=2.0,
+            image_size=[640, 480],
+            plane_normal_world=(0, 0, 1),
         )
         obj = np.array([[-0.2, 0.2, 0], [0.2, 0.2, 0], [0.2, -0.2, 0], [-0.2, -0.2, 0]])
         for ident in (0, 1):
