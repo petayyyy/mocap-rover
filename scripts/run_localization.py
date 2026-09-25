@@ -19,7 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from localization_contracts.camera_model import CameraModel
 from localization_contracts.capture import LatestFrames, rgb_array
 from localization_contracts.image_pipeline import OneCameraImagePipeline
-from localization_contracts.fusion import PlanarFusion, SynchronousObservationArbiter
+from localization_contracts.rover_filter import (
+    AsyncObservationBuffer, ImmRoverFilter, Measurement, POSITION,
+    measurement_from_observation,
+)
 from localization_contracts.contracts import Observation, SCHEMA_VERSION
 from localization_contracts.cuboid import localize_box
 from localization_contracts.dashboard import DashboardHandler, serve
@@ -60,6 +63,16 @@ def main():
     p.add_argument("--min-edge-distance-px", type=float, default=8.0)
     p.add_argument("--xy-source", choices=("ray", "pnp"), default="ray",
                    help="ray intersects the marker bearing with its known plane")
+    # Scheduling. At 11.11 m/s every millisecond is 11 mm, so the group window
+    # is a latency budget, not a synchronisation device.
+    p.add_argument("--publish-hz", type=float, default=200.0)
+    p.add_argument("--group-window-ms", type=float, default=12.0)
+    p.add_argument("--coast-ms", type=float, default=300.0,
+                   help="Measurement age at which the track stops being valid")
+    p.add_argument("--identity-max-age-s", type=float, default=2.0,
+                   help="How long a track may run on continuation sources alone")
+    p.add_argument("--lost-ms", type=float, default=1500.0)
+    p.add_argument("--max-speed-mps", type=float, default=13.0)
     p.add_argument(
         "--clock-topic",
         default="/clock",
@@ -143,7 +156,12 @@ def main():
         "pnp_ray_disagreement_m": a.pnp_ray_disagreement,
         "min_edge_distance_px": a.min_edge_distance_px,
         "xy_source": a.xy_source,
-        "synchronous_camera_policy": "best_quality_then_reprojection_then_size",
+        "publish_hz": a.publish_hz,
+        "group_window_ms": a.group_window_ms,
+        "coast_ms": a.coast_ms,
+        "identity_max_age_s": a.identity_max_age_s,
+        "lost_ms": a.lost_ms,
+        "camera_policy": "asynchronous_group_window",
         "covariance_model": "ray_plane_anisotropic_v2",
     }, indent=2) + "\n")
     pose_gates = dict(
@@ -181,13 +199,23 @@ def main():
     node = Node()
     stop = threading.Event()
     lock = threading.RLock()
-    filters = {
-        "tag_rover": PlanarFusion(),
-        "opponent": PlanarFusion("opponent", 15, 300),
-    }
+    # No barrier. Each camera publishes its own observations the moment it has
+    # them; the buffer closes a group on a timeout measured from capture, so a
+    # fast camera never waits for a slow one.
+    def make_filter():
+        return ImmRoverFilter(
+            coast_ms=a.coast_ms,
+            identity_max_age_s=a.identity_max_age_s,
+            lost_ms=a.lost_ms,
+            max_speed_mps=a.max_speed_mps,
+        )
+
+    filters = {"tag_rover": make_filter(), "opponent": make_filter()}
+    buffers = {name: AsyncObservationBuffer(int(a.group_window_ms * 1e6))
+               for name in filters}
     if a.tag_only:
         del filters["opponent"]
-    tag_arbiter = SynchronousObservationArbiter(cams)
+        del buffers["opponent"]
     metrics = {
         cid: {
             "processed": 0,
@@ -207,6 +235,7 @@ def main():
     topics = []
     threads = []
     observations = collections.deque(maxlen=4096)
+    pending_observations = {name: [] for name in filters}
     publication = collections.deque(maxlen=4096)
     camera_frames = collections.deque(maxlen=262144)
     rec_drops = 0
@@ -288,20 +317,43 @@ def main():
                 }
             )
 
-    def accept(obs):
+    def enqueue(obs):
+        """Hand one observation to its track's buffer; never blocks a worker."""
         with lock:
-            f = filters[obs.object_id]
             if (
                 obs.calibration_version != version
                 or obs.capture_time_ns > clock["sim"] + 100_000_000
             ):
                 record_observation(obs, False, "calibration_or_future_stamp")
                 return False
-            ok = f.update(obs)
-            if ok:
-                accepted_wall[obs.object_id].append(time.monotonic_ns())
-            record_observation(obs, ok, "fusion_accepted" if ok else "fusion_gate")
-            return ok
+            buffer = buffers.get(obs.object_id)
+            if buffer is None:
+                return False
+            for measurement in measurement_from_observation(obs):
+                buffer.push(measurement)
+            pending_observations[obs.object_id].append(obs)
+            return True
+
+    def drain_buffers(now_ns, force=False):
+        """Close ready groups and apply them; called from the publisher tick."""
+        with lock:
+            for name, buffer in buffers.items():
+                for group in buffer.drain(now_ns, force):
+                    applied = filters[name].apply_group(group)
+                    if applied:
+                        accepted_wall[name].append(time.monotonic_ns())
+                    window = {m.stamp_ns for m in group}
+                    remaining = []
+                    for obs in pending_observations[name]:
+                        if obs.capture_time_ns in window:
+                            record_observation(
+                                obs, applied,
+                                "fusion_accepted" if applied else "fusion_gate")
+                            if applied:
+                                mark_frame_accepted(obs)
+                        else:
+                            remaining.append(obs)
+                    pending_observations[name] = remaining
 
     def mark_frame_accepted(obs):
         with lock:
@@ -310,13 +362,6 @@ def main():
                 if row["camera_id"] == obs.camera_id and row["capture_ns"] == obs.capture_time_ns:
                     row["fusion_accepted"] += 1
                     break
-
-    def consume_tag_batches(batches):
-        for _, selected, discarded in batches:
-            for obs in discarded:
-                record_observation(obs, False, "lower_quality_synchronous_view")
-            if selected is not None and accept(selected):
-                mark_frame_accepted(selected)
 
     def tag_worker(cid):
         try:
@@ -411,9 +456,8 @@ def main():
                             "pnp_diagnostics": pnp_diagnostics,
                         }
                     )
-                with lock:
-                    batches = tag_arbiter.report(cid, stamp, frame_observations)
-                consume_tag_batches(batches)
+                for observation in frame_observations:
+                    enqueue(observation)
         except Exception as exc:
             errors.append(f"{cid}: {exc}")
             stop.set()
@@ -501,7 +545,7 @@ def main():
                     if old is None or obs.quality > old.quality:
                         selected[obs.capture_time_ns] = obs
                 for stamp in sorted(selected):
-                    accept(selected[stamp])
+                    enqueue(selected[stamp])
         except Exception as exc:
             errors.append("yolo: " + str(exc))
             stop.set()
@@ -535,42 +579,49 @@ def main():
                 record_done.wait(0.1)
 
     def publisher_worker():
+        """Close ready groups and publish the propagated state at --publish-hz.
+
+        Output rate is decoupled from measurement rate: the filter propagates
+        to the current clock every tick, and measurement_age_ms reports how
+        stale the newest measurement behind that state is.  Raising the rate
+        never makes a stale pose look fresh.
+        """
         nonlocal rec_drops
+        period = 1.0 / a.publish_hz
         next_tick = time.monotonic()
         tick = 0
         while not stop.is_set():
-            now = time.monotonic()
-            stop.wait(max(0, next_tick - now))
-            next_tick += 1 / 30
+            stop.wait(max(0, next_tick - time.monotonic()))
+            next_tick += period
             if stop.is_set():
                 break
             if time.monotonic() - next_tick > 0.1:
-                next_tick = time.monotonic() + 1 / 30
+                next_tick = time.monotonic() + period
             tick += 1
             with lock:
                 stamp = clock["sim"]
+            drain_buffers(stamp)
+            with lock:
                 for name, f in filters.items():
-                    if name == "opponent" and tick % 2:
-                        continue
                     item = f.publish(stamp)
-                    if item is None:
-                        continue
+                    state = item["state"]
                     row = {
                         **item,
-                        "state": dataclasses.asdict(item["state"]),
                         "object_id": name,
-                        "capture_ns": f.last_measurement.capture_time_ns,
+                        "capture_ns": f.last_measurement_ns,
                         "wall_ns": time.monotonic_ns(),
-                        "yaw_valid": name == "tag_rover",
+                        "yaw_valid": name == "tag_rover" and state is not None,
+                        "source_mask": list(item["sources"]),
                     }
                     now_ns = time.monotonic_ns()
                     published_wall[name].append(now_ns)
                     row.update(
-                        measurement_sim_hz=row["measurement_hz"],
-                        output_sim_hz=row["output_hz"],
                         measurement_wall_hz=rate(accepted_wall[name]),
                         output_wall_hz=rate(published_wall[name]),
                         session=clock["resets"],
+                        out_of_sequence=f.out_of_sequence,
+                        dropped_too_old=f.too_old,
+                        id_rejections=f.id_rejections,
                     )
                     if now_ns - clock["wall"] > 200_000_000:
                         row.update(valid=False, tracking_state="TIME_UNCERTAIN")
@@ -578,53 +629,52 @@ def main():
                     if len(publication) == publication.maxlen:
                         rec_drops += 1
                     publication.append(row)
-                    if rospy is not None:
-                        odom_pub, status_pub = publishers[name]
-                        status = String()
-                        status.data = json.dumps(
-                            {k: v for k, v in row.items() if k != "state"}
-                        )
-                        status_pub.publish(status)
-                        if not row["valid"]:
-                            continue
-                        s = item["state"]
-                        msg = Odometry()
-                        msg.header.frame_id = "arena"
-                        msg.child_frame_id = name + "/base_link"
-                        msg.header.stamp.sec = stamp // 1_000_000_000
-                        msg.header.stamp.nanosec = stamp % 1_000_000_000
-                        msg.pose.pose.position.x = s.x
-                        msg.pose.pose.position.y = s.y
-                        msg.pose.pose.position.z = float(
-                            f.last_measurement.position_m[2]
-                        )
-                        msg.pose.pose.orientation.z = (
-                            math.sin(s.yaw / 2) if name == "tag_rover" else 0.0
-                        )
-                        msg.pose.pose.orientation.w = (
-                            math.cos(s.yaw / 2) if name == "tag_rover" else 1.0
-                        )
-                        msg.twist.twist.linear.x = (
-                            math.cos(s.yaw) * s.vx + math.sin(s.yaw) * s.vy
-                            if name == "tag_rover"
-                            else s.vx
-                        )
-                        msg.twist.twist.linear.y = (
-                            -math.sin(s.yaw) * s.vx + math.cos(s.yaw) * s.vy
-                            if name == "tag_rover"
-                            else s.vy
-                        )
-                        msg.twist.twist.angular.z = (
-                            s.omega if name == "tag_rover" else 0.0
-                        )
-                        msg.pose.covariance[0] = s.covariance
-                        msg.pose.covariance[7] = s.covariance
-                        msg.pose.covariance[35] = 0.002 if name == "tag_rover" else 1e6
-                        for index in (14, 21, 28):
-                            msg.pose.covariance[index] = 1e6
-                        for index in (0, 7, 14, 21, 28, 35):
-                            msg.twist.covariance[index] = 1e6
-                        odom_pub.publish(msg)
+                    if rospy is None or state is None:
+                        continue
+                    odom_pub, status_pub = publishers[name]
+                    status = String()
+                    status.data = json.dumps(
+                        {k: v for k, v in row.items() if k != "covariance"}
+                    )
+                    status_pub.publish(status)
+                    if not row["valid"]:
+                        continue
+                    covariance = item["covariance"]
+                    msg = Odometry()
+                    msg.header.frame_id = "arena"
+                    msg.child_frame_id = name + "/base_link"
+                    msg.header.stamp.sec = stamp // 1_000_000_000
+                    msg.header.stamp.nanosec = stamp % 1_000_000_000
+                    msg.pose.pose.position.x = state["x"]
+                    msg.pose.pose.position.y = state["y"]
+                    msg.pose.pose.position.z = a.base_z_nominal
+                    yaw = state["yaw"] if name == "tag_rover" else 0.0
+                    msg.pose.pose.orientation.z = math.sin(yaw / 2)
+                    msg.pose.pose.orientation.w = math.cos(yaw / 2)
+                    msg.twist.twist.linear.x = (
+                        math.cos(yaw) * state["vx"] + math.sin(yaw) * state["vy"])
+                    msg.twist.twist.linear.y = (
+                        -math.sin(yaw) * state["vx"] + math.cos(yaw) * state["vy"])
+                    msg.twist.twist.angular.z = (
+                        state["yaw_rate"] if name == "tag_rover" else 0.0)
+                    # Publish the filter's own 2-D block rather than a scalar:
+                    # marker error is elongated along the viewing ray and a
+                    # consumer that plans around it needs the shape.
+                    msg.pose.covariance[0] = covariance[0][0]
+                    msg.pose.covariance[1] = covariance[0][1]
+                    msg.pose.covariance[6] = covariance[1][0]
+                    msg.pose.covariance[7] = covariance[1][1]
+                    msg.pose.covariance[35] = (
+                        covariance[4][4] if name == "tag_rover" else 1e6)
+                    for index in (14, 21, 28):
+                        msg.pose.covariance[index] = 1e6
+                    msg.twist.covariance[0] = covariance[2][2]
+                    msg.twist.covariance[7] = covariance[3][3]
+                    msg.twist.covariance[35] = (
+                        covariance[5][5] if name == "tag_rover" else 1e6)
+                    for index in (14, 21, 28):
+                        msg.twist.covariance[index] = 1e6
+                    odom_pub.publish(msg)
 
     def snapshot():
         with lock:
@@ -649,7 +699,19 @@ def main():
                 "received": dict(capture.received),
                 "overwritten": dict(capture.dropped),
                 "record_drops": rec_drops,
-                "tag_arbiter_late_reports": tag_arbiter.late_reports,
+                "filters": {
+                    name: {
+                        "accepted": f.accepted,
+                        "rejected": f.rejected,
+                        "out_of_sequence": f.out_of_sequence,
+                        "dropped_too_old": f.too_old,
+                        "id_rejections": f.id_rejections,
+                        "identity": f.identity,
+                        "model_probabilities": [float(v) for v in f.mu],
+                    }
+                    for name, f in filters.items()
+                },
+                "buffer_pending": {name: len(b.pending) for name, b in buffers.items()},
                 "clock": dict(clock),
                 "errors": list(errors),
             }
@@ -774,7 +836,6 @@ def main():
             tag_size_m = new_tag_size_m
             for f in filters.values():
                 f.reset()
-            tag_arbiter.reset()
             tracks.clear()
             for values in accepted_wall.values():
                 values.clear()
@@ -813,9 +874,7 @@ def main():
         node.unsubscribe(topic)
     for thread in threads[:-1]:
         thread.join(timeout=10)
-    with lock:
-        remaining_tag_batches = tag_arbiter.flush()
-    consume_tag_batches(remaining_tag_batches)
+    drain_buffers(clock["sim"], force=True)
     record_done.set()
     threads[-1].join(timeout=10)
     if server:

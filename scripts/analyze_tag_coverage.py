@@ -115,7 +115,19 @@ def analyze(run_dir):
             "reprojection_px": px.get("reprojection_error_px"),
             "tag_side_px": px.get("side_px"),
             "planar_tilt_deg": px.get("planar_tilt_deg"),
+            "incidence_deg": px.get("incidence_deg"),
+            "edge_distance_px": px.get("edge_distance_px"),
+            "quad_aspect": px.get("quad_aspect"),
+            "xy_source": px.get("xy_source"),
+            "pnp_x": (px.get("pnp_xy") or [None, None])[0],
+            "pnp_y": (px.get("pnp_xy") or [None, None])[1],
+            "ray_x": (px.get("ray_xy") or [None, None])[0],
+            "ray_y": (px.get("ray_xy") or [None, None])[1],
+            "pnp_base_z_m": px.get("pnp_base_z_m"),
+            "pnp_ray_disagreement_m": px.get("pnp_ray_disagreement_m"),
+            "range_sigma_m": px.get("range_sigma_m"),
             "xy_sigma_m": px.get("xy_sigma_m"),
+            "yaw_sigma_rad": px.get("yaw_sigma_rad"),
             "processing_ms": (obs["processed_time_ns"] - obs["receive_time_ns"]) / 1e6,
         }
         if target:
@@ -175,11 +187,23 @@ def analyze(run_dir):
 
     estimate_rows = []
     for item in load_jsonl(runtime / "odometry.jsonl"):
-        state = item["state"]
-        target = truth_at(truth, truth_stamps, state["stamp_ns"])
+        state = item.get("state")
+        stamp_ns = item.get("stamp_ns", (state or {}).get("stamp_ns"))
+        if state is None:
+            # LOST before the first marker: record the gap rather than
+            # dropping the sample, or coverage is computed over a shorter run
+            # than actually happened.
+            estimate_rows.append({
+                "stamp_ns": stamp_ns, "capture_ns": item.get("capture_ns"),
+                "valid": 0, "tracking_state": item["tracking_state"],
+                "measurement_age_ms": item.get("measurement_age_ms"),
+            })
+            continue
+        covariance = item.get("covariance") or []
+        target = truth_at(truth, truth_stamps, stamp_ns)
         row = {
-            "stamp_ns": state["stamp_ns"],
-            "capture_ns": item["capture_ns"],
+            "stamp_ns": stamp_ns,
+            "capture_ns": item.get("capture_ns"),
             "valid": int(item["valid"]),
             "tracking_state": item["tracking_state"],
             "estimate_x": state["x"],
@@ -187,9 +211,22 @@ def analyze(run_dir):
             "estimate_yaw": state["yaw"],
             "estimate_vx": state["vx"],
             "estimate_vy": state["vy"],
+            "estimate_yaw_rate": state.get("yaw_rate", state.get("omega")),
             "measurement_age_ms": item["measurement_age_ms"],
+            "identity_age_ms": item.get("identity_age_ms"),
             "measurement_wall_hz": item.get("measurement_wall_hz"),
             "output_wall_hz": item.get("output_wall_hz"),
+            "source_mask": ";".join(item.get("source_mask") or item.get("sources") or []),
+            "identity": item.get("identity"),
+            "out_of_sequence": item.get("out_of_sequence"),
+            "dropped_too_old": item.get("dropped_too_old"),
+            "id_rejections": item.get("id_rejections"),
+            "cov_xx": covariance[0][0] if covariance else None,
+            "cov_xy": covariance[0][1] if covariance else None,
+            "cov_yy": covariance[1][1] if covariance else None,
+            "cov_yawyaw": covariance[4][4] if len(covariance) > 4 else None,
+            "model_probabilities": ";".join(
+                f"{v:.4f}" for v in item.get("model_probabilities", [])),
         }
         if target:
             row.update(target)
@@ -211,14 +248,20 @@ def analyze(run_dir):
     observation_fields = [
         "camera_id", "frame_seq", "capture_ns", "accepted", "selection_reason", "marker_id",
         "estimate_x", "estimate_y", "estimate_z", "estimate_yaw", "quality",
-        "reprojection_px", "tag_side_px", "planar_tilt_deg", "xy_sigma_m", "processing_ms", "truth_x",
+        "reprojection_px", "tag_side_px", "planar_tilt_deg", "incidence_deg",
+        "edge_distance_px", "quad_aspect", "xy_source", "pnp_x", "pnp_y",
+        "ray_x", "ray_y", "pnp_base_z_m", "pnp_ray_disagreement_m",
+        "range_sigma_m", "xy_sigma_m", "yaw_sigma_rad", "processing_ms", "truth_x",
         "truth_y", "truth_z", "truth_yaw", "waypoint_index", "xy_error_m",
         "z_error_m", "yaw_error_deg",
     ]
     estimate_fields = [
         "stamp_ns", "capture_ns", "valid", "tracking_state", "estimate_x",
         "estimate_y", "estimate_yaw", "estimate_vx", "estimate_vy",
-        "measurement_age_ms", "measurement_wall_hz", "output_wall_hz",
+        "estimate_yaw_rate", "measurement_age_ms", "identity_age_ms",
+        "measurement_wall_hz", "output_wall_hz", "source_mask", "identity",
+        "out_of_sequence", "dropped_too_old", "id_rejections",
+        "cov_xx", "cov_xy", "cov_yy", "cov_yawyaw", "model_probabilities",
         "truth_x", "truth_y", "truth_z", "truth_yaw", "truth_vx",
         "truth_vy", "waypoint_index", "xy_error_m", "yaw_error_deg",
     ]
@@ -254,12 +297,25 @@ def analyze(run_dir):
     write_csv(run_dir / "spatial_bins.csv", bin_rows, list(bin_rows[0]) if bin_rows else ["camera_id", "cell_x", "cell_y"])
 
     valid_estimates = [row for row in estimate_rows if row.get("xy_error_m") is not None and row["valid"]]
+    ages = [row["measurement_age_ms"] for row in estimate_rows
+            if row.get("measurement_age_ms") is not None]
+    states = defaultdict(int)
+    for row in estimate_rows:
+        states[row["tracking_state"]] += 1
     report = {
         "truth_samples": len(truth),
         "camera_frames": len(frame_rows),
         "observations": len(observation_rows),
         "estimate_samples": len(estimate_rows),
         "valid_estimate_samples": len(valid_estimates),
+        "valid_coverage": len(valid_estimates) / max(len(estimate_rows), 1),
+        "tracking_states": dict(states),
+        "p50_measurement_age_ms": percentile(ages, 50),
+        "p95_measurement_age_ms": percentile(ages, 95),
+        "id_rejections": max((row.get("id_rejections") or 0 for row in estimate_rows),
+                             default=0),
+        "out_of_sequence": max((row.get("out_of_sequence") or 0 for row in estimate_rows),
+                               default=0),
         "p50_fused_xy_error_m": percentile([row["xy_error_m"] for row in valid_estimates], 50),
         "p95_fused_xy_error_m": percentile([row["xy_error_m"] for row in valid_estimates], 95),
         "p95_fused_yaw_error_deg": percentile([abs(row["yaw_error_deg"]) for row in valid_estimates], 95),
