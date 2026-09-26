@@ -100,6 +100,9 @@ def main():
     parser.add_argument("--step-size", type=float, default=None,
                         help="Physics step; 0.001 leaves 11 mm of travel per "
                              "step at 11.11 m/s")
+    parser.add_argument("--export-config", type=Path,
+                        help="Also write the runtime calibration for this world; "
+                             "run_localization needs one that matches it")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -116,6 +119,18 @@ def main():
         ET.indent(tree)
         tree.write(destination, encoding="utf-8", xml_declaration=True)
         print(f"wrote {destination}")
+
+    if args.export_config and not args.dry_run:
+        # The shipped configs are nominal or evaluator-only, so the runtime
+        # refuses them; the calibration has to be derived from the world that
+        # is actually going to run.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from run_tag_coverage_experiment import export_camera_config
+        config = export_camera_config(destination, args.export_config)
+        print(f"wrote {args.export_config} "
+              f"({len(config['cameras'])} cameras, lidar "
+              f"{(config.get('lidar') or {}).get('topic', 'absent')})")
 
     if args.camera_hz and args.max_linear:
         travel = args.max_linear / args.camera_hz
