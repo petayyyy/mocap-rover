@@ -131,9 +131,31 @@ def export_camera_config(world_path, destination):
     # image corners: PnP would fail silently over most of every frame.
     for entry in cameras:
         CameraModel.from_config(entry).validate().raise_for_status()
+    # The lidar pose lives in the world too; the runtime needs it to put scans
+    # into arena coordinates, and reading it here keeps one source of truth.
+    lidar = None
+    for model in world.findall("model"):
+        sensor = model.find(".//sensor[@type='gpu_lidar']")
+        if sensor is None:
+            continue
+        pose = [float(value) for value in model.findtext("pose").split()]
+        scan = sensor.find("ray/scan")
+        lidar = {
+            "name": model.get("name"),
+            "position_world": pose[:3],
+            "R_world_sensor": rotation(*pose[3:]),
+            "topic": sensor.findtext("topic"),
+            "update_rate_hz": float(sensor.findtext("update_rate")),
+            "horizontal_samples": int(scan.findtext("horizontal/samples")),
+            "vertical_samples": int(scan.findtext("vertical/samples")),
+            "range_min": text_float(sensor, "ray/range/min"),
+            "range_max": text_float(sensor, "ray/range/max"),
+        }
+        break
     digest = hashlib.sha256(Path(world_path).read_bytes()).hexdigest()[:12]
     config = {
         "world": world.get("name"),
+        "lidar": lidar,
         "tag": base["tag"],
         "tags": base["tags"],
         "tag_frame_convention": base["tag_frame_convention"],
@@ -219,6 +241,9 @@ def main():
     parser.add_argument("--roi-min-px", type=int, default=160)
     parser.add_argument("--roi-max-px", type=int, default=480)
     parser.add_argument("--no-roi-tracking", action="store_true")
+    parser.add_argument("--no-lidar", action="store_true")
+    parser.add_argument("--lidar-max-radius", type=float, default=3.5)
+    parser.add_argument("--lidar-sweep-s", type=float, default=0.0)
     args = parser.parse_args()
     if not 0.1 <= args.speed <= 0.9:
         parser.error("--speed must be in [0.1, 0.9]")
@@ -298,6 +323,9 @@ def main():
             "roi_tracking": not args.no_roi_tracking,
             "roi_min_px": args.roi_min_px,
             "roi_max_px": args.roi_max_px,
+            "lidar": not args.no_lidar,
+            "lidar_max_radius_m": args.lidar_max_radius,
+            "lidar_sweep_s": args.lidar_sweep_s,
         },
         "git_revision": revision,
         "git_dirty": dirty,
@@ -418,7 +446,10 @@ def main():
             "--lost-ms", str(args.lost_ms),
             "--roi-min-px", str(args.roi_min_px),
             "--roi-max-px", str(args.roi_max_px),
-        ] + (["--no-roi-tracking"] if args.no_roi_tracking else []), cwd=ROOT, stdout=localization_log, stderr=subprocess.STDOUT, start_new_session=True)
+            "--lidar-max-radius", str(args.lidar_max_radius),
+            "--lidar-sweep-s", str(args.lidar_sweep_s),
+        ] + (["--no-roi-tracking"] if args.no_roi_tracking else [])
+          + (["--no-lidar"] if args.no_lidar else []), cwd=ROOT, stdout=localization_log, stderr=subprocess.STDOUT, start_new_session=True)
         ready_deadline = time.monotonic() + 45
         while time.monotonic() < ready_deadline:
             drain_rows()

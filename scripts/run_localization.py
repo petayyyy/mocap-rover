@@ -14,9 +14,10 @@ import numpy as np
 from gz.transport13 import Node
 from gz.msgs10.image_pb2 import Image
 from gz.msgs10.clock_pb2 import Clock
+from gz.msgs10.laserscan_pb2 import LaserScan
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from localization_contracts import roi_tracker
+from localization_contracts import lidar_pipeline, roi_tracker
 from localization_contracts.camera_model import CameraModel
 from localization_contracts.capture import LatestFrames, rgb_array
 from localization_contracts.image_pipeline import OneCameraImagePipeline
@@ -82,6 +83,22 @@ def main():
                    help="How often a camera the prediction misses still looks")
     p.add_argument("--no-roi-tracking", action="store_true",
                    help="Always run the full-frame detector")
+    # Unitree L2. Continuation only: it can keep a track alive where no camera
+    # reaches, but it may not create one, because a second rover and a shadow
+    # both look like a cluster of the right size.
+    p.add_argument("--no-lidar", action="store_true")
+    p.add_argument("--lidar-topic", default=None,
+                   help="Defaults to the topic recorded in the calibration")
+    p.add_argument("--lidar-z-band", type=float, nargs=2, default=(0.05, 0.60))
+    p.add_argument("--lidar-max-radius", type=float, default=3.5,
+                   help="Beyond this the cluster is too sparse to trust")
+    p.add_argument("--lidar-max-extent", type=float, default=1.10)
+    p.add_argument("--lidar-min-points", type=int, default=5)
+    p.add_argument("--lidar-sweep-s", type=float, default=0.0,
+                   help="Revolution time for deskew; a gz gpu_lidar renders "
+                        "the whole grid at one instant, so 0 is correct there")
+    p.add_argument("--lidar-background",
+                   help="JSON static voxel map from record_lidar_background.py")
     p.add_argument(
         "--clock-topic",
         default="/clock",
@@ -174,6 +191,10 @@ def main():
         "roi_max_px": a.roi_max_px,
         "roi_tracking": not a.no_roi_tracking,
         "watchdog_period_s": a.watchdog_period_s,
+        "lidar_enabled": bool(not a.no_lidar and cfg.get("lidar")),
+        "lidar_topic": (cfg.get("lidar") or {}).get("topic") if not a.no_lidar else None,
+        "lidar_max_radius_m": a.lidar_max_radius,
+        "lidar_sweep_s": a.lidar_sweep_s,
         "camera_policy": "asynchronous_group_window",
         "covariance_model": "ray_plane_anisotropic_v2",
     }, indent=2) + "\n")
@@ -252,6 +273,27 @@ def main():
     for planner in planners.values():
         planner.tag_plane_z = a.base_z_nominal + max(
             float(t["T_base_tag_translation"][2]) for t in tag_entries)
+
+    lidar_config = cfg.get("lidar")
+    lidar = None
+    if not a.no_lidar and lidar_config:
+        background = None
+        if a.lidar_background:
+            background = lidar_pipeline.StaticVoxelMap.from_dict(
+                json.loads(Path(a.lidar_background).read_text()))
+        lidar = lidar_pipeline.ArenaLidar(
+            lidar_config["position_world"], lidar_config["R_world_sensor"],
+            z_band=tuple(a.lidar_z_band),
+            sweep_duration_s=a.lidar_sweep_s,
+            max_useful_radius_m=a.lidar_max_radius,
+            max_extent_m=a.lidar_max_extent,
+            min_points=a.lidar_min_points,
+            background=background,
+        )
+    lidar_topic = a.lidar_topic or (lidar_config or {}).get("topic")
+    lidar_rows = collections.deque(maxlen=8192)
+    lidar_latest = {"scan": None}
+    lidar_event = threading.Event()
 
     def track_prediction():
         """(x, y, sigma) of the tag_rover track, or None when there is none."""
@@ -333,6 +375,16 @@ def main():
         capture.push(cid, msg)
         if not a.tag_only:
             yolo_capture.push(cid, msg)
+
+    if lidar is not None:
+        def lidar_cb(msg):
+            with lock:
+                lidar_latest["scan"] = msg
+            lidar_event.set()
+
+        if not node.subscribe(LaserScan, lidar_topic, lidar_cb):
+            raise RuntimeError(lidar_topic)
+        topics.append(lidar_topic)
 
     for cid in cams:
         topic = f"/cameras/{cid}/image"
@@ -510,6 +562,59 @@ def main():
             errors.append(f"{cid}: {exc}")
             stop.set()
 
+    def lidar_worker():
+        """One position per revolution, only for a track a marker created."""
+        while not stop.is_set():
+            if not lidar_event.wait(0.2):
+                continue
+            lidar_event.clear()
+            with lock:
+                message = lidar_latest["scan"]
+                lidar_latest["scan"] = None
+            if message is None:
+                continue
+            begin = time.monotonic_ns()
+            parsed = lidar_pipeline.parse_laser_scan(message)
+            with lock:
+                track = filters.get("tag_rover")
+                state = track.x if track is not None and track.initialized else None
+                covariance = track.P if state is not None else None
+                tracking = (track.tracking_state(parsed["stamp_ns"])
+                            if track is not None else "LOST")
+            row = {"stamp_ns": parsed["stamp_ns"], "wall_ns": time.monotonic_ns(),
+                   "tracking_state": tracking}
+            # The lidar continues a confirmed track; it never starts one.
+            if state is None or tracking in ("LOST", "REACQUIRING"):
+                row["reason"] = "no_confirmed_track"
+                with lock:
+                    lidar_rows.append(row)
+                continue
+            scan = lidar.scan_to_arena(parsed)
+            velocity = (float(state[2]), float(state[3]), 0.0)
+            points = lidar.deskew(scan, velocity)
+            sigma = math.sqrt(max(float(covariance[0, 0]), float(covariance[1, 1])))
+            speed = math.hypot(velocity[0], velocity[1])
+            before = dict(lidar.rejections)
+            cluster = lidar.detect(points, (float(state[0]), float(state[1])),
+                                   sigma, speed, parsed["stamp_ns"])
+            row.update(returns=scan.returns, rays=scan.rays,
+                       prediction=[float(state[0]), float(state[1])],
+                       prediction_sigma_m=sigma,
+                       processing_ms=(time.monotonic_ns() - begin) / 1e6)
+            if cluster is None:
+                new = [k for k, v in lidar.rejections.items() if v != before.get(k)]
+                row["reason"] = new[0] if new else "unknown"
+            else:
+                row.update(reason="accepted", x=cluster.x, y=cluster.y,
+                           z_max=cluster.z_max, points=cluster.points,
+                           extent_x=cluster.extent_x, extent_y=cluster.extent_y,
+                           residual_m=cluster.residual_m, sigma_m=cluster.sigma_m)
+                with lock:
+                    buffers["tag_rover"].push(
+                        lidar_pipeline.measurement_from_cluster(cluster))
+            with lock:
+                lidar_rows.append(row)
+
     def yolo_worker():
         try:
             next_inference = time.monotonic()
@@ -601,12 +706,15 @@ def main():
     def record_worker():
         with (out / "observations.jsonl").open("w") as fo, (
             out / "odometry.jsonl"
-        ).open("w") as fp, (out / "camera_frames.jsonl").open("w") as fc:
+        ).open("w") as fp, (out / "camera_frames.jsonl").open("w") as fc, (
+            out / "lidar.jsonl"
+        ).open("w") as fl:
             while (
                 not record_done.is_set()
                 or observations
                 or publication
                 or camera_frames
+                or lidar_rows
             ):
                 with lock:
                     ob = list(observations)
@@ -615,6 +723,11 @@ def main():
                     publication.clear()
                     frames = list(camera_frames)
                     camera_frames.clear()
+                    scans = list(lidar_rows)
+                    lidar_rows.clear()
+                for row in scans:
+                    fl.write(json.dumps(row) + "\n")
+                fl.flush()
                 for row in ob:
                     fo.write(json.dumps(row) + "\n")
                 for row in pub:
@@ -763,6 +876,10 @@ def main():
                     for name, f in filters.items()
                 },
                 "buffer_pending": {name: len(b.pending) for name, b in buffers.items()},
+                "lidar": ({"scans": lidar.scans, "detections": lidar.detections,
+                           "rejections": dict(lidar.rejections),
+                           "topic": lidar_topic}
+                          if lidar is not None else None),
                 "clock": dict(clock),
                 "errors": list(errors),
             }
@@ -782,6 +899,8 @@ def main():
         (publisher_worker, ()),
         (record_worker, ()),
     ]
+    if lidar is not None:
+        jobs.insert(0, (lidar_worker, ()))
     if not a.tag_only:
         jobs.insert(0, (yolo_worker, ()))
     threads = [threading.Thread(target=guarded(target, args)) for target, args in jobs]
