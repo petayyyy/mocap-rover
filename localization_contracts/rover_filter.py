@@ -266,13 +266,19 @@ class ImmRoverFilter:
     Only a source that can read the marker may create a track or restore its
     identity.  Lidar and image trackers continue a track that already exists,
     which is what stops a second rover or a shadow from inheriting the id.
+
+    One rover may carry several markers -- the arena rover has one on top and
+    one underneath -- so ``identity_aliases`` names the markers that all mean
+    this same track.  Without it the identity lock reads a flip, where the
+    visible marker changes from the top id to the bottom one, as a different
+    object and rejects every fix from the only marker still in view.
     """
 
     def __init__(self, *, models=None, transition=None, history_s=1.5,
                  coast_ms=300, identity_max_age_s=2.0, lost_ms=1500,
                  max_speed_mps=13.0, gate_chi2=9.21, marker_gate_chi2=16.3,
                  huber_delta=1.5, arena_bounds=(-0.3, 12.3),
-                 initial_speed_sigma=6.0):
+                 initial_speed_sigma=6.0, identity_aliases=None):
         self.models = list(models or (MotionModel(), CoordinatedTurnModel()))
         n = len(self.models)
         if transition is None:
@@ -298,6 +304,7 @@ class ImmRoverFilter:
         self.marker_gate_chi2 = float(marker_gate_chi2)
         self.huber_delta = float(huber_delta)
         self.arena_bounds = tuple(arena_bounds)
+        self.identity_aliases = frozenset(identity_aliases or ())
         self.initial_speed_sigma = float(initial_speed_sigma)
         self.accepted = 0
         self.rejected = 0
@@ -559,6 +566,10 @@ class ImmRoverFilter:
         if self.identity is None or measurement.identity is None:
             return True
         if measurement.identity == self.identity:
+            return True
+        # Two markers on one rover are one identity: seeing the underside id
+        # after a flip is the same object, not a competing one.
+        if {self.identity, measurement.identity} <= self.identity_aliases:
             return True
         self.id_rejections += 1
         return False

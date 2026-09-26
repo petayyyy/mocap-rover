@@ -115,6 +115,30 @@ class Identity(unittest.TestCase):
         self.assertGreater(self.filter.id_rejections, 0)
         self.assertEqual(self.filter.identity, "tag36h11:0")
 
+    def test_the_underside_marker_keeps_the_track_after_a_flip(self):
+        """A flip swaps which marker is visible; the rover is still the rover.
+
+        Both ids name one object, so the identity lock must not read the
+        underside marker as a rival and reject every fix the only visible
+        marker can still give.
+        """
+        flipping = ImmRoverFilter(identity_aliases={"tag36h11:0", "tag36h11:1"})
+        flipping.apply_group([position(0, 6.0, 6.0, identity="tag36h11:0")])
+        t = 0
+        while t < 3000:
+            t += 30
+            flipping.apply_group([position(t, 6.0, 6.0, identity="tag36h11:1")])
+        self.assertEqual(flipping.id_rejections, 0)
+        self.assertEqual(flipping.tracking_state(t * MS), TRACKING)
+        self.assertEqual(flipping.identity, "tag36h11:1")
+
+    def test_an_unlisted_marker_still_cannot_take_the_track(self):
+        flipping = ImmRoverFilter(identity_aliases={"tag36h11:0", "tag36h11:1"})
+        flipping.apply_group([position(0, 3.0, 3.0, identity="tag36h11:0")])
+        rival = position(50, 3.1, 3.0, "camera_2", identity="tag36h11:7")
+        self.assertFalse(flipping.apply_group([rival]))
+        self.assertGreater(flipping.id_rejections, 0)
+
     def test_a_stale_identity_forces_reacquiring_even_while_lidar_tracks(self):
         self.filter.apply_group([position(0, 3.0, 3.0)])
         t = 0

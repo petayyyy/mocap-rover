@@ -258,12 +258,19 @@ def main():
     # No barrier. Each camera publishes its own observations the moment it has
     # them; the buffer closes a group on a timeout measured from capture, so a
     # fast camera never waits for a slow one.
+    def marker_identities():
+        # Every configured marker names the same rover.  The rover carries one
+        # on top and one underneath, so a flip changes which id is visible
+        # without changing what is being tracked.
+        return {f"{marker_family}:{int(i)}" for i in tags}
+
     def make_filter():
         return ImmRoverFilter(
             coast_ms=a.coast_ms,
             identity_max_age_s=a.identity_max_age_s,
             lost_ms=a.lost_ms,
             max_speed_mps=a.max_speed_mps,
+            identity_aliases=marker_identities(),
         )
 
     filters = {"tag_rover": make_filter(), "opponent": make_filter()}
@@ -1059,8 +1066,10 @@ def main():
             tags = new_tags
             marker_family = new_family
             tag_size_m = new_tag_size_m
+            aliases = marker_identities()
             for f in filters.values():
                 f.reset()
+                f.identity_aliases = aliases
             tracks.clear()
             for values in accepted_wall.values():
                 values.clear()
