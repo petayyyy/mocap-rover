@@ -89,6 +89,13 @@ class WorldRates(unittest.TestCase):
         self.assertTrue(all(v < 11.11 for v in limits),
                         "world already allows 40 km/h; update this test")
 
+    def source_lidar_rate(self):
+        import xml.etree.ElementTree as ET
+        for sensor in ET.parse(ROOT / "worlds" / "mocap_arena_l2.sdf").getroot().iter("sensor"):
+            if sensor.get("type") == "gpu_lidar":
+                return float(sensor.findtext("update_rate"))
+        self.fail("world has no gpu_lidar")
+
     def test_patching_lifts_every_cap_that_matters(self):
         tree, changes = self.patched()
         root = tree.getroot()
@@ -103,8 +110,11 @@ class WorldRates(unittest.TestCase):
             if sensor.get("type") == "camera":
                 self.assertEqual(float(sensor.findtext("update_rate")), 90.0)
             if sensor.get("type") == "gpu_lidar":
-                # Left alone unless asked: the L2 really does run at 5.55 Hz.
-                self.assertAlmostEqual(float(sensor.findtext("update_rate")), 5.55)
+                # Left alone unless asked.  Compared against the source world
+                # rather than a literal: the sweep rate belongs to whichever
+                # sensor the world models, and set_world_lidar.py changes it.
+                self.assertAlmostEqual(float(sensor.findtext("update_rate")),
+                                       self.source_lidar_rate())
         self.assertTrue(changes)
 
     def test_patching_is_idempotent(self):

@@ -5141,10 +5141,10 @@
         </sensor>
       </link>
     </model>
-    <model name="arena_unitree_l2">
+    <model name="arena_robosense_airy">
       <static>true</static>
       <pose>6 6 2.75 3.141592653589793 0 0</pose>
-      <link name="l2_lidar_link">
+      <link name="airy_lidar_link">
         <visual name="l2_base_visual">
           <geometry>
             <mesh>
@@ -5162,34 +5162,34 @@
           </geometry>
         </visual>
         <sensor name="l2_normal" type="gpu_lidar">
-          <topic>/unitree_l2/normal/scan</topic>
+          <topic>/robosense_airy/normal/scan</topic>
           <always_on>true</always_on>
-          <update_rate>5.55</update_rate>
+          <update_rate>10.0</update_rate>
           <visualize>true</visualize>
           <ray>
             <scan>
               <horizontal>
-                <samples>288</samples>
+                <samples>900</samples>
                 <resolution>1</resolution>
                 <min_angle>-3.141592653589793</min_angle>
                 <max_angle>3.141592653589793</max_angle>
               </horizontal>
               <vertical>
-                <samples>64</samples>
+                <samples>95</samples>
                 <resolution>1</resolution>
-                <min_angle>0</min_angle>
-                <max_angle>1.570796326794897</max_angle>
+                <min_angle>0.0</min_angle>
+                <max_angle>1.5707963267948966</max_angle>
               </vertical>
             </scan>
             <range>
-              <min>0.05</min>
-              <max>30</max>
-              <resolution>0.0045</resolution>
+              <min>0.1</min>
+              <max>60.0</max>
+              <resolution>0.015</resolution>
             </range>
           </ray>
         </sensor>
         <sensor name="l2_imu" type="imu">
-          <topic>/unitree_l2/imu</topic>
+          <topic>/robosense_airy/imu</topic>
           <always_on>true</always_on>
           <update_rate>500</update_rate>
         </sensor>
