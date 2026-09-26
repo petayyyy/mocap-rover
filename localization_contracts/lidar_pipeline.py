@@ -408,10 +408,38 @@ class StaticVoxelMap:
     Build it on an empty arena, from a file, and not from the live stream.
     """
 
+    _SPAN = 2048          # voxel indices per axis, enough for a 12 m arena
+    _OFFSET = 1024
+
     def __init__(self, voxel_size_m=0.06, dilate=1):
         self.voxel_size_m = float(voxel_size_m)
         self.dilate = int(dilate)
         self.voxels = set()
+        self._encoded = np.empty(0, dtype=np.int64)
+
+    @classmethod
+    def _encode(cls, keys):
+        """Pack integer voxel indices into one sortable int64 per voxel."""
+        keys = np.asarray(keys, dtype=np.int64).reshape(-1, 3) + cls._OFFSET
+        if keys.size and (keys.min() < 0 or keys.max() >= cls._SPAN):
+            raise ValueError("voxel index outside the encodable range")
+        return (keys[:, 0] * cls._SPAN + keys[:, 1]) * cls._SPAN + keys[:, 2]
+
+    def _rebuild(self):
+        """Bake the dilation in once so lookup is a vectorised membership test.
+
+        The obvious loop -- 27 dict probes per point -- costs half a million
+        lookups per revolution and does not fit in the 180 ms budget.
+        """
+        if not self.voxels:
+            self._encoded = np.empty(0, dtype=np.int64)
+            return
+        base = np.asarray(sorted(self.voxels), dtype=np.int64).reshape(-1, 3)
+        span = range(-self.dilate, self.dilate + 1)
+        shifts = np.array([(dx, dy, dz) for dx in span for dy in span for dz in span],
+                          dtype=np.int64)
+        expanded = (base[:, None, :] + shifts[None, :, :]).reshape(-1, 3)
+        self._encoded = np.unique(self._encode(expanded))
 
     def fit(self, clouds, min_fraction=0.6):
         clouds = [np.asarray(c, dtype=float).reshape(-1, 3) for c in clouds]
@@ -424,28 +452,35 @@ class StaticVoxelMap:
             for key in map(tuple, keys):
                 counts[key] = counts.get(key, 0) + 1
         threshold = max(1, math.ceil(len(clouds) * float(min_fraction)))
-        self.voxels = {key for key, count in counts.items() if count >= threshold}
+        self.voxels = {tuple(int(v) for v in key)
+                       for key, count in counts.items() if count >= threshold}
+        self._rebuild()
         return self
 
     def contains(self, points):
         points = np.asarray(points, dtype=float).reshape(-1, 3)
-        if not self.voxels:
+        if self._encoded.size == 0 or len(points) == 0:
             return np.zeros(len(points), dtype=bool)
-        keys = np.floor(points / self.voxel_size_m).astype(np.int64)
-        offsets = range(-self.dilate, self.dilate + 1)
+        keys = np.floor(points / self.voxel_size_m).astype(np.int64) + self._OFFSET
+        inside = ((keys >= 0) & (keys < self._SPAN)).all(axis=1)
         out = np.zeros(len(points), dtype=bool)
-        for index, key in enumerate(map(tuple, keys)):
-            out[index] = any(
-                (key[0] + dx, key[1] + dy, key[2] + dz) in self.voxels
-                for dx in offsets for dy in offsets for dz in offsets)
+        if not inside.any():
+            return out
+        packed = (keys[inside, 0] * self._SPAN + keys[inside, 1]) * self._SPAN \
+            + keys[inside, 2]
+        index = np.searchsorted(self._encoded, packed)
+        index[index >= self._encoded.size] = 0
+        out[inside] = self._encoded[index] == packed
         return out
 
     def to_dict(self):
+        # numpy integers survive the set but not json.dumps.
         return {"voxel_size_m": self.voxel_size_m, "dilate": self.dilate,
-                "voxels": sorted(self.voxels)}
+                "voxels": sorted(tuple(int(v) for v in key) for key in self.voxels)}
 
     @classmethod
     def from_dict(cls, data):
         out = cls(data["voxel_size_m"], data.get("dilate", 1))
-        out.voxels = {tuple(v) for v in data["voxels"]}
+        out.voxels = {tuple(int(v) for v in key) for key in data["voxels"]}
+        out._rebuild()
         return out

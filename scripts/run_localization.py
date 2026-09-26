@@ -16,7 +16,8 @@ from gz.msgs10.image_pb2 import Image
 from gz.msgs10.clock_pb2 import Clock
 from gz.msgs10.laserscan_pb2 import LaserScan
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 from localization_contracts import lidar_pipeline, roi_tracker
 from localization_contracts.camera_model import CameraModel
 from localization_contracts.capture import LatestFrames, rgb_array
@@ -102,8 +103,11 @@ def main():
                    default=lidar_pipeline.DEFAULT_SWEEP_DURATION_S,
                    help="Revolution time for deskew; a gz gpu_lidar renders "
                         "the whole grid at one instant, so 0 is correct there")
-    p.add_argument("--lidar-background",
-                   help="JSON static voxel map from record_lidar_background.py")
+    p.add_argument("--lidar-background", default=None,
+                   help="JSON voxel map from record_lidar_background.py; "
+                        "config/lidar_background.json is used when present")
+    p.add_argument("--no-lidar-background", action="store_true",
+                   help="Ignore the recorded map even if there is one")
     p.add_argument(
         "--clock-topic",
         default="/clock",
@@ -200,6 +204,8 @@ def main():
         "lidar_topic": (cfg.get("lidar") or {}).get("topic") if not a.no_lidar else None,
         "lidar_max_radius_m": a.lidar_max_radius,
         "lidar_sweep_s": a.lidar_sweep_s,
+        "lidar_background": (None if a.no_lidar_background else
+                             str(a.lidar_background or ROOT / "config/lidar_background.json")),
         "camera_policy": "asynchronous_group_window",
         "covariance_model": "ray_plane_anisotropic_v2",
     }, indent=2) + "\n")
@@ -282,10 +288,17 @@ def main():
     lidar_config = cfg.get("lidar")
     lidar = None
     if not a.no_lidar and lidar_config:
+        # The arena is not empty above the floor: 0.4 m barriers line all four
+        # edges, inside the rover height band and exactly where the cameras
+        # lose the marker.  Without this map the lidar merges the rover with
+        # them at range and refuses every scan in the one place it is needed.
+        background_path = Path(a.lidar_background or (ROOT / "config/lidar_background.json"))
         background = None
-        if a.lidar_background:
+        if not a.no_lidar_background and background_path.exists():
             background = lidar_pipeline.StaticVoxelMap.from_dict(
-                json.loads(Path(a.lidar_background).read_text()))
+                json.loads(background_path.read_text()))
+        elif a.lidar_background:
+            raise SystemExit(f"no lidar background at {background_path}")
         lidar = lidar_pipeline.ArenaLidar(
             lidar_config["position_world"], lidar_config["R_world_sensor"],
             z_band=tuple(a.lidar_z_band),
@@ -884,6 +897,8 @@ def main():
                 "buffer_pending": {name: len(b.pending) for name, b in buffers.items()},
                 "lidar": ({"scans": lidar.scans, "detections": lidar.detections,
                            "rejections": dict(lidar.rejections),
+                           "background_voxels": (len(lidar.background.voxels)
+                                                 if lidar.background else 0),
                            "topic": lidar_topic}
                           if lidar is not None else None),
                 "clock": dict(clock),

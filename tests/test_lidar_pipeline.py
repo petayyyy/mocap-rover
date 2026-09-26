@@ -1,4 +1,5 @@
 """Unitree L2 pipeline, against ray-cast scans of the arena."""
+import json
 import math
 import unittest
 import warnings
@@ -235,6 +236,13 @@ class Background(unittest.TestCase):
         cluster = unit.detect(scan.points, (8.2, 6.0), 0.05, 0.5, 0)
         self.assertIsNotNone(cluster, unit.rejections)
 
+    def test_a_map_is_json_serialisable(self):
+        # np.floor(...).astype(int64) keys survive the set but not json.dumps,
+        # which only shows up after a full empty-arena recording.
+        background = StaticVoxelMap(0.1).fit([np.array([[1.0, 2.0, 0.3],
+                                                        [1.4, 2.2, 0.35]])])
+        json.dumps(background.to_dict())
+
     def test_a_map_survives_a_round_trip(self):
         background = StaticVoxelMap(0.1).fit([np.array([[1.0, 2.0, 0.3]])])
         restored = StaticVoxelMap.from_dict(background.to_dict())
@@ -342,3 +350,36 @@ class ContinuationPolicy(unittest.TestCase):
 def may_continue_state(state):
     from localization_contracts.lidar_pipeline import may_continue
     return may_continue(state)
+
+
+class BackgroundPerformance(unittest.TestCase):
+    """A revolution arrives every 180 ms; lookup has to fit inside that."""
+
+    def test_removal_is_fast_enough_for_a_full_revolution(self):
+        import time
+
+        rng = np.random.default_rng(0)
+        occupied = rng.uniform([0, 0, 0.05], [12, 12, 0.6], size=(1000, 3))
+        background = StaticVoxelMap(0.10).fit([occupied])
+        cloud = rng.uniform([0, 0, 0.0], [12, 12, 0.6], size=(18432, 3))
+        background.contains(cloud)
+        start = time.perf_counter()
+        for _ in range(5):
+            mask = background.contains(cloud)
+        elapsed = (time.perf_counter() - start) / 5
+        self.assertLess(elapsed, 0.020, f"{elapsed*1000:.0f} ms per revolution")
+        self.assertEqual(mask.shape, (18432,))
+
+    def test_the_recorded_arena_background_loads_and_removes_the_barriers(self):
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[1] / "config" / "lidar_background.json"
+        if not path.exists():
+            self.skipTest("run scripts/record_lidar_background.py first")
+        background = StaticVoxelMap.from_dict(json.loads(path.read_text()))
+        self.assertGreater(len(background.voxels), 100)
+        # The barriers sit at x or y = 0.08, 0.16 wide and 0.4 tall.
+        barrier = np.array([[0.08, 5.0, 0.30], [11.92, 5.0, 0.30],
+                            [5.0, 0.08, 0.30], [5.0, 11.92, 0.30]])
+        self.assertTrue(background.contains(barrier).all())
+        # The middle of the arena at rover height must stay visible.
+        self.assertFalse(background.contains([[6.0, 6.0, 0.30]])[0])
