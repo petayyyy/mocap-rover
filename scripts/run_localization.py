@@ -58,6 +58,9 @@ def main():
     # small its reprojection error.
     p.add_argument("--base-z-nominal", type=float, default=0.14,
                    help="Height of the rover base link above the arena floor")
+    p.add_argument("--inverted-base-z", type=float, default=0.225,
+                   help="Base height when the rover is upside down and the "
+                        "underside marker faces the ceiling")
     p.add_argument("--base-z-tolerance", type=float, default=0.25,
                    help="Gross-error bound on the PnP base height")
     p.add_argument("--max-incidence-deg", type=float, default=65.0)
@@ -189,6 +192,7 @@ def main():
         "tag_max_planar_tilt_deg": a.tag_max_planar_tilt_deg,
         "tag_min_side_px": a.tag_min_side_px,
         "base_z_nominal_m": a.base_z_nominal,
+        "inverted_base_z_m": a.inverted_base_z,
         "base_z_tolerance_m": a.base_z_tolerance,
         "max_incidence_deg": a.max_incidence_deg,
         "pnp_ray_disagreement_m": a.pnp_ray_disagreement,
@@ -213,6 +217,10 @@ def main():
         "covariance_model": "ray_plane_anisotropic_v2",
     }, indent=2) + "\n")
     pose_gates = dict(
+        # Which way up each marker implies the rover is. A ceiling camera can
+        # only see the underside marker when the rover has flipped.
+        tag_placement={int(t["id"]): t.get("placement", "top") for t in tag_entries},
+        inverted_base_z_m=a.inverted_base_z,
         base_z_nominal_m=a.base_z_nominal,
         base_z_tolerance_m=a.base_z_tolerance,
         max_incidence_deg=a.max_incidence_deg,
@@ -453,17 +461,21 @@ def main():
                     applied = filters[name].apply_group(group)
                     if applied:
                         accepted_wall[name].append(time.monotonic_ns())
+                    # Per source, not per group: a camera the filter gated out
+                    # must not be recorded as accepted because a different
+                    # camera in the same window got through.
+                    taken = {(m.source, m.stamp_ns) for m in applied}
                     window = {m.stamp_ns for m in group}
                     remaining = []
                     for obs in pending_observations[name]:
-                        if obs.capture_time_ns in window:
-                            record_observation(
-                                obs, applied,
-                                "fusion_accepted" if applied else "fusion_gate")
-                            if applied:
-                                mark_frame_accepted(obs)
-                        else:
+                        if obs.capture_time_ns not in window:
                             remaining.append(obs)
+                            continue
+                        ok = (obs.camera_id, obs.capture_time_ns) in taken
+                        record_observation(
+                            obs, ok, "fusion_accepted" if ok else "fusion_gate")
+                        if ok:
+                            mark_frame_accepted(obs)
                     pending_observations[name] = remaining
 
     def mark_frame_accepted(obs):

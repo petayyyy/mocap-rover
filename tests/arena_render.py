@@ -101,6 +101,24 @@ def render(camera_xyz, R_world_optical, base_xy, yaw=0.0, tag_id=0,
     return frame
 
 
+INVERTED_BASE_Z = 0.225      # upside down, resting on the top plate
+
+
+def render_inverted(camera_xyz, R_world_optical, base_xy, yaw=0.0, **kwargs):
+    """The rover on its back: the underside marker now faces the ceiling.
+
+    Two rotations cancel. The marker is printed with R_base_tag =
+    diag(1,-1,-1) so it faces down, and turning the rover over applies the
+    same rotation again, so what the ceiling sees is an unmirrored marker --
+    which is the whole reason it can be decoded at all. What flips is the
+    offset: +0.0146 in base coordinates ends up below the base in the world,
+    and the base rests a top-plate height above the floor.
+    """
+    return render(camera_xyz, R_world_optical, base_xy, yaw=yaw, tag_id=1,
+                  flipped=False, base_z=INVERTED_BASE_Z,
+                  tag_dz=-BOTTOM_TAG_DZ, **kwargs)
+
+
 def visible_corners(frame, family="tag36h11", ids=(0, 1)):
     """Detect the marker the way the runtime does."""
     from localization_contracts.detector import AprilTagImageDetector

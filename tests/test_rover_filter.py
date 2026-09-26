@@ -331,3 +331,32 @@ class Adapter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerSourceOutcome(unittest.TestCase):
+    """Accept/reject has to be reported per source, not per group."""
+
+    def test_only_the_measurements_that_were_applied_come_back(self):
+        f = ImmRoverFilter()
+        f.apply_group([position(0, 3.0, 3.0, "camera_1")])
+        good = position(20, 3.01, 3.0, "camera_1")
+        # A metre off with a tight covariance: gated out on its own merits.
+        rogue = Measurement(20 * MS, POSITION, (4.0, 3.0),
+                            (1e-6, 0.0, 0.0, 1e-6), "camera_5", None, False)
+        applied = f.apply_group([good, rogue])
+        sources = {m.source for m in applied}
+        self.assertIn("camera_1", sources)
+        self.assertNotIn("camera_5", sources)
+
+    def test_an_empty_result_is_falsy_and_a_full_one_is_truthy(self):
+        f = ImmRoverFilter()
+        self.assertFalse(f.apply_group([]))
+        self.assertTrue(f.apply_group([position(0, 3.0, 3.0)]))
+
+    def test_a_replayed_late_measurement_reports_itself(self):
+        f = ImmRoverFilter()
+        f.apply_group([position(0, 0.0, 1.0)])
+        for t in (10, 20, 30):
+            f.apply_group([position(t, 2.0 * t / 1000.0, 1.0, f"camera_{t}")])
+        applied = f.apply_group([position(15, 0.03, 1.0, "camera_late")])
+        self.assertEqual({m.source for m in applied}, {"camera_late"})

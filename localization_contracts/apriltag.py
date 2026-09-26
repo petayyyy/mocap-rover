@@ -81,6 +81,7 @@ class PnpAprilTagObserver(AprilTagObserver):
                  min_edge_distance_px=8.0, valid_radius_margin=0.85,
                  min_quad_aspect=0.35, xy_source="ray", quality_reference_m=0.02,
                  plane_normal_world=(0.0, 0.0, 1.0),
+                 tag_placement=None, inverted_base_z_m=0.225,
                  sigma_px_corner=None, sigma_plane_m=0.02,
                  sigma_extrinsic_m=0.01):
         super().__init__(config, float(K[0][0]), float(K[1][1]), float(K[0][2]), float(K[1][2]), quality_min)
@@ -107,6 +108,15 @@ class PnpAprilTagObserver(AprilTagObserver):
         # branch the planarity gate exists to reject.
         normal = np.asarray(plane_normal_world, dtype=float).reshape(3)
         self.plane_normal_world = normal / max(np.linalg.norm(normal), 1e-12)
+        # The rover carries a marker on top and another underneath.  Seeing
+        # the underside one from a ceiling camera means the rover is upside
+        # down, so the marker id states the orientation instead of the gate
+        # having to accept both and hope.  That is strictly stronger than
+        # taking abs() of the alignment: each id still has exactly one
+        # expected sign, so a mirrored PnP branch is rejected as before.
+        self.tag_placement = {int(k): str(v).lower()
+                              for k, v in (tag_placement or {}).items()}
+        self.inverted_base_z_m = float(inverted_base_z_m)
         self.sigma_plane_m = float(sigma_plane_m)
         self.sigma_extrinsic_m = float(sigma_extrinsic_m)
         # Corner localization noise as a function of apparent marker size.  A
@@ -154,9 +164,29 @@ class PnpAprilTagObserver(AprilTagObserver):
 
     # ------------------------------------------------------------- geometry
 
+    def base_orientation(self, tag_id):
+        """+1 when this marker implies an upright rover, -1 when inverted."""
+        return -1.0 if self.tag_placement.get(int(tag_id)) == "bottom" else 1.0
+
+    def nominal_base_z(self, tag_id):
+        """Expected base height for the orientation this marker implies.
+
+        An upside-down rover rests on whatever was highest, so its base link
+        sits roughly a top-plate offset above the floor rather than a wheel
+        radius.  The default is an estimate; measure it if flips matter.
+        """
+        return (self.base_z_nominal_m if self.base_orientation(tag_id) > 0
+                else self.inverted_base_z_m)
+
     def tag_plane_z(self, tag_id):
-        """Arena height of the marker surface for a level rover."""
-        return self.base_z_nominal_m + float(self.tag_transforms[tag_id][2, 3])
+        """Arena height of the marker surface for a level rover.
+
+        Flipping the rover mirrors the marker offset through the base, so the
+        sign of the offset follows the orientation.
+        """
+        sign = self.base_orientation(tag_id)
+        return (self.nominal_base_z(tag_id)
+                + sign * float(self.tag_transforms[tag_id][2, 3]))
 
     def corner_sigma_px(self, side_px):
         for threshold, sigma in self.sigma_px_corner:
@@ -245,6 +275,8 @@ class PnpAprilTagObserver(AprilTagObserver):
             return self._reject("frame_edge", side_px=side, edge_distance_px=edge)
 
         plane_z = self.tag_plane_z(d.tag_id)
+        sign = self.base_orientation(d.tag_id)
+        nominal_base_z = self.nominal_base_z(d.tag_id)
         centre = image.mean(axis=0)
         ray_point, incidence = self._ray_plane(centre, plane_z)
         if ray_point is None:
@@ -259,14 +291,17 @@ class PnpAprilTagObserver(AprilTagObserver):
         T_arena_base, reproj, tilt, candidates = pnp
 
         base_z = float(T_arena_base[2, 3])
-        ray_base = np.array([ray_point[0], ray_point[1],
-                             plane_z - float(self.tag_transforms[d.tag_id][2, 3])])
+        ray_base = np.array([
+            ray_point[0], ray_point[1],
+            plane_z - sign * float(self.tag_transforms[d.tag_id][2, 3])])
         disagreement = float(np.linalg.norm(T_arena_base[:2, 3] - ray_base[:2]))
         diagnostic = {
             "side_px": side, "quad_aspect": aspect, "edge_distance_px": edge,
             "reprojection_error_px": reproj, "planar_tilt_deg": math.degrees(tilt),
             "incidence_deg": math.degrees(incidence), "candidate_count": candidates,
             "pnp_base_z_m": base_z, "pnp_xy": [float(v) for v in T_arena_base[:2, 3]],
+            "placement": self.tag_placement.get(int(d.tag_id), "top"),
+            "base_inverted": sign < 0,
             "ray_xy": [float(v) for v in ray_base[:2]],
             "pnp_ray_disagreement_m": disagreement,
         }
@@ -287,7 +322,7 @@ class PnpAprilTagObserver(AprilTagObserver):
                                  self.base_z_sigma_gate * sigma_range * sin_i)
         diagnostic.update(range_sigma_m=sigma_range, base_z_limit_m=base_z_limit,
                           pnp_ray_limit_m=disagreement_limit)
-        if abs(base_z - self.base_z_nominal_m) > base_z_limit:
+        if abs(base_z - nominal_base_z) > base_z_limit:
             return self._reject("base_height", **diagnostic)
         if disagreement > disagreement_limit:
             return self._reject("pnp_ray_disagreement", **diagnostic)
@@ -390,7 +425,8 @@ class PnpAprilTagObserver(AprilTagObserver):
             T_arena_base = (T_arena_camera @ T_camera_tag
                             @ np.linalg.inv(self.tag_transforms[tag_id]))
             alignment = float(np.clip(
-                np.dot(T_arena_base[:3, 2], self.plane_normal_world), -1.0, 1.0))
+                np.dot(T_arena_base[:3, 2], self.plane_normal_world)
+                * self.base_orientation(tag_id), -1.0, 1.0))
             tilt = math.acos(alignment)
             candidates.append((tilt, reproj, T_arena_base))
         if not candidates:

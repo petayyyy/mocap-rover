@@ -15,6 +15,28 @@ BROKEN_IMX219_D = [-0.3112978153440105, 0.15431516540306534,
                    -0.05947053168235783]
 
 
+# The rover as the world actually builds it: a marker on top and another,
+# printed upside down, underneath.
+ARENA_TAGS = {
+    0: {"rotation": np.eye(3), "translation": [0, 0, ar.TAG_DZ]},
+    1: {"rotation": np.diag([1.0, -1.0, -1.0]),
+        "translation": [0, 0, ar.BOTTOM_TAG_DZ]},
+}
+ARENA_PLACEMENT = {0: "top", 1: "bottom"}
+
+
+def arena_observer(camera_xyz, R_world_optical, **kwargs):
+    """Observer configured with both markers, as the runtime configures it."""
+    options = dict(quality_min=0.05, min_side_px=14.0,
+                   image_size=list(ar.IMAGE_SIZE),
+                   tag_placement=ARENA_PLACEMENT)
+    options.update(kwargs)
+    return PnpAprilTagObserver(
+        TagConfig(ids=(0, 1), calibration_version="test"), ar.K, [0.0] * 5,
+        {"rotation": R_world_optical, "translation": list(camera_xyz)},
+        ARENA_TAGS, **options)
+
+
 def observer(camera_xyz, R_world_optical, flipped=False, tag_dz=ar.TAG_DZ, **kwargs):
     options = dict(quality_min=0.05, min_side_px=14.0, image_size=list(ar.IMAGE_SIZE))
     options.update(kwargs)
@@ -272,3 +294,94 @@ class XySource(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InvertedRover(unittest.TestCase):
+    """A flip is exactly when the underside marker becomes visible.
+
+    At speed the rover turns over, and a tracker that only knows the top
+    marker loses it at the moment it most needs to be found.
+    """
+
+    CAMERA = (9.0, 9.0, 2.9)
+    PLACEMENT = {0: "top", 1: "bottom"}
+
+    def setUp(self):
+        self.R = ar.camera_rotation()
+
+    def rig(self, **kwargs):
+        return arena_observer(self.CAMERA, self.R, **kwargs)
+
+    def test_placement_states_which_way_up_the_rover_is(self):
+        obs = self.rig()
+        self.assertEqual(obs.base_orientation(0), 1.0)
+        self.assertEqual(obs.base_orientation(1), -1.0)
+        self.assertAlmostEqual(obs.nominal_base_z(0), ar.BASE_Z)
+        self.assertAlmostEqual(obs.nominal_base_z(1), 0.225)
+        # Flipping mirrors the offset through the base.
+        self.assertAlmostEqual(obs.tag_plane_z(0), ar.BASE_Z + ar.TAG_DZ)
+        self.assertAlmostEqual(obs.tag_plane_z(1), 0.225 - ar.BOTTOM_TAG_DZ)
+
+    def test_the_underside_marker_locates_a_flipped_rover(self):
+        obs = self.rig()
+        frame = ar.render_inverted(self.CAMERA, self.R, (8.6, 9.3), yaw=0.4)
+        hits = ar.visible_corners(frame)
+        self.assertTrue(hits, "underside marker should be visible from above")
+        result = obs.observe(Detection("camera_1", 1, 1, hits[0].corners, 1, 2, 3))
+        self.assertIsNotNone(result, obs.last_diagnostic)
+        self.assertLess(math.hypot(result.position_m[0] - 8.6,
+                                   result.position_m[1] - 9.3), 0.05)
+        self.assertTrue(result.pixel_features["base_inverted"])
+        self.assertEqual(result.pixel_features["placement"], "bottom")
+
+    def test_an_upright_rover_still_reads_from_the_top_marker(self):
+        obs = self.rig()
+        result, _ = look(obs, self.CAMERA, self.R, (8.5, 9.4), yaw=0.6)
+        self.assertIsNotNone(result, obs.last_diagnostic)
+        self.assertFalse(result.pixel_features["base_inverted"])
+        self.assertAlmostEqual(result.position_m[2], ar.BASE_Z, places=6)
+
+    def test_the_placement_map_is_what_makes_the_flip_work(self):
+        # Mislabel the underside marker as a top one and the same corners are
+        # refused: the gate follows the declared placement rather than having
+        # been loosened to accept anything roughly level.
+        wrong = arena_observer(self.CAMERA, self.R,
+                               tag_placement={0: "top", 1: "top"})
+        frame = ar.render_inverted(self.CAMERA, self.R, (8.6, 9.3))
+        hits = ar.visible_corners(frame)
+        self.assertTrue(hits)
+        self.assertIsNone(wrong.observe(
+            Detection("camera_1", 1, 1, hits[0].corners, 1, 2, 3)))
+        self.assertIn(wrong.last_diagnostic["reason"],
+                      {"nonplanar_pose", "base_height", "no_physical_solution",
+                       "pnp_ray_disagreement"})
+
+    def test_a_mirrored_branch_is_still_refused_for_either_placement(self):
+        # Reversing the corner winding cannot be fitted by any rigid planar
+        # pose; declaring a placement must not have opened that door.
+        obs = self.rig()
+        for tag_id, frame in (
+                (0, ar.render(self.CAMERA, self.R, (8.5, 9.4))),
+                (1, ar.render_inverted(self.CAMERA, self.R, (8.5, 9.4)))):
+            hits = ar.visible_corners(frame)
+            self.assertTrue(hits)
+            reversed_corners = tuple(reversed(hits[0].corners))
+            with self.subTest(tag_id=tag_id):
+                self.assertIsNone(obs.observe(
+                    Detection("camera_1", 1, tag_id, reversed_corners, 1, 2, 3)))
+
+    def test_default_placement_keeps_the_old_behaviour(self):
+        obs = observer(self.CAMERA, self.R)
+        self.assertEqual(obs.base_orientation(0), 1.0)
+        self.assertEqual(obs.base_orientation(1), 1.0)
+
+    def test_both_markers_place_the_rover_at_the_same_xy(self):
+        obs = self.rig()
+        upright, _ = look(obs, self.CAMERA, self.R, (8.4, 9.2), yaw=0.2)
+        frame = ar.render_inverted(self.CAMERA, self.R, (8.4, 9.2), yaw=0.2)
+        hits = ar.visible_corners(frame)
+        flipped = obs.observe(Detection("camera_1", 2, 1, hits[0].corners, 1, 2, 3))
+        self.assertIsNotNone(upright)
+        self.assertIsNotNone(flipped, obs.last_diagnostic)
+        self.assertLess(math.hypot(upright.position_m[0] - flipped.position_m[0],
+                                   upright.position_m[1] - flipped.position_m[1]), 0.06)

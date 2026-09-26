@@ -24,6 +24,8 @@ import time
 import urllib.error
 import urllib.request
 
+from gz.msgs10.boolean_pb2 import Boolean
+from gz.msgs10.pose_pb2 import Pose
 from gz.msgs10.pose_v_pb2 import Pose_V
 from gz.msgs10.twist_pb2 import Twist
 from gz.transport13 import Node
@@ -32,7 +34,8 @@ HELP = [
     "W / S   throttle forward / back      A / D   steer left / right",
     "SPACE   brake            X   stop instantly          Q   quit",
     "1..9    top speed 1..9 m/s           0   12 m/s (43 km/h)",
-    "R       reset trip peaks",
+    "R       reset rover to home, upright   T   upright in place",
+    "C       clear trip peaks",
 ]
 
 
@@ -43,6 +46,8 @@ class Truth:
         self.lock = threading.Lock()
         self.x = self.y = self.yaw = 0.0
         self.vx = self.vy = 0.0
+        self.z = 0.14
+        self.up = 1.0
         self.stamp_ns = 0
         self.updates = 0
 
@@ -54,12 +59,17 @@ class Truth:
             q = pose.orientation
             yaw = math.atan2(2 * (q.w * q.z + q.x * q.y),
                              1 - 2 * (q.y * q.y + q.z * q.z))
+            # Third column of the rotation: where the rover's own up axis
+            # points. Negative means it is on its back, which is when the
+            # underside marker is the one facing the ceiling.
+            up = 1 - 2 * (q.x * q.x + q.y * q.y)
             with self.lock:
                 dt = (stamp - self.stamp_ns) / 1e9
                 if 0 < dt < 0.5:
                     self.vx = (pose.position.x - self.x) / dt
                     self.vy = (pose.position.y - self.y) / dt
                 self.x, self.y, self.yaw = pose.position.x, pose.position.y, yaw
+                self.z, self.up = pose.position.z, up
                 self.stamp_ns = stamp
                 self.updates += 1
             return
@@ -67,7 +77,7 @@ class Truth:
     def read(self):
         with self.lock:
             return (self.x, self.y, self.yaw, self.vx, self.vy,
-                    self.stamp_ns, self.updates)
+                    self.stamp_ns, self.updates, self.z, self.up)
 
 
 class Estimate:
@@ -99,6 +109,37 @@ class Estimate:
             return self.row, self.error
 
 
+class Placer:
+    """Teleport the rover upright, for when it ends up on its back.
+
+    A reset is a teleport, so the filter's physical-speed gate refuses it and
+    the track drops to LOST until a marker re-establishes it. That is the
+    designed behaviour and worth watching rather than hiding.
+    """
+
+    def __init__(self, node, world, model):
+        self.node = node
+        self.service = f"/world/{world}/set_pose"
+        self.model = model
+        self.last = ""
+
+    def place(self, x, y, yaw, z):
+        request = Pose()
+        request.name = self.model
+        request.position.x, request.position.y, request.position.z = x, y, z
+        request.orientation.z = math.sin(yaw / 2)
+        request.orientation.w = math.cos(yaw / 2)
+        try:
+            ok, reply = self.node.request(self.service, request, Pose, Boolean, 2000)
+        except Exception as exc:                      # transport is best effort
+            self.last = f"сброс не прошёл: {type(exc).__name__}"
+            return False
+        ok = bool(ok) and bool(getattr(reply, "data", False))
+        self.last = (f"сброс в ({x:.2f}, {y:.2f}) курс {math.degrees(yaw):.0f}°"
+                     if ok else f"сброс отклонён сервисом {self.service}")
+        return ok
+
+
 def bar(value, limit, width=28):
     filled = int(round(width * min(abs(value) / max(limit, 1e-6), 1.0)))
     return ("#" * filled).ljust(width)
@@ -124,6 +165,8 @@ def run(screen, args):
                    lambda m: truth.on_pose(m, model))
     estimate = Estimate(args.status_url)
     threading.Thread(target=estimate.poll, daemon=True).start()
+    placer = Placer(node, args.world, model)
+    resets = 0
 
     top_speed = args.linear
     throttle = steering = 0.0
@@ -153,8 +196,20 @@ def run(screen, args):
                 elif key in (ord("x"), ord("X")):
                     throttle = steering = 0.0
                     last_key = now
-                elif key in (ord("r"), ord("R")):
+                elif key in (ord("c"), ord("C")):
                     peak_speed = peak_lag = peak_age = 0.0
+                elif key in (ord("r"), ord("R"), ord("t"), ord("T")):
+                    throttle = steering = 0.0
+                    publisher.publish(Twist())
+                    here = truth.read()
+                    if key in (ord("t"), ord("T")):
+                        target = (here[0], here[1], here[2])
+                    else:
+                        target = (args.home[0], args.home[1],
+                                  math.radians(args.home[2]))
+                    if placer.place(target[0], target[1], target[2], args.reset_z):
+                        resets += 1
+                    last_key = now
                 elif ord("0") <= key <= ord("9"):
                     top_speed = 12.0 if key == ord("0") else float(key - ord("0"))
                 key = screen.getch()
@@ -177,7 +232,7 @@ def run(screen, args):
             command.angular.z = angular
             publisher.publish(command)
 
-            tx, ty, tyaw, tvx, tvy, tstamp, updates = truth.read()
+            tx, ty, tyaw, tvx, tvy, tstamp, updates, tz, up = truth.read()
             row, error = estimate.read()
             speed = math.hypot(tvx, tvy)
             peak_speed = max(peak_speed, speed)
@@ -209,8 +264,13 @@ def run(screen, args):
             put(f"  тяга    [{bar(throttle, 1.0)}] {linear:+6.2f} м/с")
             put(f"  поворот [{bar(steering, 1.0)}] {angular:+6.2f} рад/с")
             put("")
+            flipped = up < 0.0
+            attitude = ("ПЕРЕВЁРНУТ — виден нижний маркер" if flipped
+                        else "на колёсах" if up > 0.7 else "на боку")
             put(f"  СИМУЛЯТОР   x={tx:7.3f}  y={ty:7.3f}  yaw={math.degrees(tyaw):+7.1f}°"
                 f"   {speed:5.2f} м/с = {speed*3.6:5.1f} км/ч", 4)
+            put(f"  положение   z={tz:6.3f} м   {attitude}"
+                f"   сбросов {resets}", 3 if flipped else 0)
             if state:
                 estimate_speed = math.hypot(state["vx"], state["vy"])
                 tracking = row.get("tracking_state", "?")
@@ -236,6 +296,8 @@ def run(screen, args):
             put("")
             put(f"  пик скорости {peak_speed:5.2f} м/с = {peak_speed*3.6:5.1f} км/ч"
                 f"   отсчётов истины {updates}")
+            if placer.last:
+                put("  " + placer.last, 2)
             put("")
             for text in HELP:
                 put("  " + text)
@@ -259,6 +321,13 @@ def main():
                         help="Decay time constant after release")
     parser.add_argument("--status-url",
                         default="http://127.0.0.1:8081/api/status")
+    parser.add_argument("--world", default="mocap_arena",
+                        help="World name, for the set_pose service")
+    parser.add_argument("--home", type=float, nargs=3, default=(3.0, 2.0, 0.0),
+                        metavar=("X", "Y", "YAW_DEG"),
+                        help="Where R puts the rover back")
+    parser.add_argument("--reset-z", type=float, default=0.30,
+                        help="Drop height for a reset; it settles onto its wheels")
     args = parser.parse_args()
     curses.wrapper(run, args)
 

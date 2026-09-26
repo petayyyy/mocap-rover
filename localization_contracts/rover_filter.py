@@ -489,23 +489,31 @@ class ImmRoverFilter:
     def apply_group(self, group, robust=True):
         """Apply one group of near-simultaneous measurements.
 
+        Returns the measurements that were actually applied, so a caller can
+        report per-source outcomes.  A group-level flag would mark a gated
+        camera as accepted whenever any other source in the same 12 ms window
+        got through, which silently inflates every accept rate downstream.
+        Empty is falsy, so ``if filter.apply_group(...)`` still reads as before.
+
         Sequential updates with independent R are equivalent to one block
         update, and they let a single outlier be down-weighted without
         discarding the rest of the group.
         """
         group = [m for m in group if self._plausible(m)]
         if not group:
-            return False
+            return []
         group, _ = reject_position_outliers(group)
         stamp = min(m.stamp_ns for m in group)
+        applied_measurements = []
         if self.xs is None:
             seed = next((m for m in group
                          if m.kind == POSITION and m.confirms_identity), None)
             if seed is None or not self._initialise(seed):
-                return False
+                return []
+            applied_measurements.append(seed)
             group = [m for m in group if m is not seed]
             if not group:
-                return True
+                return applied_measurements
             stamp = max(stamp, self.stamp_ns)
         elif stamp < self.stamp_ns:
             return self._apply_out_of_sequence(group)
@@ -519,6 +527,7 @@ class ImmRoverFilter:
             if not ok:
                 continue
             applied = True
+            applied_measurements.append(measurement)
             self.accepted += 1
             if measurement.kind == POSITION:
                 likelihood = likelihood * model_likelihood
@@ -536,7 +545,7 @@ class ImmRoverFilter:
                            else np.full(len(self.models), 1.0 / len(self.models)))
             self.applied.append(tuple(group))
             self._push_history()
-        return applied
+        return applied_measurements
 
     def _huber_weight(self, measurement):
         residual, H, R, S = self._innovation(measurement)
@@ -583,7 +592,7 @@ class ImmRoverFilter:
         stamp = min(m.stamp_ns for m in group)
         if not self.history or stamp < self.history[0].stamp_ns:
             self.too_old += 1
-            return False
+            return []
         stamps = [snapshot.stamp_ns for snapshot in self.history]
         index = max(bisect_right(stamps, stamp) - 1, 0)
         resume_from = self.stamp_ns
@@ -597,12 +606,16 @@ class ImmRoverFilter:
             maxlen=self.applied.maxlen)
         self.out_of_sequence += 1
         ordered = sorted([tuple(group)] + replay, key=lambda b: min(m.stamp_ns for m in b))
+        late = set(id(m) for m in group)
+        applied_measurements = []
         for batch in ordered:
             self.repropagated_steps += 1
-            self.apply_group(list(batch), robust=False)
+            for measurement in self.apply_group(list(batch), robust=False):
+                if id(measurement) in late:
+                    applied_measurements.append(measurement)
         if resume_from is not None:
             self.predict_to(resume_from)
-        return True
+        return applied_measurements
 
     # ---------------------------------------------------------------- publish
 
