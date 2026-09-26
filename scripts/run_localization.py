@@ -89,12 +89,17 @@ def main():
     p.add_argument("--no-lidar", action="store_true")
     p.add_argument("--lidar-topic", default=None,
                    help="Defaults to the topic recorded in the calibration")
-    p.add_argument("--lidar-z-band", type=float, nargs=2, default=(0.05, 0.60))
-    p.add_argument("--lidar-max-radius", type=float, default=3.5,
-                   help="Beyond this the cluster is too sparse to trust")
-    p.add_argument("--lidar-max-extent", type=float, default=1.10)
-    p.add_argument("--lidar-min-points", type=int, default=5)
-    p.add_argument("--lidar-sweep-s", type=float, default=0.0,
+    p.add_argument("--lidar-z-band", type=float, nargs=2,
+                   default=lidar_pipeline.DEFAULT_Z_BAND)
+    p.add_argument("--lidar-max-radius", type=float,
+                   default=lidar_pipeline.DEFAULT_MAX_USEFUL_RADIUS_M,
+                   help="Sanity bound only; point count sets the working range")
+    p.add_argument("--lidar-max-extent", type=float,
+                   default=lidar_pipeline.DEFAULT_MAX_EXTENT_M)
+    p.add_argument("--lidar-min-points", type=int,
+                   default=lidar_pipeline.DEFAULT_MIN_POINTS)
+    p.add_argument("--lidar-sweep-s", type=float,
+                   default=lidar_pipeline.DEFAULT_SWEEP_DURATION_S,
                    help="Revolution time for deskew; a gz gpu_lidar renders "
                         "the whole grid at one instant, so 0 is correct there")
     p.add_argument("--lidar-background",

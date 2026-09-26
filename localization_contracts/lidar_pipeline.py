@@ -27,6 +27,16 @@ import numpy as np
 
 from .rover_filter import Measurement, POSITION
 
+# Single source of truth for the tunables a CLI also exposes.  Repeating a
+# default in argparse is how --lidar-max-radius came to sit at 3.5 m in three
+# places, two of them stale, and cost two Gazebo runs in which every scan was
+# rejected.  Anything with a flag is named here and referenced, never copied.
+DEFAULT_Z_BAND = (0.05, 0.60)
+DEFAULT_MAX_USEFUL_RADIUS_M = 8.0
+DEFAULT_MAX_EXTENT_M = 1.10
+DEFAULT_MIN_POINTS = 5
+DEFAULT_SWEEP_DURATION_S = 0.0
+
 
 @dataclass(frozen=True)
 class LidarCluster:
@@ -84,13 +94,13 @@ class ArenaLidar:
     """Turn L2 revolutions into at most one rover position per revolution."""
 
     def __init__(self, sensor_position, sensor_rotation, *,
-                 z_band=(0.05, 0.60), arena_bounds=(0.15, 11.85),
-                 sweep_duration_s=0.0, cluster_cell_m=0.20,
-                 min_points=5, min_points_far=3, far_range_m=2.5,
-                 max_extent_m=1.10, min_extent_m=0.10, max_z_m=0.45,
+                 z_band=DEFAULT_Z_BAND, arena_bounds=(0.15, 11.85),
+                 sweep_duration_s=DEFAULT_SWEEP_DURATION_S, cluster_cell_m=0.20,
+                 min_points=DEFAULT_MIN_POINTS, min_points_far=3, far_range_m=2.5,
+                 max_extent_m=DEFAULT_MAX_EXTENT_M, min_extent_m=0.10, max_z_m=0.45,
                  sigma_range_m=0.02, sigma_shape_m=0.01,
                  top_slab_m=0.03, trim_percentile=2.0, trim_min_points=20,
-                 max_useful_radius_m=8.0, background=None):
+                 max_useful_radius_m=DEFAULT_MAX_USEFUL_RADIUS_M, background=None):
         self.position = np.asarray(sensor_position, dtype=float).reshape(3)
         self.rotation = np.asarray(sensor_rotation, dtype=float).reshape(3, 3)
         self.z_band = (float(z_band[0]), float(z_band[1]))

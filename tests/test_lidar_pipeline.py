@@ -247,3 +247,40 @@ class Background(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultsAreNotCopied(unittest.TestCase):
+    """A stale second copy of a default cost two Gazebo runs."""
+
+    def test_the_cli_takes_its_defaults_from_the_module(self):
+        import ast
+        from pathlib import Path
+
+        import localization_contracts.lidar_pipeline as module
+
+        source = Path(__file__).resolve().parents[1] / "scripts" / "run_localization.py"
+        tree = ast.parse(source.read_text())
+        literals = {}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "add_argument"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and str(node.args[0].value).startswith("--lidar-")):
+                continue
+            flag = node.args[0].value
+            for keyword in node.keywords:
+                if keyword.arg != "default":
+                    continue
+                # None means "ask the calibration", which cannot go stale.
+                if (isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value is not None):
+                    literals[flag] = keyword.value.value
+        self.assertEqual(literals, {},
+                         f"these lidar flags hard-code a default: {sorted(literals)}")
+
+    def test_the_module_default_reaches_the_object(self):
+        unit = ArenaLidar(lr.SENSOR_POSITION, lr.SENSOR_ROTATION)
+        from localization_contracts.lidar_pipeline import DEFAULT_MAX_USEFUL_RADIUS_M
+        self.assertEqual(unit.max_useful_radius_m, DEFAULT_MAX_USEFUL_RADIUS_M)
