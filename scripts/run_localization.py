@@ -735,9 +735,12 @@ def main():
                 "marker_family": marker_family,
                 "marker_ids": sorted(tags),
                 "tracks": dict(tracks),
+                # The filter reports state=None until a marker creates the
+                # track, so the dashboard summary has to survive that rather
+                # than take the runtime down on its first status write.
                 "track": (
                     {
-                        **tracks["tag_rover"]["state"],
+                        **(tracks["tag_rover"]["state"] or {}),
                         "tracking_state": tracks["tag_rover"]["tracking_state"],
                     }
                     if "tag_rover" in tracks
