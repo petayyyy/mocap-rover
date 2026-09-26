@@ -98,6 +98,21 @@ def report(run_dir):
            if r["valid"] == "1" and num(r, "yaw_error_deg") is not None]
     out["fused_yaw_p95_deg"] = pct(yaw, 95)
 
+    lidar = [json.loads(line) for line in
+             (run_dir / "runtime" / "lidar.jsonl").read_text().splitlines() if line] \
+        if (run_dir / "runtime" / "lidar.jsonl").exists() else []
+    if lidar:
+        out["lidar_scans"] = len(lidar)
+        out["lidar_reasons"] = dict(collections.Counter(r.get("reason") for r in lidar))
+        hits = [r for r in lidar if r.get("reason") == "accepted"]
+        out["lidar_accepted"] = len(hits)
+        if hits:
+            out["lidar_points_p50"] = pct([r["points"] for r in hits], 50)
+            out["lidar_sigma_p50_m"] = pct([r["sigma_m"] for r in hits], 50)
+            out["lidar_residual_p50_m"] = pct([r["residual_m"] for r in hits], 50)
+            out["lidar_residual_p95_m"] = pct([r["residual_m"] for r in hits], 95)
+            out["lidar_processing_p95_ms"] = pct([r["processing_ms"] for r in hits], 95)
+
     gaps, current, previous = [], 0, None
     for row in estimates:
         stamp = int(row["stamp_ns"])

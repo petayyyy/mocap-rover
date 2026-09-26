@@ -99,21 +99,19 @@ class Detection(unittest.TestCase):
         self.assertEqual(cluster.stamp_ns, 99)
         self.assertGreater(cluster.points, 20)
 
-    def test_accuracy_over_the_useful_radius(self):
+    def test_accuracy_over_the_arena(self):
         errors, sigmas = [], []
-        for x in np.arange(3.5, 8.6, 0.5):
-            for y in np.arange(3.5, 8.6, 0.5):
-                if math.hypot(x - 6, y - 6) > 3.4:
-                    continue
+        for x in np.arange(1.0, 11.1, 1.0):
+            for y in np.arange(1.0, 11.1, 1.0):
                 unit, scan = scan_for((x, y))
                 cluster = unit.detect(scan.points, (x, y), 0.05, 0.5, 0)
                 if cluster is None:
                     continue
                 errors.append(math.hypot(cluster.x - x, cluster.y - y))
                 sigmas.append(cluster.sigma_m)
-        self.assertGreater(len(errors), 30)
-        self.assertLess(float(np.percentile(errors, 50)), 0.03)
-        self.assertLess(float(np.percentile(errors, 95)), 0.05)
+        self.assertGreater(len(errors), 80)
+        self.assertLess(float(np.percentile(errors, 50)), 0.04)
+        self.assertLess(float(np.percentile(errors, 95)), 0.09)
         # The reported sigma must not claim more than the estimator delivers.
         self.assertGreater(float(np.median(sigmas)), float(np.percentile(errors, 50)))
 
@@ -128,9 +126,32 @@ class Detection(unittest.TestCase):
             toward.append(x - cluster.x)        # positive means sensor-ward
         self.assertLess(max(toward), 0.05)
 
-    def test_nothing_is_reported_beyond_the_useful_radius(self):
-        unit, scan = scan_for((1.0, 6.0))
-        self.assertIsNone(unit.detect(scan.points, (1.0, 6.0), 0.05, 0.5, 0))
+    def test_range_is_limited_by_point_count_not_by_a_fixed_radius(self):
+        # The SDF fires 288x64 rays; the real L2 delivers about 4.7x fewer
+        # points. Decimating to that density must make the same code stop
+        # accepting distant clusters, with no threshold retuned.
+        for distance, dense_ok, sparse_ok in ((2.0, True, True), (5.0, True, False)):
+            with self.subTest(distance=distance):
+                xy = (6.0 + distance, 6.0)
+                unit, scan = scan_for(xy)
+                self.assertEqual(
+                    unit.detect(scan.points, xy, 0.05, 0.5, 0) is not None, dense_ok,
+                    unit.rejections)
+                sparse = lidar()
+                parsed = lr.render(xy)
+                thinned = parsed["ranges"].copy()
+                thinned[::2, :] = np.inf
+                thinned[:, ::2] = np.inf          # keep 1 ray in 4, ~ hardware
+                parsed["ranges"] = thinned
+                points = sparse.scan_to_arena(parsed).points
+                self.assertEqual(
+                    sparse.detect(points, xy, 0.05, 0.5, 0) is not None, sparse_ok,
+                    sparse.rejections)
+
+    def test_a_hard_radius_still_bounds_the_search(self):
+        unit = lidar(max_useful_radius_m=2.0)
+        _, scan = scan_for((9.0, 6.0))
+        self.assertIsNone(unit.detect(scan.points, (9.0, 6.0), 0.05, 0.5, 0))
         self.assertIn("beyond_useful_radius", unit.rejections)
 
     def test_an_empty_arena_yields_nothing(self):

@@ -90,7 +90,7 @@ class ArenaLidar:
                  max_extent_m=1.10, min_extent_m=0.10, max_z_m=0.45,
                  sigma_range_m=0.02, sigma_shape_m=0.01,
                  top_slab_m=0.03, trim_percentile=2.0, trim_min_points=20,
-                 max_useful_radius_m=3.5, background=None):
+                 max_useful_radius_m=8.0, background=None):
         self.position = np.asarray(sensor_position, dtype=float).reshape(3)
         self.rotation = np.asarray(sensor_rotation, dtype=float).reshape(3, 3)
         self.z_band = (float(z_band[0]), float(z_band[1]))
@@ -111,6 +111,13 @@ class ArenaLidar:
         self.top_slab_m = float(top_slab_m)
         self.trim_percentile = float(trim_percentile)
         self.trim_min_points = int(trim_min_points)
+        # A sanity bound, not the working limit.  How far the lidar is useful
+        # is set by how many returns land on the rover, and the point-count
+        # gate measures that directly instead of guessing it from a radius.
+        # This matters because the SDF fires 288x64 rays per revolution while
+        # the real L2 delivers about 3900 points, a 4.7x lower density: the
+        # same thresholds then stop accepting clusters around 3.5 to 4 m
+        # without anything needing to be retuned.
         self.max_useful_radius_m = float(max_useful_radius_m)
         self.background = background
         self.scans = 0
@@ -185,15 +192,39 @@ class ArenaLidar:
 
     # ------------------------------------------------------------- clustering
 
-    def _clusters(self, points):
+    ELEVATION_STEP_RAD = math.radians(1.43)
+    AZIMUTH_STEP_RAD = math.radians(1.25)
+
+    def footprint_m(self, distance, surface_z=0.35):
+        """Largest gap between adjacent returns on the rover's top surface.
+
+        On a horizontal surface the elevation step lands radially as
+        ``h/cos^2(theta) * d_el``, the same 1/cos^2 that stretches a camera's
+        radial error, while the azimuth step lands tangentially as
+        ``slant * d_az``.  Using the slant range for both understates the
+        radial gap threefold at 5 m, which is enough for one rover to arrive
+        as two clusters and read as two rovers.
+        """
+        height = max(self.position[2] - float(surface_z), 1e-3)
+        slant = math.hypot(distance, height)
+        cos_theta = max(height / slant, 1e-3)
+        radial = height / cos_theta ** 2 * self.ELEVATION_STEP_RAD
+        tangential = slant * self.AZIMUTH_STEP_RAD
+        return float(max(radial, tangential))
+
+    def _clusters(self, points, cell=None):
         """Connected components over an occupancy grid.
 
         Grid union-find rather than pairwise distances: the cell count is what
-        grows with the crop, not the square of the point count.
+        grows with the cloud, not the square of the point count.
+
+        The cell has to be at least the return spacing at this range, or a
+        sparse distant rover fragments into pieces that each look like a small
+        cluster, and two of them inside one gate read as two rovers.
         """
         if len(points) == 0:
             return []
-        cell = self.cluster_cell_m
+        cell = self.cluster_cell_m if cell is None else float(cell)
         keys = np.floor(points[:, :2] / cell).astype(np.int64)
         unique, inverse = np.unique(keys, axis=0, return_inverse=True)
         index = {tuple(key): i for i, key in enumerate(unique)}
@@ -256,8 +287,7 @@ class ArenaLidar:
         Each edge is located to about half the elevation footprint, and the
         centre averages two of them, so the footprint term carries a 1/(2*sqrt2).
         """
-        slant = math.hypot(distance, self.position[2] - float(np.median(top[:, 2])))
-        footprint = slant * math.radians(1.43)
+        footprint = self.footprint_m(distance, float(np.median(top[:, 2])))
         spread = max(self.sigma_range_m, footprint / (2 * math.sqrt(2)))
         return float(math.hypot(spread, self.sigma_shape_m))
 
@@ -283,9 +313,10 @@ class ArenaLidar:
             return self._reject("no_returns_in_band")
         radius = self.gate_radius(sigma_m, speed_mps)
 
+        cell = max(self.cluster_cell_m, 1.6 * self.footprint_m(distance))
         accepted = []
         oversized = 0
-        for cluster in self._clusters(candidates):
+        for cluster in self._clusters(candidates, cell):
             if len(cluster) < self._min_points(distance):
                 continue
             centre, top = self.centre_of(cluster)
@@ -293,7 +324,10 @@ class ArenaLidar:
             if residual > radius:
                 continue
             extent = np.ptp(cluster, axis=0)
-            if max(extent[0], extent[1]) > self.max_extent_m:
+            # One footprint of slack per side: the sampled extent overshoots
+            # the box by about the spacing between returns.
+            slack = min(2 * self.footprint_m(distance), 0.40)
+            if max(extent[0], extent[1]) > self.max_extent_m + slack:
                 oversized += 1
                 continue
             if len(cluster) >= 8 and max(extent[0], extent[1]) < self.min_extent_m:
