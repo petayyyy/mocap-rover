@@ -225,25 +225,22 @@ def main():
     parser.add_argument("--tag-max-reprojection-px", type=float, default=2.0)
     parser.add_argument("--tag-max-planar-tilt-deg", type=float, default=40.0)
     parser.add_argument("--tag-min-side-px", type=float, default=20.0)
-    # Forwarded to run_localization.py so a run can be reproduced from its
-    # manifest alone; every one of these changes what the CSV measures.
-    parser.add_argument("--base-z-nominal", type=float, default=0.14)
-    parser.add_argument("--base-z-tolerance", type=float, default=0.25)
-    parser.add_argument("--max-incidence-deg", type=float, default=65.0)
-    parser.add_argument("--pnp-ray-disagreement", type=float, default=0.35)
-    parser.add_argument("--min-edge-distance-px", type=float, default=8.0)
-    parser.add_argument("--xy-source", choices=("ray", "pnp"), default="ray")
-    parser.add_argument("--publish-hz", type=float, default=200.0)
-    parser.add_argument("--group-window-ms", type=float, default=12.0)
-    parser.add_argument("--coast-ms", type=float, default=300.0)
-    parser.add_argument("--identity-max-age-s", type=float, default=2.0)
-    parser.add_argument("--lost-ms", type=float, default=1500.0)
-    parser.add_argument("--roi-min-px", type=int, default=160)
-    parser.add_argument("--roi-max-px", type=int, default=480)
+    # Forwarded to run_localization.py.  These deliberately default to None:
+    # repeating a default here silently shadows the runtime's own, and one
+    # stale copy of --lidar-max-radius already cost a full Gazebo run in which
+    # every lidar scan was rejected.  What actually ran is recorded from the
+    # runtime's own runtime_parameters.json, not from these.
+    for flag, kind in (("--base-z-nominal", float), ("--base-z-tolerance", float),
+                       ("--max-incidence-deg", float), ("--pnp-ray-disagreement", float),
+                       ("--min-edge-distance-px", float), ("--publish-hz", float),
+                       ("--group-window-ms", float), ("--coast-ms", float),
+                       ("--identity-max-age-s", float), ("--lost-ms", float),
+                       ("--roi-min-px", int), ("--roi-max-px", int),
+                       ("--lidar-max-radius", float), ("--lidar-sweep-s", float)):
+        parser.add_argument(flag, type=kind, default=None)
+    parser.add_argument("--xy-source", choices=("ray", "pnp"), default=None)
     parser.add_argument("--no-roi-tracking", action="store_true")
     parser.add_argument("--no-lidar", action="store_true")
-    parser.add_argument("--lidar-max-radius", type=float, default=3.5)
-    parser.add_argument("--lidar-sweep-s", type=float, default=0.0)
     args = parser.parse_args()
     if not 0.1 <= args.speed <= 0.9:
         parser.error("--speed must be in [0.1, 0.9]")
@@ -307,26 +304,18 @@ def main():
             "max_reprojection_px": args.tag_max_reprojection_px,
             "max_planar_tilt_deg": args.tag_max_planar_tilt_deg,
             "min_side_px": args.tag_min_side_px,
-            "base_z_nominal_m": args.base_z_nominal,
-            "base_z_tolerance_m": args.base_z_tolerance,
-            "max_incidence_deg": args.max_incidence_deg,
-            "pnp_ray_disagreement_m": args.pnp_ray_disagreement,
-            "min_edge_distance_px": args.min_edge_distance_px,
-            "xy_source": args.xy_source,
         },
-        "scheduling": {
-            "publish_hz": args.publish_hz,
-            "group_window_ms": args.group_window_ms,
-            "coast_ms": args.coast_ms,
-            "identity_max_age_s": args.identity_max_age_s,
-            "lost_ms": args.lost_ms,
-            "roi_tracking": not args.no_roi_tracking,
-            "roi_min_px": args.roi_min_px,
-            "roi_max_px": args.roi_max_px,
-            "lidar": not args.no_lidar,
-            "lidar_max_radius_m": args.lidar_max_radius,
-            "lidar_sweep_s": args.lidar_sweep_s,
-        },
+        # Everything else the runtime decides is copied back from its own
+        # runtime_parameters.json once it starts, so the manifest cannot
+        # disagree with what ran.
+        "overrides": {flag: getattr(args, flag) for flag in (
+            "base_z_nominal", "base_z_tolerance", "max_incidence_deg",
+            "pnp_ray_disagreement", "min_edge_distance_px", "xy_source",
+            "publish_hz", "group_window_ms", "coast_ms", "identity_max_age_s",
+            "lost_ms", "roi_min_px", "roi_max_px", "lidar_max_radius",
+            "lidar_sweep_s") if getattr(args, flag) is not None},
+        "roi_tracking": not args.no_roi_tracking,
+        "lidar": not args.no_lidar,
         "git_revision": revision,
         "git_dirty": dirty,
         "code_digest": code_digest,
@@ -423,6 +412,15 @@ def main():
         if not truth_ready.wait(45):
             raise RuntimeError("Gazebo did not publish tag_rover pose within 45 seconds")
 
+        overrides = []
+        for flag in ("base_z_nominal", "base_z_tolerance", "max_incidence_deg",
+                     "pnp_ray_disagreement", "min_edge_distance_px", "xy_source",
+                     "publish_hz", "group_window_ms", "coast_ms",
+                     "identity_max_age_s", "lost_ms", "roi_min_px", "roi_max_px",
+                     "lidar_max_radius", "lidar_sweep_s"):
+            value = getattr(args, flag)
+            if value is not None:
+                overrides += ["--" + flag.replace("_", "-"), str(value)]
         localization = subprocess.Popen([
             str(ROOT / "scripts/run_localization.sh"), "--config", str(config_path),
             "--tag-only", "--no-ui", "--clock-topic",
@@ -433,22 +431,8 @@ def main():
             "--tag-max-reprojection-px", str(args.tag_max_reprojection_px),
             "--tag-max-planar-tilt-deg", str(args.tag_max_planar_tilt_deg),
             "--tag-min-side-px", str(args.tag_min_side_px),
-            "--base-z-nominal", str(args.base_z_nominal),
-            "--base-z-tolerance", str(args.base_z_tolerance),
-            "--max-incidence-deg", str(args.max_incidence_deg),
-            "--pnp-ray-disagreement", str(args.pnp_ray_disagreement),
-            "--min-edge-distance-px", str(args.min_edge_distance_px),
-            "--xy-source", args.xy_source,
-            "--publish-hz", str(args.publish_hz),
-            "--group-window-ms", str(args.group_window_ms),
-            "--coast-ms", str(args.coast_ms),
-            "--identity-max-age-s", str(args.identity_max_age_s),
-            "--lost-ms", str(args.lost_ms),
-            "--roi-min-px", str(args.roi_min_px),
-            "--roi-max-px", str(args.roi_max_px),
-            "--lidar-max-radius", str(args.lidar_max_radius),
-            "--lidar-sweep-s", str(args.lidar_sweep_s),
-        ] + (["--no-roi-tracking"] if args.no_roi_tracking else [])
+        ] + overrides
+          + (["--no-roi-tracking"] if args.no_roi_tracking else [])
           + (["--no-lidar"] if args.no_lidar else []), cwd=ROOT, stdout=localization_log, stderr=subprocess.STDOUT, start_new_session=True)
         ready_deadline = time.monotonic() + 45
         while time.monotonic() < ready_deadline:
