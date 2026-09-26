@@ -13,6 +13,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         lambda: {"phase": "SIMULATION", "hardware_verified": False}
     )
     cameras_provider = staticmethod(lambda: [])
+    lidar_provider = staticmethod(lambda: {"points": [], "stamp_ns": 0})
+    scene_provider = staticmethod(lambda: {"cameras": [], "lidar": None})
     previews_provider = staticmethod(lambda: [])
     preview_files_provider = staticmethod(lambda: {})
 
@@ -26,6 +28,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/cameras":
             self._json(self.cameras_provider())
+            return
+        if self.path == "/api/lidar":
+            self._json(self.lidar_provider())
+            return
+        if self.path == "/api/scene":
+            self._json(self.scene_provider())
             return
         if self.path == "/api/previews":
             self._json(self.previews_provider())

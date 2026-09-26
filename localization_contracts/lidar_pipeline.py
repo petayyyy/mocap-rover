@@ -36,6 +36,7 @@ DEFAULT_MAX_USEFUL_RADIUS_M = 8.0
 DEFAULT_MAX_EXTENT_M = 1.10
 DEFAULT_MIN_POINTS = 5
 DEFAULT_SWEEP_DURATION_S = 0.0
+DEFAULT_VIEW_POINTS = 1500        # cap on points shipped to the dashboard
 
 
 @dataclass(frozen=True)

@@ -7,11 +7,26 @@
 body{margin:24px;background:#151a22;color:#e2e9f3;font:15px system-ui}h1{font-size:24px}h2{font-size:18px}
 .layout{display:flex;gap:24px;flex-wrap:wrap}#map{background:#202833;max-width:100%;border:1px solid #718196}
 #previews{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px}figure{margin:0;padding:10px;background:#202833}figure img{display:block;width:100%;aspect-ratio:4/3;object-fit:contain}small{display:block;overflow-wrap:anywhere}
+#scene3d-wrap{position:relative;display:inline-block;max-width:100%}
+#scene3d{background:#0d1219;border:1px solid #718196;max-width:100%;cursor:grab;touch-action:none}
+#scene3d.dragging{cursor:grabbing}
+#readout{position:absolute;top:10px;left:12px;font:13px ui-monospace,monospace;
+ background:#0b1017cc;border:1px solid #2f3d4f;padding:8px 10px;white-space:pre;pointer-events:none}
+#readout b{color:#65e7e0;font-weight:600}
 pre{white-space:pre-wrap;max-width:900px}textarea{width:100%;box-sizing:border-box;background:#101720;color:#d8e7ff}button,input{margin:8px;padding:8px}#health{font-weight:bold}.legend{color:#7bdaff}details{margin:18px 0}
 </style>
 </head>
 <body>
 <h1>Localization dashboard</h1><p id="health">Ожидание данных…</p>
+<section id="scene3d-panel"><h2>3D — арена, камеры, лидар, ровер</h2>
+<div id="scene3d-wrap"><canvas id="scene3d" width="900" height="520"></canvas>
+<div id="readout">Ожидание трека…</div></div>
+<p class="legend">Тяните мышью — поворот, колесо — приближение, правая кнопка — сдвиг.
+Синие точки — возврат лидара выше пола после вычитания статической карты;
+бирюзовая коробка — оценка локализации; жёлтая — кластер лидара.
+<label><input type="checkbox" id="follow"> следовать за ровером</label>
+<label><input type="checkbox" id="showtrail" checked> след</label></p>
+</section>
 <div class="layout"><section><h2>XY map — арена 12 × 12 м</h2>
 <svg id="map" viewBox="-5 -5 130 130" width="430" height="430" aria-label="Положения роверов в метрах">
 <defs><pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M10 0H0V10" fill="none" stroke="#3c4858" stroke-width=".2"/></pattern></defs>
@@ -42,7 +57,7 @@ function mapTracks(tracks){$('tracks-map').replaceChildren();for(let [name,row]o
 function cameraMap(config){$('cameras-map').replaceChildren();for(let c of config.cameras||[]){if(!c.position_world)continue;let [x,y]=c.position_world;element('rect',{x:x*10-1,y:(12-y)*10-1,width:2,height:2,fill:'#788da8'},$('cameras-map'))}}
 async function refresh(){if(busy)return;busy=true;try{
  let x=await fetch('/api/status').then(r=>r.json());$('status').textContent=JSON.stringify(x,null,2);$('health').textContent=(x.errors?.length?'ОШИБКА: '+x.errors.join('; '):(x.phase||'SIMULATION'))+' · '+(x.calibration_version||'калибровка не указана');
- let tracks=x.tracks||(x.track?{tag_rover:{state:x.track,valid:x.track.tracking_state!=='LOST'}}:{});mapTracks(tracks);
+ let tracks=x.tracks||(x.track?{tag_rover:{state:x.track,valid:x.track.tracking_state!=='LOST'}}:{});window.__tracks=tracks;mapTracks(tracks);
  $('summary').textContent=Object.entries(tracks).map(([name,r])=>{let s=r.state||r;return `${name}: ${r.tracking_state||s.tracking_state||'—'}\nX=${s.x?.toFixed(3)} Y=${s.y?.toFixed(3)} м\nПубликация wall: ${r.output_wall_hz?.toFixed(1)??'—'} Гц; измерения wall: ${r.measurement_wall_hz?.toFixed(1)??'—'} Гц\nВозраст (sim): ${r.measurement_age_ms?.toFixed(1)??'—'} мс`}).join('\n\n')||'Нет наблюдений';
  let cameras=await fetch('/api/cameras').then(r=>r.json());for(let c of cameras){let e=$(c.camera_id+'-state');if(e)e.textContent=JSON.stringify(c.channels||c)}
  document.querySelectorAll('#previews img').forEach(im=>{im.src=im.src.split('?')[0]+'?t='+Date.now()});
@@ -52,4 +67,141 @@ $('calibration-file').onchange=async e=>{if(e.target.files[0])editor.value=await
 async function apply(body){try{JSON.parse(body);let r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body});$('settings-ack').textContent=await r.text();if(r.ok){for(let k of Object.keys(trails)){delete trails[k];delete lastStamp[k]}$('load-settings').click()}}catch(e){$('settings-ack').textContent=String(e)}}
 $('apply-settings').onclick=()=>apply(editor.value);$('rollback-settings').onclick=()=>apply(JSON.stringify({action:'rollback'}));
 fetch('/api/settings').then(r=>r.json()).then(cameraMap).catch(()=>{});refresh();setInterval(refresh,500);
+
+/* ---------- 3D view -------------------------------------------------------
+   Hand-rolled projection on a 2-D canvas. A CDN would be one script tag, but
+   this dashboard is served by the runtime on localhost and has to work on a
+   machine with no route to the internet, which is the normal case in a lab. */
+const cv=$('scene3d'), ctx=cv.getContext('2d');
+let scene=null, lidar={points:[],cluster:null}, trail3=[], lastTrailStamp=null;
+const view={az:-0.95,el:0.62,dist:19,cx:6,cy:6,cz:0.4};
+
+function rotate(p){ // world -> camera basis
+ const ca=Math.cos(view.az),sa=Math.sin(view.az),ce=Math.cos(view.el),se=Math.sin(view.el);
+ const x=p[0]-view.cx,y=p[1]-view.cy,z=p[2]-view.cz;
+ const rx=x*ca+y*sa, ry=-x*sa+y*ca;
+ return [rx, ry*se+z*ce, -(ry*ce-z*se)+view.dist];
+}
+function project(p){
+ const c=rotate(p); if(c[2]<=0.05)return null;
+ const f=cv.height*0.9;
+ return [cv.width/2+f*c[0]/c[2], cv.height/2-f*c[1]/c[2], c[2]];
+}
+function seg(a,b,style,width){
+ const p=project(a),q=project(b); if(!p||!q)return;
+ ctx.strokeStyle=style; ctx.lineWidth=width||1; ctx.beginPath();
+ ctx.moveTo(p[0],p[1]); ctx.lineTo(q[0],q[1]); ctx.stroke();
+}
+function boxAt(x,y,z,sx,sy,sz,yaw,style,width){
+ const c=Math.cos(yaw||0),s=Math.sin(yaw||0),hx=sx/2,hy=sy/2;
+ const corner=(dx,dy,dz)=>[x+dx*c-dy*s, y+dx*s+dy*c, z+dz];
+ const lo=[corner(-hx,-hy,0),corner(hx,-hy,0),corner(hx,hy,0),corner(-hx,hy,0)];
+ const hi=[corner(-hx,-hy,sz),corner(hx,-hy,sz),corner(hx,hy,sz),corner(-hx,hy,sz)];
+ for(let i=0;i<4;i++){seg(lo[i],lo[(i+1)%4],style,width);seg(hi[i],hi[(i+1)%4],style,width);seg(lo[i],hi[i],style,width)}
+}
+function drawArena(){
+ const n=12;
+ for(let i=0;i<=n;i++){
+  const major=i%2===0, style=major?'#2c3947':'#1e2836';
+  seg([i,0,0],[i,n,0],style,1); seg([0,i,0],[n,i,0],style,1);
+ }
+ seg([0,0,0],[2,0,0],'#c0563f',2); seg([0,0,0],[0,2,0],'#4f9d56',2); seg([0,0,0],[0,0,1],'#4a7fd0',2);
+ for(const [a,b] of [[[0,0],[12,0]],[[12,0],[12,12]],[[12,12],[0,12]],[[0,12],[0,0]]])
+   seg([a[0],a[1],0],[b[0],b[1],0.4],'#243040',1);
+}
+function drawSensors(){
+ if(!scene)return;
+ for(const c of scene.cameras||[]){
+  const p=c.position_world, R=c.R_world_optical;
+  boxAt(p[0],p[1],p[2]-0.04,0.12,0.12,0.08,0,'#7f93ad',1);
+  const axis=[R[0][2],R[1][2],R[2][2]];           // optical +Z in world
+  seg(p,[p[0]+axis[0]*1.6,p[1]+axis[1]*1.6,p[2]+axis[2]*1.6],'#54738f',1);
+  const q=project([p[0],p[1],p[2]+0.18]);
+  if(q){ctx.fillStyle='#8fa5bd';ctx.font='11px system-ui';ctx.fillText(c.camera_id,q[0]+4,q[1])}
+ }
+ if(scene.lidar){
+  const p=scene.lidar.position_world;
+  boxAt(p[0]-0.05,p[1]-0.05,p[2]-0.03,0.1,0.1,0.06,0,'#b48ad6',1);
+  const q=project([p[0],p[1],p[2]+0.16]);
+  if(q){ctx.fillStyle='#b48ad6';ctx.font='11px system-ui';ctx.fillText('L2',q[0]+4,q[1])}
+ }
+}
+function drawLidar(){
+ const pts=lidar.points||[]; if(!pts.length)return;
+ for(const p of pts){
+  const s=project(p); if(!s)continue;
+  const h=Math.max(0,Math.min(1,p[2]/0.5));
+  ctx.fillStyle=`rgb(${60+120*h|0},${150+80*h|0},255)`;
+  const r=Math.max(1,2.4-s[2]*0.055);
+  ctx.fillRect(s[0]-r/2,s[1]-r/2,r,r);
+ }
+ if(lidar.cluster){
+  const c=lidar.cluster;
+  boxAt(c.x,c.y,0,0.72,0.52,0.36,0,'#ffd166',1.4);
+  const s=Math.max(c.sigma_m||0,0.01), ring=[];
+  for(let i=0;i<=24;i++){const t=i/24*Math.PI*2;ring.push([c.x+3*s*Math.cos(t),c.y+3*s*Math.sin(t),0.01])}
+  for(let i=0;i<24;i++)seg(ring[i],ring[i+1],'#ffd16688',1);
+ }
+}
+function drawRover(state,valid){
+ if(!state)return;
+ const style=valid?'#65e7e0':'#f76565';
+ const z=(scene&&scene.base_z_nominal_m)||0.14, sz=(scene&&scene.rover_size)||[0.72,0.52,0.30];
+ boxAt(state.x,state.y,z-0.12,sz[0],sz[1],sz[2],state.yaw,style,1.8);
+ boxAt(state.x,state.y,z+0.20,0.5,0.5,0.02,state.yaw,'#eaf6ff',1);
+ seg([state.x,state.y,z+0.3],
+     [state.x+1.1*Math.cos(state.yaw),state.y+1.1*Math.sin(state.yaw),z+0.3],style,2);
+ const v=Math.hypot(state.vx||0,state.vy||0);
+ if(v>0.1)seg([state.x,state.y,z+0.3],[state.x+(state.vx||0)*0.4,state.y+(state.vy||0)*0.4,z+0.3],'#ffbf74',1.6);
+ if($('showtrail').checked&&trail3.length>1){
+  ctx.strokeStyle=style+'66';ctx.lineWidth=1.2;ctx.beginPath();let started=false;
+  for(const t of trail3){const s=project([t[0],t[1],0.02]);if(!s){started=false;continue}
+   if(!started){ctx.moveTo(s[0],s[1]);started=true}else ctx.lineTo(s[0],s[1])}
+  ctx.stroke();
+ }
+}
+function render(){
+ ctx.clearRect(0,0,cv.width,cv.height);
+ drawArena(); drawSensors(); drawLidar();
+ const row=(window.__tracks||{}).tag_rover;
+ drawRover(row&&row.state,row&&row.valid!==false);
+ const r=$('readout');
+ if(!row||!row.state){r.textContent='трек не создан';return}
+ const s=row.state, v=Math.hypot(s.vx||0,s.vy||0), c=row.covariance;
+ const sigma=c?Math.sqrt(Math.max(c[0][0],c[1][1])):null;
+ r.innerHTML=
+  `<b>${row.tracking_state||'—'}</b>   источники ${(row.source_mask||[]).join(',')||'—'}\n`+
+  `X  ${s.x.toFixed(3)} м      Y  ${s.y.toFixed(3)} м\n`+
+  `yaw ${(s.yaw*180/Math.PI).toFixed(1)}°     ω ${(s.yaw_rate||0).toFixed(2)} рад/с\n`+
+  `V  ${v.toFixed(2)} м/с  = <b>${(v*3.6).toFixed(1)} км/ч</b>\n`+
+  `σ  ${sigma!=null?(sigma*1000).toFixed(0)+' мм':'—'}      возраст ${(row.measurement_age_ms||0).toFixed(0)} мс\n`+
+  `выход ${(row.output_wall_hz||0).toFixed(0)} Гц   измерения ${(row.measurement_wall_hz||0).toFixed(1)} Гц\n`+
+  `лидар ${lidar.cluster?lidar.cluster.points+' точек, σ '+(lidar.cluster.sigma_m*1000).toFixed(0)+' мм':(lidar.reason||'—')}`;
+}
+let drag=null;
+cv.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,b:e.button};cv.setPointerCapture(e.pointerId);cv.classList.add('dragging')});
+cv.addEventListener('pointerup',e=>{drag=null;cv.classList.remove('dragging')});
+cv.addEventListener('pointermove',e=>{
+ if(!drag)return; const dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX; drag.y=e.clientY;
+ if(drag.b===2){const ca=Math.cos(view.az),sa=Math.sin(view.az);
+  view.cx-=(dx*ca-dy*sa)*0.012*view.dist/19; view.cy-=(dx*sa+dy*ca)*0.012*view.dist/19;}
+ else {view.az-=dx*0.006; view.el=Math.max(0.05,Math.min(1.5,view.el+dy*0.006));}
+ render();
+});
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+cv.addEventListener('wheel',e=>{e.preventDefault();view.dist=Math.max(3,Math.min(60,view.dist*(1+Math.sign(e.deltaY)*0.12)));render()},{passive:false});
+
+async function refresh3d(){
+ try{
+  if(!scene)scene=await fetch('/api/scene').then(r=>r.json());
+  lidar=await fetch('/api/lidar').then(r=>r.json());
+  const row=(window.__tracks||{}).tag_rover, s=row&&row.state;
+  if(s&&Number.isFinite(s.x)){
+   if(lastTrailStamp!==row.stamp_ns){trail3.push([s.x,s.y]);lastTrailStamp=row.stamp_ns;if(trail3.length>600)trail3.shift()}
+   if($('follow').checked){view.cx=s.x;view.cy=s.y}
+  }
+ }catch(e){}
+ render();
+}
+render(); setInterval(refresh3d,200);
 </script></body></html>

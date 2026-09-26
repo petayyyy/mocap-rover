@@ -27,3 +27,33 @@ class DashboardSettingsRegression(unittest.TestCase):
    self.assertEqual(error.exception.code,400)
   finally:
    server.shutdown();server.server_close();DashboardHandler.settings_apply=None
+
+
+class SceneAndLidarEndpoints(unittest.TestCase):
+    """The 3-D view needs static geometry and the latest cloud."""
+
+    def setUp(self):
+        from localization_contracts.dashboard import DashboardHandler
+        self.handler = DashboardHandler
+
+    def test_defaults_are_empty_but_well_shaped(self):
+        self.assertEqual(self.handler.lidar_provider()["points"], [])
+        self.assertIn("cameras", self.handler.scene_provider())
+
+    def test_page_carries_the_three_d_panel(self):
+        from pathlib import Path
+        html = (Path(__file__).resolve().parents[1]
+                / "localization_contracts" / "dashboard.html").read_text()
+        page = html.replace("{{CAMERA_SLOTS}}", "")
+        self.assertNotIn("{{", page)
+        for needle in ("scene3d", "/api/lidar", "/api/scene", "readout"):
+            self.assertIn(needle, page)
+
+    def test_the_page_pulls_no_third_party_script(self):
+        # The runtime serves this on a lab machine with no route out.
+        from pathlib import Path
+        import re
+        html = (Path(__file__).resolve().parents[1]
+                / "localization_contracts" / "dashboard.html").read_text()
+        for url in re.findall(r'(?:src|href)\s*=\s*[\'"]([^\'"]+)', html):
+            self.assertFalse(url.startswith(("http://", "https://", "//")), url)

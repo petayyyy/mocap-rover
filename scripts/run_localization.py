@@ -108,6 +108,9 @@ def main():
                         "config/lidar_background.json is used when present")
     p.add_argument("--no-lidar-background", action="store_true",
                    help="Ignore the recorded map even if there is one")
+    p.add_argument("--lidar-view-points", type=int,
+                   default=lidar_pipeline.DEFAULT_VIEW_POINTS,
+                   help="Cap on lidar points sent to the dashboard per scan")
     p.add_argument(
         "--clock-topic",
         default="/clock",
@@ -310,6 +313,7 @@ def main():
         )
     lidar_topic = a.lidar_topic or (lidar_config or {}).get("topic")
     lidar_rows = collections.deque(maxlen=8192)
+    lidar_view = {"stamp_ns": 0, "points": [], "cluster": None, "reason": None}
     lidar_latest = {"scan": None}
     lidar_event = threading.Event()
 
@@ -611,6 +615,12 @@ def main():
             scan = lidar.scan_to_arena(parsed)
             velocity = (float(state[2]), float(state[3]), 0.0)
             points = lidar.deskew(scan, velocity)
+            # What the dashboard draws: everything the static map did not
+            # remove, which in a clean arena is the rover and nothing else.
+            dynamic = points[lidar.static_mask(points)]
+            if len(dynamic) > a.lidar_view_points:
+                step = len(dynamic) // a.lidar_view_points + 1
+                dynamic = dynamic[::step]
             sigma = math.sqrt(max(float(covariance[0, 0]), float(covariance[1, 1])))
             speed = math.hypot(velocity[0], velocity[1])
             before = dict(lidar.rejections)
@@ -623,6 +633,11 @@ def main():
             if cluster is None:
                 new = [k for k, v in lidar.rejections.items() if v != before.get(k)]
                 row["reason"] = new[0] if new else "unknown"
+                with lock:
+                    lidar_view.update(stamp_ns=parsed["stamp_ns"], cluster=None,
+                                      reason=row["reason"],
+                                      points=[[round(float(v), 3) for v in p]
+                                              for p in dynamic])
             else:
                 row.update(reason="accepted", x=cluster.x, y=cluster.y,
                            z_max=cluster.z_max, points=cluster.points,
@@ -631,6 +646,13 @@ def main():
                 with lock:
                     buffers["tag_rover"].push(
                         lidar_pipeline.measurement_from_cluster(cluster))
+                    lidar_view.update(
+                        stamp_ns=parsed["stamp_ns"], reason="accepted",
+                        points=[[round(float(v), 3) for v in p] for p in dynamic],
+                        cluster={"x": cluster.x, "y": cluster.y,
+                                 "z_max": cluster.z_max, "points": cluster.points,
+                                 "sigma_m": cluster.sigma_m,
+                                 "residual_m": cluster.residual_m})
             with lock:
                 lidar_rows.append(row)
 
@@ -1036,8 +1058,34 @@ def main():
 
     DashboardHandler.settings_provider = staticmethod(lambda: cfg)
     DashboardHandler.settings_apply = staticmethod(apply_settings)
+    def lidar_snapshot():
+        with lock:
+            return dict(lidar_view)
+
+    def scene():
+        """Static geometry the 3-D view needs; it never changes during a run."""
+        with lock:
+            return {
+                "cameras": [
+                    {"camera_id": cid,
+                     "position_world": list(c["position_world"]),
+                     "R_world_optical": [list(r) for r in c["R_world_optical"]],
+                     "image_size": list(c["image_size"]),
+                     "fx": float(np.array(c["K"]).reshape(3, 3)[0, 0])}
+                    for cid, c in cams.items()
+                ],
+                "lidar": (None if lidar is None else
+                          {"position_world": list(lidar.position),
+                           "z_band": list(lidar.z_band)}),
+                "arena": [12.0, 12.0],
+                "rover_size": [0.72, 0.52, 0.30],
+                "base_z_nominal_m": a.base_z_nominal,
+            }
+
     if not a.no_ui:
         DashboardHandler.status_provider = staticmethod(snapshot)
+        DashboardHandler.lidar_provider = staticmethod(lidar_snapshot)
+        DashboardHandler.scene_provider = staticmethod(scene)
         DashboardHandler.preview_files_provider = staticmethod(
             lambda: {cid: str(out / f"{cid}.jpg") for cid in cams}
         )
