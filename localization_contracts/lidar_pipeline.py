@@ -369,6 +369,26 @@ class ArenaLidar:
         return None
 
 
+def may_continue(tracking_state):
+    """May a continuation source update a track in this state?
+
+    Only LOST bars it.  LOST means the identity is gone and a marker has to
+    establish it again, which is the rule that stops a second rover inheriting
+    the track.  REACQUIRING means the marker is merely stale, and barring
+    continuation there is circular: the state reaches REACQUIRING 300 ms into
+    a gap precisely because nothing is updating the track, so a lidar allowed
+    to run only while the track is healthy can never fill a gap.  Measured:
+    with REACQUIRING barred, all eleven coverage gaps logged
+    no_confirmed_track for their whole length and coverage did not move.
+
+    A track fed only by continuation still goes REACQUIRING once the marker
+    ages out, so it stops being published as valid.  What continuation buys is
+    a position good enough that the marker, when it returns, reacquires
+    instantly and the identity check means something.
+    """
+    return tracking_state not in ("LOST", "INITIALIZING")
+
+
 def measurement_from_cluster(cluster, source="lidar"):
     """Adapt a cluster into a continuation-only filter measurement."""
     variance = cluster.sigma_m ** 2

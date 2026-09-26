@@ -588,8 +588,9 @@ def main():
                             if track is not None else "LOST")
             row = {"stamp_ns": parsed["stamp_ns"], "wall_ns": time.monotonic_ns(),
                    "tracking_state": tracking}
-            # The lidar continues a confirmed track; it never starts one.
-            if state is None or tracking in ("LOST", "REACQUIRING"):
+            # The lidar continues a track a marker created; it never starts
+            # one. LOST is the bar, not REACQUIRING -- see may_continue.
+            if state is None or not lidar_pipeline.may_continue(tracking):
                 row["reason"] = "no_confirmed_track"
                 with lock:
                     lidar_rows.append(row)

@@ -284,3 +284,61 @@ class DefaultsAreNotCopied(unittest.TestCase):
         unit = ArenaLidar(lr.SENSOR_POSITION, lr.SENSOR_ROTATION)
         from localization_contracts.lidar_pipeline import DEFAULT_MAX_USEFUL_RADIUS_M
         self.assertEqual(unit.max_useful_radius_m, DEFAULT_MAX_USEFUL_RADIUS_M)
+
+
+class ContinuationPolicy(unittest.TestCase):
+    """The lidar must be allowed to run in the state a gap actually produces."""
+
+    def test_lost_bars_continuation_and_reacquiring_does_not(self):
+        from localization_contracts.lidar_pipeline import may_continue
+        self.assertTrue(may_continue("TRACKING"))
+        self.assertTrue(may_continue("COASTING"))
+        self.assertTrue(may_continue("REACQUIRING"))
+        self.assertFalse(may_continue("LOST"))
+
+    def test_the_runtime_uses_that_policy_rather_than_its_own_list(self):
+        import ast
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parents[1]
+                  / "scripts" / "run_localization.py").read_text()
+        self.assertIn("may_continue(tracking)", source)
+        self.assertNotIn('tracking in ("LOST", "REACQUIRING")', source)
+
+    def test_lidar_alone_holds_a_track_through_a_camera_gap(self):
+        from localization_contracts.rover_filter import (
+            ImmRoverFilter, Measurement, POSITION, COASTING, REACQUIRING,
+        )
+        ms = 1_000_000
+        rover = ImmRoverFilter()
+        rover.apply_group([Measurement(0, POSITION, (7.0, 6.0),
+                                       (1e-5, 0.0, 0.0, 1e-5), "camera_1",
+                                       "tag36h11:0", True)])
+        # Marker gone. Lidar keeps arriving at 5.55 Hz.
+        held, states = 0, []
+        for step in range(1, 16):
+            stamp = step * 180 * ms
+            # Mid-revolution: what a 200 Hz publisher sees between fixes.
+            states.append(rover.publish(stamp - 90 * ms)["tracking_state"])
+            unit, scan = scan_for((7.0, 6.0))
+            cluster = unit.detect(scan.points, (7.0, 6.0), 0.05, 0.0, stamp)
+            self.assertIsNotNone(cluster, unit.rejections)
+            if not may_continue_state(rover.tracking_state(stamp)):
+                break
+            rover.apply_group([measurement_from_cluster(cluster)])
+            if rover.publish(stamp)["valid"]:
+                held += 1
+        # identity_max_age_s is 2 s, which at 5.55 Hz is eleven revolutions:
+        # the lidar holds the track valid across that and no longer, because
+        # a track running on continuation alone stops being this rover.
+        self.assertGreaterEqual(held, 10)
+        self.assertLessEqual(held, 12)
+        self.assertEqual(rover.tracking_state(15 * 180 * ms), REACQUIRING)
+        # Between fixes the track coasts rather than claiming a fresh marker.
+        self.assertIn(COASTING, states)
+        self.assertEqual(states[-1], REACQUIRING)
+
+
+def may_continue_state(state):
+    from localization_contracts.lidar_pipeline import may_continue
+    return may_continue(state)
