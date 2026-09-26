@@ -299,8 +299,13 @@ def analyze(run_dir):
     write_csv(run_dir / "spatial_bins.csv", bin_rows, list(bin_rows[0]) if bin_rows else ["camera_id", "cell_x", "cell_y"])
 
     valid_estimates = [row for row in estimate_rows if row.get("xy_error_m") is not None and row["valid"]]
+    # Age over every sample includes the dead intervals, where it grows
+    # without bound and says nothing about the pipeline.  The number that
+    # describes latency is the age of the samples actually published as valid.
     ages = [row["measurement_age_ms"] for row in estimate_rows
-            if row.get("measurement_age_ms") is not None]
+            if row["valid"] and row.get("measurement_age_ms") is not None]
+    all_ages = [row["measurement_age_ms"] for row in estimate_rows
+                if row.get("measurement_age_ms") is not None]
     states = defaultdict(int)
     for row in estimate_rows:
         states[row["tracking_state"]] += 1
@@ -314,6 +319,7 @@ def analyze(run_dir):
         "tracking_states": dict(states),
         "p50_measurement_age_ms": percentile(ages, 50),
         "p95_measurement_age_ms": percentile(ages, 95),
+        "p95_measurement_age_all_samples_ms": percentile(all_ages, 95),
         "id_rejections": max((row.get("id_rejections") or 0 for row in estimate_rows),
                              default=0),
         "out_of_sequence": max((row.get("out_of_sequence") or 0 for row in estimate_rows),
