@@ -19,6 +19,7 @@ from gz.msgs10.laserscan_pb2 import LaserScan
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from localization_contracts import lidar_pipeline, roi_tracker
+from localization_contracts.apriltag import marker_plane_z
 from localization_contracts.camera_model import CameraModel
 from localization_contracts.capture import LatestFrames, rgb_array
 from localization_contracts.image_pipeline import OneCameraImagePipeline
@@ -299,9 +300,17 @@ def main():
         )
         for cid, c in cams.items()
     }
+    # Both marker planes, not just the top one: the underside marker sits a
+    # rover height lower, and a window aimed only at the top plane misses it
+    # on every camera that does not look straight down.
+    marker_planes = [
+        marker_plane_z(t.get("placement", "top"),
+                       float(t["T_base_tag_translation"][2]),
+                       a.base_z_nominal, a.inverted_base_z)
+        for t in tag_entries
+    ]
     for planner in planners.values():
-        planner.tag_plane_z = a.base_z_nominal + max(
-            float(t["T_base_tag_translation"][2]) for t in tag_entries)
+        planner.tag_plane_z = (min(marker_planes), max(marker_planes))
 
     lidar_config = cfg.get("lidar")
     lidar = None

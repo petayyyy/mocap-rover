@@ -20,6 +20,65 @@ def planner(position=(9.0, 9.0, 2.9), rotation=NADIR, **kwargs):
     return CameraRoiPlanner(MODEL, rotation, position, **kwargs)
 
 
+PLANES = (ar.INVERTED_BASE_Z - ar.BOTTOM_TAG_DZ, ar.BASE_Z + ar.TAG_DZ)
+
+
+class FlippedRover(unittest.TestCase):
+    """A flip moves the visible marker down by the height of the rover.
+
+    The window is planned from the track's XY, which does not change, so the
+    only thing that can put the marker outside it is aiming at the wrong
+    plane.  A tilted camera turns that plane error into a sideways offset.
+    """
+
+    CAMERA = (5.7, 6.0, 2.9)
+    BASE_XY = (8.6, 9.3)
+
+    def detected_centre(self):
+        frame = ar.render_inverted(self.CAMERA, CENTRE, self.BASE_XY, yaw=0.4)
+        hits = AprilTagImageDetector(allowed_ids=(0, 1)).detect(frame)
+        self.assertEqual([hit.tag_id for hit in hits], [1])
+        return np.asarray(hits[0].corners).mean(axis=0)
+
+    def test_the_window_is_aimed_nearer_the_underside_marker(self):
+        """The top plane is not where a flipped marker is.
+
+        At the shipped 160 px floor the padding covers the error anyway, so
+        this measures the aim rather than a lost detection: what the second
+        plane buys is margin that does not depend on the floor.
+        """
+        centre = self.detected_centre()
+        def miss(plane):
+            plan = planner(self.CAMERA, CENTRE, tag_plane_z=plane).plan(
+                (*self.BASE_XY, 0.05))
+            return math.hypot(plan.projected[0] - centre[0],
+                              plan.projected[1] - centre[1])
+        self.assertLess(miss(PLANES), miss(ar.BASE_Z + ar.TAG_DZ))
+
+    def test_covering_both_planes_keeps_the_underside_marker_in_the_window(self):
+        plan = planner(self.CAMERA, CENTRE, tag_plane_z=PLANES).plan(
+            (*self.BASE_XY, 0.05))
+        self.assertEqual(plan.mode, ROI)
+        x, y, w, h = plan.roi
+        u, v = self.detected_centre()
+        self.assertTrue(x <= u < x + w and y <= v < y + h,
+                        f"marker at {(u, v)} outside roi {plan.roi}")
+
+    def test_an_upright_rover_is_still_covered_by_the_same_window(self):
+        plan = planner(self.CAMERA, CENTRE, tag_plane_z=PLANES).plan(
+            (*self.BASE_XY, 0.05))
+        frame = ar.render(self.CAMERA, CENTRE, self.BASE_XY, yaw=0.4)
+        hits = AprilTagImageDetector(allowed_ids=(0, 1)).detect(frame)
+        u, v = np.asarray(hits[0].corners).mean(axis=0)
+        x, y, w, h = plan.roi
+        self.assertTrue(x <= u < x + w and y <= v < y + h)
+
+    def test_a_nadir_camera_pays_nothing_for_the_second_plane(self):
+        one = planner(rotation=NADIR, tag_plane_z=PLANES[1]).plan((9.0, 9.0, 0.05))
+        both = planner(rotation=NADIR, tag_plane_z=PLANES).plan((9.0, 9.0, 0.05))
+        self.assertEqual(one.roi[2], both.roi[2])
+
+
 class Projection(unittest.TestCase):
     def test_a_point_under_the_camera_lands_on_the_principal_point(self):
         uv = project_to_image((9.0, 9.0, 0.3654), MODEL, NADIR, (9.0, 9.0, 2.9))

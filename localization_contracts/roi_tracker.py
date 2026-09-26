@@ -48,7 +48,8 @@ class CameraRoiPlanner:
     def __init__(self, camera_model, R_world_optical, position_world, *,
                  min_roi_px=160, max_roi_px=480, sigma_multiplier=3.0,
                  marker_size_m=0.40, growth=1.5, max_misses=8,
-                 valid_radius_margin=0.85, watchdog_period_s=2.0):
+                 valid_radius_margin=0.85, watchdog_period_s=2.0,
+                 tag_plane_z=0.3654):
         self.camera_model = camera_model
         self.R = np.asarray(R_world_optical, dtype=float).reshape(3, 3)
         self.position = np.asarray(position_world, dtype=float).reshape(3)
@@ -62,10 +63,34 @@ class CameraRoiPlanner:
         self.watchdog_period_ns = int(watchdog_period_s * 1e9)
         self.misses = 0
         self.last_full_frame_ns = None
+        # Scalar, or (low, high) when the marker can sit on more than one
+        # plane.  See _plane_bounds.
+        self.tag_plane_z = tag_plane_z
 
     def report(self, found):
         """Feed back whether the last planned look succeeded."""
         self.misses = 0 if found else self.misses + 1
+
+    def _plane_bounds(self):
+        """The lowest and highest plane the marker may lie on.
+
+        The rover carries a marker on top and another underneath, so flipping
+        it moves the visible marker down by the height of the rover.  Aiming
+        at the top plane while the underside marker is showing displaces the
+        window by the plane error times the tangent of the incidence: up to
+        50 px over this arena, against a worst-case margin of 17 px at the
+        default 160 px floor.  That survives on padding alone -- lower the
+        floor to 96 px with a confident track and 15% of the sampled views
+        clip the marker instead.  Covering both planes takes the worst margin
+        to 37 px and makes it independent of the floor.  It is close to free:
+        for a camera looking straight down the two projections coincide and
+        the window is unchanged.
+        """
+        value = self.tag_plane_z
+        if np.isscalar(value):
+            return float(value), float(value)
+        low, high = (float(v) for v in value)
+        return (low, high) if low <= high else (high, low)
 
     def _marker_size_px(self, optical_z, incidence):
         focal = float(min(self.camera_model.K[0, 0], self.camera_model.K[1, 1]))
@@ -77,25 +102,44 @@ class CameraRoiPlanner:
             self.last_full_frame_ns = now_ns
             return Plan(ACQUIRE, None, None, "no_track")
         x, y, sigma = prediction
-        tag_z = getattr(self, "tag_plane_z", 0.3654)
-        uv = project_to_image((x, y, tag_z), self.camera_model, self.R, self.position)
-        if uv is None:
-            return self._idle_or_watchdog(now_ns, "behind_camera")
-        inside = self.camera_model.inside_valid_radius([uv], self.valid_radius_margin)[0]
+        corners = []
+        for tag_z in set(self._plane_bounds()):
+            uv = project_to_image((x, y, tag_z), self.camera_model, self.R, self.position)
+            if uv is None:
+                return self._idle_or_watchdog(now_ns, "behind_camera")
+            corners.append((tag_z, uv))
         width, height = self.camera_model.width, self.camera_model.height
-        if not inside or not (0 <= uv[0] < width and 0 <= uv[1] < height):
+
+        def visible(uv):
+            return (self.camera_model.inside_valid_radius(
+                        [uv], self.valid_radius_margin)[0]
+                    and 0 <= uv[0] < width and 0 <= uv[1] < height)
+
+        # One plane leaving the frame is not a reason to stop looking: the
+        # marker may be on the other one.
+        if not any(visible(uv) for _, uv in corners):
             return self._idle_or_watchdog(now_ns, "outside_frame")
 
-        optical = self.R.T @ (np.array([x, y, tag_z]) - self.position)
-        ray = np.array([x, y, tag_z]) - self.position
-        incidence = math.acos(min(1.0, abs(ray[2]) / max(np.linalg.norm(ray), 1e-9)))
-        marker_px = self._marker_size_px(optical[2], incidence)
+        us = [uv[0] for _, uv in corners]
+        vs = [uv[1] for _, uv in corners]
+        uv = ((min(us) + max(us)) / 2.0, (min(vs) + max(vs)) / 2.0)
+        # Half the span between the two projections, so a window centred
+        # between them still reaches either one.
+        spread = max(max(us) - min(us), max(vs) - min(vs)) / 2.0
+
         focal = float(min(self.camera_model.K[0, 0], self.camera_model.K[1, 1]))
-        # Position uncertainty projects to pixels through the same focal
-        # length; the marker itself has to fit inside the window as well.
-        sigma_px = focal * float(sigma) / max(optical[2], 1e-6)
-        half = self.sigma_multiplier * sigma_px + marker_px
-        half *= self.growth ** min(self.misses, 6)
+        half = 0.0
+        for tag_z, _ in corners:
+            optical = self.R.T @ (np.array([x, y, tag_z]) - self.position)
+            ray = np.array([x, y, tag_z]) - self.position
+            incidence = math.acos(min(1.0, abs(ray[2]) / max(np.linalg.norm(ray), 1e-9)))
+            marker_px = self._marker_size_px(optical[2], incidence)
+            # Position uncertainty projects to pixels through the same focal
+            # length; the marker itself has to fit inside the window as well.
+            sigma_px = focal * float(sigma) / max(optical[2], 1e-6)
+            # The nearer plane makes the marker larger, so it sets the window.
+            half = max(half, self.sigma_multiplier * sigma_px + marker_px)
+        half = (half + spread) * self.growth ** min(self.misses, 6)
         size = int(min(max(2 * half, self.min_roi_px), self.max_roi_px))
         size += size % 2
         if self.misses >= self.max_misses:

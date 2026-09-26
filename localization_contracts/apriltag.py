@@ -19,6 +19,18 @@ class Detection:
     capture_time_ns: int; receive_time_ns: int; processed_time_ns: int
     timestamp_uncertainty_ns: int = 0; exposure_duration_ns: int = 0
 
+def marker_plane_z(placement, offset_z_m, base_z_nominal_m, inverted_base_z_m):
+    """Arena height of one marker's surface for a level rover.
+
+    Flipping the rover mirrors the marker offset through the base and changes
+    the height the base itself rests at, so both follow the placement.  Shared
+    so the ROI planner aims at the same planes the pose gate solves on.
+    """
+    if str(placement).lower() == "bottom":
+        return float(inverted_base_z_m) - float(offset_z_m)
+    return float(base_z_nominal_m) + float(offset_z_m)
+
+
 class AprilTagObserver:
     def __init__(self, config: TagConfig, fx, fy, cx, cy, quality_min=.07):
         family = normalize_marker_family(config.family)
@@ -184,9 +196,9 @@ class PnpAprilTagObserver(AprilTagObserver):
         Flipping the rover mirrors the marker offset through the base, so the
         sign of the offset follows the orientation.
         """
-        sign = self.base_orientation(tag_id)
-        return (self.nominal_base_z(tag_id)
-                + sign * float(self.tag_transforms[tag_id][2, 3]))
+        return marker_plane_z(self.tag_placement.get(int(tag_id), "top"),
+                              float(self.tag_transforms[tag_id][2, 3]),
+                              self.base_z_nominal_m, self.inverted_base_z_m)
 
     def corner_sigma_px(self, side_px):
         for threshold, sigma in self.sigma_px_corner:
