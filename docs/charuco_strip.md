@@ -208,9 +208,55 @@ libcamera отдаёт сенсор целиком. Полотно лежит п
 ```bash
 python3 tools/charuco_strip.py world          # пересобрать мир и config/mocap_arena_charuco_cameras.json
 MOCAP_WORLD=worlds/mocap_arena_charuco.sdf ./scripts/run.sh
+./scripts/check_charuco_poses.py
 python3 scripts/check_sim.py                  # PPM-кадры всех камер в /tmp/mocap-camera-check
 python3 tools/charuco_strip.py detect --board assets/charuco_strip/charuco_strip_12x3_board.json /tmp/mocap-camera-check/*.ppm --save-dir /tmp/detected --json-out /tmp/corners.jsonl
 ```
+
+`check_charuco_poses.py` ждёт по одному кадру от каждой камеры, проверяет
+детекцию ChArUco и решает fisheye PnP по найденным углам. Карта маркеров по
+умолчанию берётся из
+`tools/charuco_strip_editor/charuco_strip_12x3/charuco_strip_12x3_map.txt`.
+Для каждой камеры печатаются координаты относительно центра полотна и центра
+поля, ошибка репроекции и отклонение от позы в SDF. Подробный JSON и кадры с
+нарисованными детекциями записываются в `/tmp/mocap-charuco-check/`. Там же
+создаются `scene_3d.png` и масштабируемый `scene_3d.svg`: поле 12×12 м,
+полотно ChArUco, положения камер, их пирамиды обзора и направления оптических
+осей. Ракурс можно поменять параметрами `--view-elev` и `--view-azim`, а
+размер поля — через `--field-size WIDTH HEIGHT`.
+
+Интерактивное окно берёт по одному кадру с каждой камеры, один раз вычисляет
+позы, закрывает видеопотоки и показывает готовую сцену. Схему можно свободно
+вращать мышью и масштабировать колёсиком; повторной детекции и перерисовки нет:
+
+```bash
+# Из запущенного Gazebo
+./scripts/check_charuco_poses.py --live-3d
+
+# Непосредственно из MJPEG-потоков реальных Raspberry Pi, без Gazebo
+./scripts/check_charuco_poses.py --live-3d \
+  --camera-source camera_1=http://IP_CAMERA_1:8080/video_feed \
+  --camera-source camera_2=http://IP_CAMERA_2:8080/video_feed \
+  --camera-source camera_3=http://IP_CAMERA_3:8080/video_feed \
+  --camera-source camera_4=http://IP_CAMERA_4:8080/video_feed \
+  --camera-source camera_5=http://IP_CAMERA_5:8080/video_feed \
+  --camera-source camera_6=http://IP_CAMERA_6:8080/video_feed
+```
+
+`--camera-source` также принимает номер устройства (`camera_1=0`), путь
+`/dev/video*`, RTSP URL или любой поток, который открывает OpenCV. Получение
+шести потоков выполняется параллельно. Параметры fisheye автоматически
+масштабируются, если реальный MJPEG имеет уменьшенное разрешение, например
+820×616 вместо 1640×1232.
+Офлайн-проверка ранее сохранённых `camera_1.ppm` … `camera_6.ppm`:
+
+```bash
+./scripts/check_charuco_poses.py --images-dir /tmp/mocap-camera-check
+```
+
+Оси системы с центром ChArUco: `+X` вдоль длинной стороны, `+Y` к верхней
+стороне с первыми ID, `+Z` вверх. В этом мире центр полотна и центр поля
+совпадают: `(6, 6, 0)` в системе арены.
 
 `config/mocap_arena_charuco_cameras.json` содержит модель линзы, позы камер
 из SDF и положение полотна. Ожидаемый результат по синтетике (та же модель

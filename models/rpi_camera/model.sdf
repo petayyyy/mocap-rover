@@ -27,7 +27,10 @@
       </visual>
       <sensor name="imager" type="camera">
         <!-- Gazebo camera sensors look along local +X, matching this model link's optical direction. -->
-        <pose>0 0 0 0 0 0</pose>
+        <!-- The lens mesh reaches 17.654 mm along +X.  Keep the optical
+             centre ahead of it so a wide-angle sensor cannot see its own
+             lens barrel. -->
+        <pose>0.02 0 0 0 0 0</pose>
         <camera>
           <horizontal_fov>1.74</horizontal_fov>
           <image>

@@ -106,7 +106,10 @@ class Board:
 
     def marker_bits(self, marker_id):
         """(n+2) x (n+2) array, 1 = white cell, exactly as OpenCV draws it."""
-        img = self.dictionary.generateImageMarker(marker_id, self.cells, borderBits=1)
+        if hasattr(self.dictionary, "generateImageMarker"):
+            img = self.dictionary.generateImageMarker(marker_id, self.cells, borderBits=1)
+        else:  # OpenCV 4.6 and older
+            img = cv2.aruco.drawMarker(self.dictionary, marker_id, self.cells, borderBits=1)
         return (img > 127).astype(np.uint8)
 
     # -- chessboard corners -------------------------------------------------
@@ -123,9 +126,16 @@ class Board:
         return [(i, j) for j in range(self.squares_y) for i in range(self.squares_x) if (i + j) % 2 == 0]
 
     def opencv_board(self):
+        ids = np.array(self.ids, dtype=np.int32)
+        if hasattr(cv2.aruco, "CharucoBoard_create"):  # OpenCV 4.6 and older
+            board = cv2.aruco.CharucoBoard_create(
+                self.squares_x, self.squares_y, self.square_mm / 1000.0,
+                self.marker_mm / 1000.0, self.dictionary)
+            if not np.array_equal(board.ids.ravel(), ids):
+                board.setIds(ids)
+            return board
         return cv2.aruco.CharucoBoard((self.squares_x, self.squares_y), self.square_mm / 1000.0,
-                                      self.marker_mm / 1000.0, self.dictionary,
-                                      np.array(self.ids, dtype=np.int32))
+                                      self.marker_mm / 1000.0, self.dictionary, ids)
 
     # -- rectangles that make up the print, in mm, image frame -----------------
     def black_rects_mm(self, margin_mm=None):
@@ -168,6 +178,41 @@ class Board:
     def from_dict(d):
         return Board(d["squares_x"], d["squares_y"], d["square_mm"], d["marker_mm"], d["dictionary"],
                      d.get("id_offset", 0), d.get("border_mm", 0.0))
+
+
+def opencv_board_image(board, size, margin_size=0, border_bits=1):
+    """Render a board with either the old or the new OpenCV ChArUco API."""
+    if hasattr(board, "generateImage"):
+        return board.generateImage(size, marginSize=margin_size, borderBits=border_bits)
+    return board.draw(size, marginSize=margin_size, borderBits=border_bits)
+
+
+def detect_charuco(board: Board, image):
+    """Return (ChArUco corners/ids, marker corners/ids) on OpenCV 4.6+."""
+    cv_board = board.opencv_board()
+    if hasattr(cv2.aruco, "CharucoDetector"):
+        detector = cv2.aruco.CharucoDetector(
+            cv_board, cv2.aruco.CharucoParameters(), detector_params())
+        return detector.detectBoard(image)
+    marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(
+        image, board.dictionary, parameters=detector_params())
+    if marker_ids is None:
+        return None, None, marker_corners, marker_ids
+    # Old aruco detectors can report a smaller nested quad with the same ID.
+    # A ChArUco board contains every ID once, so retain the largest candidate.
+    ids = marker_ids.ravel()
+    if len(np.unique(ids)) != len(ids):
+        keep = []
+        for marker_id in np.unique(ids):
+            candidates = np.flatnonzero(ids == marker_id)
+            keep.append(max(candidates, key=lambda i: abs(cv2.contourArea(
+                np.asarray(marker_corners[i]).reshape(-1, 2).astype(np.float32)))))
+        keep.sort()
+        marker_corners = [marker_corners[i] for i in keep]
+        marker_ids = marker_ids[keep]
+    _, corners, corner_ids = cv2.aruco.interpolateCornersCharuco(
+        marker_corners, marker_ids, image, cv_board)
+    return corners, corner_ids, marker_corners, marker_ids
 
 
 def render_raster(board: Board, px_per_mm: float, margin_mm: float = None) -> np.ndarray:
@@ -490,7 +535,10 @@ def render_view(cam, lens: Lens, texture: np.ndarray, px_per_mm: float, place: P
 
 
 def detector_params():
-    p = cv2.aruco.DetectorParameters()
+    if hasattr(cv2.aruco, "DetectorParameters_create"):
+        p = cv2.aruco.DetectorParameters_create()
+    else:
+        p = cv2.aruco.DetectorParameters()
     p.minMarkerPerimeterRate = 0.01
     p.adaptiveThreshWinSizeMin = 3
     p.adaptiveThreshWinSizeMax = 63
@@ -503,9 +551,10 @@ def detector_params():
 
 def evaluate_view(board: Board, cam, lens: Lens, img, place: Placement, detector=None):
     """Detect the strip in one frame and compare with where it really is."""
-    detector = detector or cv2.aruco.CharucoDetector(board.opencv_board(), cv2.aruco.CharucoParameters(),
-                                                     detector_params())
-    ch_corners, ch_ids, m_corners, m_ids = detector.detectBoard(img)
+    if detector is None:
+        ch_corners, ch_ids, m_corners, m_ids = detect_charuco(board, img)
+    else:
+        ch_corners, ch_ids, m_corners, m_ids = detector.detectBoard(img)
     R = np.asarray(cam["R_world_optical"], float)
     C = np.asarray(cam["position_world"], float)
 
@@ -569,14 +618,13 @@ def cmd_selftest(a):
     board = board_from_args(a)
     ppm = 0.4  # 2.5 mm per pixel keeps every edge of the default board on a pixel
     ours = render_raster(board, ppm)
-    ref = board.opencv_board().generateImage((ours.shape[1], ours.shape[0]),
-                                             marginSize=int(round(board.border_mm * ppm)), borderBits=1)
+    ref = opencv_board_image(board.opencv_board(), (ours.shape[1], ours.shape[0]),
+                             margin_size=int(round(board.border_mm * ppm)), border_bits=1)
     diff = float(np.mean((ours > 127) != (ref > 127)))
     print(board.describe())
     print(f"raster {ours.shape[1]}x{ours.shape[0]} px, pixels different from OpenCV: {diff * 100:.2f}% "
           f"(0 when every edge lies on the {1 / ppm:g} mm raster; a few percent is edge rounding)")
-    det = cv2.aruco.CharucoDetector(board.opencv_board())
-    cc, cid, mc, mid = det.detectBoard(ours)
+    cc, cid, mc, mid = detect_charuco(board, ours)
     n_c = 0 if cid is None else len(cid)
     n_m = 0 if mid is None else len(mid)
     print(f"detector on our raster: {n_m}/{len(board.ids)} markers, {n_c}/{(board.squares_x - 1) * (board.squares_y - 1)} corners")
@@ -647,7 +695,6 @@ def cmd_evaluate(a):
         lens = Lens("pinhole", W, H, hfov_rad=math.radians(a.hfov_deg))
     print(board.describe())
     print(f"lens: {lens.describe()}; world {a.world}; {len(cams)} cameras")
-    detector = cv2.aruco.CharucoDetector(board.opencv_board(), cv2.aruco.CharucoParameters(), detector_params())
     save = Path(a.save_dir) if a.save_dir else None
     if save:
         save.mkdir(parents=True, exist_ok=True)
@@ -661,7 +708,7 @@ def cmd_evaluate(a):
         for cam in cams:
             img = render_view(cam, lens, texture, ppm, place, supersample=a.supersample, blur_px=a.blur_px,
                               noise=a.noise)
-            res, det = evaluate_view(board, cam, lens, img, place, detector)
+            res, det = evaluate_view(board, cam, lens, img, place)
             rows.append(dict(strip_y=yc, camera=cam["name"], **res))
             print(f"{yc:7.2f} {cam['name']:>9} {res['markers']:5d}/{n_m:<3d} {res['markers_wrong']:5d} "
                   f"{res['corners']:5d}/{n_c:<3d} {res['corner_rms_px']:6.2f} {res['theta_max_deg']:9.1f} "
@@ -820,7 +867,6 @@ def cmd_place(a):
 def cmd_detect(a):
     spec = json.loads(Path(a.board).read_text())
     board = Board.from_dict(spec["board"])
-    detector = cv2.aruco.CharucoDetector(board.opencv_board(), cv2.aruco.CharucoParameters(), detector_params())
     out = Path(a.save_dir) if a.save_dir else None
     if out:
         out.mkdir(parents=True, exist_ok=True)
@@ -829,7 +875,7 @@ def cmd_detect(a):
         if img is None:
             print(f"{path}: cannot read")
             continue
-        cc, cid, mc, mid = detector.detectBoard(img)
+        cc, cid, mc, mid = detect_charuco(board, img)
         n_m = 0 if mid is None else len(mid)
         n_c = 0 if cid is None else len(cid)
         print(f"{path}: {n_m} markers, {n_c} chessboard corners")

@@ -38,15 +38,18 @@ def test_sheet_is_12_by_3_metres_with_one_square_of_white_border(board):
 
 def test_raster_is_opencv_board_pixel_for_pixel(board):
     ours = cs.render_raster(board, PPM)
-    ref = board.opencv_board().generateImage((ours.shape[1], ours.shape[0]),
-                                             marginSize=int(BORDER * PPM), borderBits=1)
+    ref = cs.opencv_board_image(board.opencv_board(), (ours.shape[1], ours.shape[0]),
+                                margin_size=int(BORDER * PPM), border_bits=1)
     assert ours.shape == ref.shape
-    assert np.array_equal(ours > 127, ref > 127)
+    different = np.mean((ours > 127) != (ref > 127))
+    # OpenCV 4.6's legacy draw() rounds some module edges differently;
+    # generateImage() in newer OpenCV is pixel-identical.
+    assert different < (0.005 if not hasattr(board.opencv_board(), "generateImage") else 1e-12)
 
 
 def test_detector_finds_every_marker_and_corner_in_our_raster(board):
     img = cs.render_raster(board, PPM)
-    corners, corner_ids, _, marker_ids = cv2.aruco.CharucoDetector(board.opencv_board()).detectBoard(img)
+    corners, corner_ids, _, marker_ids = cs.detect_charuco(board, img)
     assert len(marker_ids) == 90
     assert len(corner_ids) == 29 * 5
     truth = {i: ((x + BORDER) * PPM, (y + BORDER) * PPM) for i, x, y in board.chess_corners_mm()}
@@ -120,6 +123,9 @@ def test_wide_angle_world_rewrites_every_camera(board):
     assert abs(lens.f - np.hypot(820, 616) / np.radians(80)) < 1e-6
     hfov = float(new.split("<horizontal_fov>")[1].split("<")[0])
     assert abs(hfov - 1640 / lens.f) < 1e-5
+    # The optical centres sit ahead of the camera mesh.  With a 160-degree
+    # fisheye this prevents the lens barrel from appearing in its own image.
+    assert new.count("<pose>0.02 0 0 0 0 0</pose>") == 6
     placed, _ = cs.place_in_world(new, board, "x", 6.0, 0.0)
     assert "<uri>model://charuco_strip</uri>" in placed
 

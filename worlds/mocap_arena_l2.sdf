@@ -4842,6 +4842,8 @@
           </geometry>
         </visual>
         <sensor name="camera_1" type="camera">
+          <!-- Put the optical centre just in front of the 17.654 mm lens mesh. -->
+          <pose>0.02 0 0 0 0 0</pose>
           <always_on>true</always_on>
           <update_rate>15</update_rate>
           <topic>/cameras/camera_1/image</topic>
@@ -4894,6 +4896,8 @@
           </geometry>
         </visual>
         <sensor name="camera_2" type="camera">
+          <!-- Put the optical centre just in front of the 17.654 mm lens mesh. -->
+          <pose>0.02 0 0 0 0 0</pose>
           <always_on>true</always_on>
           <update_rate>15</update_rate>
           <topic>/cameras/camera_2/image</topic>
@@ -4946,6 +4950,8 @@
           </geometry>
         </visual>
         <sensor name="camera_3" type="camera">
+          <!-- Put the optical centre just in front of the 17.654 mm lens mesh. -->
+          <pose>0.02 0 0 0 0 0</pose>
           <always_on>true</always_on>
           <update_rate>15</update_rate>
           <topic>/cameras/camera_3/image</topic>
@@ -4998,6 +5004,8 @@
           </geometry>
         </visual>
         <sensor name="camera_4" type="camera">
+          <!-- Put the optical centre just in front of the 17.654 mm lens mesh. -->
+          <pose>0.02 0 0 0 0 0</pose>
           <always_on>true</always_on>
           <update_rate>15</update_rate>
           <topic>/cameras/camera_4/image</topic>
@@ -5050,6 +5058,8 @@
           </geometry>
         </visual>
         <sensor name="camera_5" type="camera">
+          <!-- Put the optical centre just in front of the 17.654 mm lens mesh. -->
+          <pose>0.02 0 0 0 0 0</pose>
           <always_on>true</always_on>
           <update_rate>15</update_rate>
           <topic>/cameras/camera_5/image</topic>
@@ -5102,6 +5112,8 @@
           </geometry>
         </visual>
         <sensor name="camera_6" type="camera">
+          <!-- Put the optical centre just in front of the 17.654 mm lens mesh. -->
+          <pose>0.02 0 0 0 0 0</pose>
           <always_on>true</always_on>
           <update_rate>15</update_rate>
           <topic>/cameras/camera_6/image</topic>
