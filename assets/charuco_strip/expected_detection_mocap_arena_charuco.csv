@@ -1,0 +1,7 @@
+strip_y,camera,markers,markers_wrong,corners,corners_wrong,corner_rms_px,theta_max_deg,cell_px_min,cell_px_med,markers_total,corners_total,lens
+6.00,camera_1,51,0,80,0,0.70,63.30,4.24,5.72,90,145,"fisheye 1640x1232, f=734.5 px/rad, HFOV~128 deg"
+6.00,camera_2,51,0,80,0,0.70,62.23,4.43,5.68,90,145,"fisheye 1640x1232, f=734.5 px/rad, HFOV~128 deg"
+6.00,camera_3,51,0,80,0,0.68,63.30,4.25,5.73,90,145,"fisheye 1640x1232, f=734.5 px/rad, HFOV~128 deg"
+6.00,camera_4,51,0,80,0,0.67,62.23,4.42,5.69,90,145,"fisheye 1640x1232, f=734.5 px/rad, HFOV~128 deg"
+6.00,camera_5,51,0,80,0,0.71,53.66,3.26,6.37,90,145,"fisheye 1640x1232, f=734.5 px/rad, HFOV~128 deg"
+6.00,camera_6,51,0,80,0,0.71,53.66,3.29,6.37,90,145,"fisheye 1640x1232, f=734.5 px/rad, HFOV~128 deg"

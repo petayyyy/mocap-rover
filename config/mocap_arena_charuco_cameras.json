@@ -1,0 +1,193 @@
+{
+ "world": "worlds/mocap_arena_charuco.sdf",
+ "source": "mocap_arena_l2.sdf",
+ "camera_model": "equidistant fisheye (Gazebo wideanglecamera)",
+ "image_size": [
+  1640,
+  1232
+ ],
+ "diagonal_fov_deg": 160.0,
+ "focal_px_per_rad": 734.53211682016,
+ "horizontal_fov_rad": 2.23271380848488,
+ "vertical_fov_rad": 1.6772581780813243,
+ "principal_point": [
+  820.0,
+  616.0
+ ],
+ "note": "pixel = c + f*theta*(x,y)/|xy| for the optical-frame direction (x right, y down, z forward)",
+ "strip": {
+  "board": {
+   "squares_x": 30,
+   "squares_y": 6,
+   "square_mm": 375.0,
+   "marker_mm": 280.0,
+   "dictionary": "DICT_5X5_250",
+   "id_offset": 0,
+   "border_mm": 375.0
+  },
+  "sheet_top_left_arena": [
+   0.0,
+   7.5
+  ],
+  "yaw_rad": 0.0,
+  "arena_from_board": "arena = (x0 + (x_board + border)/1000, y0 - (y_board + border)/1000, 0)"
+ },
+ "cameras": [
+  {
+   "name": "camera_1",
+   "position_world": [
+    9.0,
+    9.0,
+    2.9
+   ],
+   "R_world_optical": [
+    [
+     0.0,
+     -1.0,
+     0.0
+    ],
+    [
+     -1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     -0.0,
+     -1.0
+    ]
+   ],
+   "image_topic": "/cameras/camera_1/image"
+  },
+  {
+   "name": "camera_2",
+   "position_world": [
+    3.0,
+    9.0,
+    2.9
+   ],
+   "R_world_optical": [
+    [
+     0.0,
+     -1.0,
+     0.0
+    ],
+    [
+     -1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     -0.0,
+     -1.0
+    ]
+   ],
+   "image_topic": "/cameras/camera_2/image"
+  },
+  {
+   "name": "camera_3",
+   "position_world": [
+    3.0,
+    3.0,
+    2.9
+   ],
+   "R_world_optical": [
+    [
+     0.0,
+     -1.0,
+     0.0
+    ],
+    [
+     -1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     -0.0,
+     -1.0
+    ]
+   ],
+   "image_topic": "/cameras/camera_3/image"
+  },
+  {
+   "name": "camera_4",
+   "position_world": [
+    9.0,
+    3.0,
+    2.9
+   ],
+   "R_world_optical": [
+    [
+     0.0,
+     -1.0,
+     0.0
+    ],
+    [
+     -1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     -0.0,
+     -1.0
+    ]
+   ],
+   "image_topic": "/cameras/camera_4/image"
+  },
+  {
+   "name": "camera_5",
+   "position_world": [
+    5.7,
+    6.0,
+    2.9
+   ],
+   "R_world_optical": [
+    [
+     0.573576436,
+     -0.627506872,
+     0.526540785
+    ],
+    [
+     -0.819152044,
+     -0.439385042,
+     0.368687826
+    ],
+    [
+     0.0,
+     -0.64278761,
+     -0.766044443
+    ]
+   ],
+   "image_topic": "/cameras/camera_5/image"
+  },
+  {
+   "name": "camera_6",
+   "position_world": [
+    6.3,
+    6.0,
+    2.9
+   ],
+   "R_world_optical": [
+    [
+     -0.573576436,
+     0.627506872,
+     -0.526540785
+    ],
+    [
+     0.819152044,
+     0.439385042,
+     -0.368687826
+    ],
+    [
+     0.0,
+     -0.64278761,
+     -0.766044443
+    ]
+   ],
+   "image_topic": "/cameras/camera_6/image"
+  }
+ ]
+}
