@@ -36,6 +36,11 @@ from .foreground import ClipBackground
 from .frame_source import CameraFrame, DatasetFrameSource
 from .image_pipeline import OneCameraImagePipeline
 from .opponent_camera import OpponentCamera
+from .ray_plane import pixel_rays, ray_plane
+
+# A lost opponent is looked for over the whole frame at most this often per
+# camera.
+REACQUIRE_PERIOD_NS = 250_000_000
 
 
 def _read_jsonl(path):
@@ -69,6 +74,15 @@ class CameraWorker:
             line_time_ns=spec["pipeline"].get("line_time_ns", 0.0), gain=spec["gain"])
         self.opponent = None
         self.prefetched = None          # (index, image, decode_ms)
+        # This camera's windows are planned here, from the track poses the
+        # main thread sends: the planners' state (misses, watchdog) is per
+        # camera, and so is all the projecting.
+        R, C = cam["R_world_optical"], cam["position_world"]
+        self.planner = roi_tracker.CameraRoiPlanner(self.model, R, C, **spec["planner"])
+        self.opponent_planner = (None if spec.get("opponent_planner") is None else
+                                 roi_tracker.CameraRoiPlanner(self.model, R, C,
+                                                              **spec["opponent_planner"]))
+        self.last_reacquire_ns = -10**18
         self.background_build_s = 0.0
         opponent = spec.get("opponent")
         if opponent is not None:
@@ -85,7 +99,69 @@ class CameraWorker:
                 gate_m=opponent["gate_m"])
             self.background_build_s = time.monotonic() - started
 
-    def process(self, row, plan, job=None):
+    def plan(self, context):
+        """(marker plan, opponent job or None) for one frame, from the track poses."""
+        now_ns = context["now_ns"]
+        plan = self.planner.plan(context["prediction"], now_ns)
+        if not context["opponent_enabled"]:
+            return plan, None
+        spec = self.spec["opponent"]
+        tag, opp = context["tag"], context["opp"]
+        camera = self.opponent
+        exclude = [r for r in (
+            camera.exclusion_rect(tag[:2], tag[2], spec["tag_size"]) if tag else None,
+            camera.exclusion_rect(opp[:2], opp[2], spec["size"]) if opp else None)
+            if r is not None]
+        box = context.get("operator_box")
+        if box is not None:
+            x0, y0, x1, y1 = box
+            pad = max(40.0, 0.3 * max(x1 - x0, y1 - y0))
+            roi = (int(x0 - pad), int(y0 - pad), int(x1 - x0 + 2 * pad), int(y1 - y0 + 2 * pad))
+            centre = pixel_rays(self.model, [((x0 + x1) / 2, (y0 + y1) / 2)])[0]
+            point, _ = ray_plane(centre, self.camera["R_world_optical"],
+                                 self.camera["position_world"], spec["size"][2] / 2)
+            if point is None:
+                return plan, None
+            return plan, {"plan": roi_tracker.Plan(roi_tracker.ROI, roi, None, "operator_box"),
+                          "prediction": point[:2], "tag_pose": tag and tag[:3],
+                          "exclude": exclude, "gate_m": 1.5,
+                          "operator_box": (x0, y0, x1, y1)}
+        if opp is not None:
+            opponent_plan = self.opponent_planner.plan(
+                None if self.spec["no_roi_tracking"] else (opp[0], opp[1], opp[3]), now_ns)
+            return plan, {"plan": opponent_plan, "prediction": opp[:2],
+                          "tag_pose": tag and tag[:3], "exclude": exclude,
+                          "gate_m": max(spec["gate_m"], 3.0 * opp[3])}
+        if (tag is not None and context["operator_done"]
+                and now_ns - self.last_reacquire_ns >= REACQUIRE_PERIOD_NS):
+            # The opponent track is gone.  The marker can only ever name
+            # tag_rover, so the other rover is whatever blob is left well
+            # away from it -- looked for over the whole frame, sparingly.
+            self.last_reacquire_ns = now_ns
+            return plan, {"plan": roi_tracker.Plan(roi_tracker.ACQUIRE, None, None,
+                                                   "opponent_reacquire"),
+                          "prediction": None, "tag_pose": tag[:3], "exclude": exclude,
+                          "reacquire": True}
+        if exclude:
+            # No opponent track here: still learn the background.
+            return plan, {"plan": roi_tracker.Plan(roi_tracker.IDLE, None, None, "no_track"),
+                          "prediction": None, "tag_pose": None, "exclude": exclude}
+        return plan, None
+
+    def process(self, row, context):
+        """Plan, read and report one frame; the plans come back in the result."""
+        plan, job = self.plan(context)
+        result = self.read(row, plan, job)
+        result["plan"], result["job"] = plan, job
+        if not result["idle"]:
+            if plan.mode != roi_tracker.IDLE:
+                self.planner.report(bool(result["hits"]))
+            if (job is not None and job["plan"].mode != roi_tracker.IDLE
+                    and job["plan"].reason not in ("operator_box", "opponent_reacquire")):
+                self.opponent_planner.report(result.get("opponent_reading") is not None)
+        return result
+
+    def read(self, row, plan, job=None):
         """One frame.  ``job`` is the opponent's plan for it, or None."""
         cid = self.camera_id
         busy = plan.mode != roi_tracker.IDLE or (
@@ -201,8 +277,8 @@ class InlinePool:
         return sum(w.background_build_s for w in self.workers.values())
 
     def run(self, jobs):
-        """``jobs``: list of (camera_id, row, plan, opponent_job)."""
-        return [self.workers[cid].process(row, plan, job) for cid, row, plan, job in jobs]
+        """``jobs``: list of (camera_id, row, context)."""
+        return [self.workers[cid].process(row, context) for cid, row, context in jobs]
 
     def close(self):
         for worker in self.workers.values():
@@ -222,8 +298,8 @@ class ThreadPool(InlinePool):
             max_workers=max_workers or len(specs))
 
     def run(self, jobs):
-        futures = [self.executor.submit(self.workers[cid].process, row, plan, job)
-                   for cid, row, plan, job in jobs]
+        futures = [self.executor.submit(self.workers[cid].process, row, context)
+                   for cid, row, context in jobs]
         return [future.result() for future in futures]
 
     def close(self):
@@ -231,7 +307,41 @@ class ThreadPool(InlinePool):
         super().close()
 
 
-def _serve(connection, spec, threads, prefetch=True):
+def cpu_plan():
+    """(main_cpu, worker_cpus) for a hybrid CPU, or None where it cannot be read.
+
+    The main thread holds both filters and is the serial part of every
+    instant, so it gets the fastest core to itself (its hyper-thread sibling
+    stays empty); the camera processes share the rest, except the slowest
+    cluster (on the Core Ultra 155H two 2.5 GHz low-power cores, where one
+    stray worker would hold up every instant).
+    """
+    import os
+    root = Path("/sys/devices/system/cpu")
+    try:
+        cpus = sorted(os.sched_getaffinity(0))
+        top = {c: int((root / f"cpu{c}/cpufreq/cpuinfo_max_freq").read_text()) for c in cpus}
+    except (OSError, ValueError, AttributeError):
+        return None
+    fastest = max(top.values())
+    slowest = min(top.values())
+    main = min(c for c in cpus if top[c] == fastest)
+    try:
+        siblings = (root / f"cpu{main}/topology/thread_siblings_list").read_text().strip()
+        taken = set()
+        for part in siblings.split(","):
+            low, _, high = part.partition("-")
+            taken.update(range(int(low), int(high or low) + 1))
+    except (OSError, ValueError):
+        taken = {main}
+    workers = [c for c in cpus if c not in taken and (top[c] > slowest or fastest == slowest)]
+    return main, workers
+
+
+def _serve(connection, spec, threads, prefetch=True, cpus=None):
+    import os
+    if cpus:
+        os.sched_setaffinity(0, cpus)
     import cv2
     cv2.setNumThreads(threads)
     try:
@@ -261,14 +371,18 @@ class ProcessPool:
 
     name = "processes"
 
-    def __init__(self, specs, threads_per_process=1):
+    def __init__(self, specs, threads_per_process=1, prefetch=True, pin=False):
+        import os
         context = multiprocessing.get_context("spawn")
+        plan = cpu_plan() if pin else None
+        self.cpu_plan = plan
         self.links = {}
         self.processes = []
         for spec in specs:
             parent, child = context.Pipe()
-            process = context.Process(target=_serve, args=(child, spec, threads_per_process),
-                                      daemon=True)
+            process = context.Process(
+                target=_serve, args=(child, spec, threads_per_process, prefetch,
+                                     plan[1] if plan else None), daemon=True)
             process.start()
             self.links[spec["camera_id"]] = parent
             self.processes.append(process)
@@ -278,15 +392,17 @@ class ProcessPool:
             if status != "ready":
                 raise RuntimeError(f"{cid}: worker failed to start: {value}")
             self.build_s += value
+        if plan:
+            os.sched_setaffinity(0, {plan[0]})
 
     def background_build_s(self):
         return self.build_s
 
     def run(self, jobs):
-        for cid, row, plan, job in jobs:
-            self.links[cid].send((row, plan, job))
+        for cid, row, context in jobs:
+            self.links[cid].send((row, context))
         results = []
-        for cid, _, _, _ in jobs:
+        for cid, _, _ in jobs:
             status, value = self.links[cid].recv()
             if status != "ok":
                 raise RuntimeError(f"{cid}: {value}")

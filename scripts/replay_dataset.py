@@ -64,15 +64,12 @@ from localization_contracts.rover_filter import (  # noqa: E402
 from localization_contracts.contracts import Observation, SCHEMA_VERSION, FRAME_ARENA  # noqa: E402
 from localization_contracts.identity import TwoRoverIdentity  # noqa: E402
 from localization_contracts.opponent_camera import OpponentCamera, SILHOUETTE  # noqa: E402
-from localization_contracts.camera_worker import POOLS  # noqa: E402
-from localization_contracts.ray_plane import pixel_rays, ray_plane  # noqa: E402
+from localization_contracts.camera_worker import POOLS, REACQUIRE_PERIOD_NS  # noqa: E402
 
 # Opponent cuboid as the operator sees it: 0.9 x 0.52 m, top at 0.483 m.
 OPPONENT_SIZE_M = (0.9, 0.52, 0.483)
 OPERATOR_IDENTITY = "operator:opponent"
-# A lost opponent is looked for over the whole frame at most this often per
-# camera, and only a blob this far from tag_rover may restart it.
-REACQUIRE_PERIOD_NS = 250_000_000
+# Only a blob this far from tag_rover may restart a lost opponent track.
 REACQUIRE_CLEAR_M = 1.0
 TAG_BODY_M = (0.72, 0.52, 0.40)
 
@@ -104,9 +101,15 @@ def parse_args(argv=None):
                    help="simulated detector+PnP cost between arrival and the filter")
     p.add_argument("--workers", type=int, default=0,
                    help="camera worker threads with --parallel threads; 0 = one per camera")
-    p.add_argument("--parallel", choices=sorted(POOLS), default="threads",
-                   help="how the cameras run: one thread each (default), one process "
-                        "each, or all inline on one thread; the output is identical")
+    p.add_argument("--parallel", choices=sorted(POOLS), default="processes",
+                   help="how the cameras run: one process each (default), one thread each, "
+                        "or all inline on one thread; the output is identical")
+    p.add_argument("--prefetch", action="store_true",
+                   help="with --parallel processes: decode the next frame before it is asked "
+                        "for (faster cameras, slower main thread on a power-limited laptop)")
+    p.add_argument("--pin-cpus", action="store_true",
+                   help="with --parallel processes: main thread alone on the fastest core, "
+                        "camera processes on the others, never on the slowest cluster")
     # Everything below mirrors run_localization.py, same names and defaults.
     p.add_argument("--detector-scale", type=float, default=1.0)
     p.add_argument("--detector-profile", choices=PROFILES,
@@ -338,20 +341,16 @@ class Replay:
             max_planar_tilt_deg=a.tag_max_planar_tilt_deg, min_side_px=a.tag_min_side_px,
             **pose_gates)
         self.models = {cid: CameraModel.from_config(c) for cid, c in cams.items()}
-        self.planners = {
-            cid: roi_tracker.CameraRoiPlanner(
-                self.models[cid], c["R_world_optical"], c["position_world"],
-                min_roi_px=a.roi_min_px, max_roi_px=a.roi_max_px,
-                marker_size_m=self.tag_size_m, watchdog_period_s=a.watchdog_period_s,
-                max_incidence_deg=None if a.no_roi_visibility_gates else a.max_incidence_deg,
-                min_marker_px=None if a.no_roi_visibility_gates else a.tag_min_side_px,
-                exhausted_full_frame_period_s=a.roi_exhausted_period_s or None)
-            for cid, c in cams.items()
-        }
         planes = [marker_plane_z(t.get("placement", "top"), float(t["T_base_tag_translation"][2]),
                                  a.base_z_nominal, a.inverted_base_z) for t in tag_entries]
-        for planner in self.planners.values():
-            planner.tag_plane_z = (min(planes), max(planes))
+        # The planners live in the camera workers; these are their settings.
+        self.planner_kwargs = dict(
+            min_roi_px=a.roi_min_px, max_roi_px=a.roi_max_px,
+            marker_size_m=self.tag_size_m, watchdog_period_s=a.watchdog_period_s,
+            max_incidence_deg=None if a.no_roi_visibility_gates else a.max_incidence_deg,
+            min_marker_px=None if a.no_roi_visibility_gates else a.tag_min_side_px,
+            exhausted_full_frame_period_s=a.roi_exhausted_period_s or None,
+            tag_plane_z=(min(planes), max(planes)))
         aliases = {f"{self.marker_family}:{int(i)}" for i in self.tags}
         self.filters = {"tag_rover": ImmRoverFilter(
             coast_ms=a.coast_ms, identity_max_age_s=a.identity_max_age_s,
@@ -361,7 +360,6 @@ class Replay:
         self.opponent_cameras = {}
         self.operator_box = None
         self.operator_done = False
-        self.last_reacquire_ns = {}
         self.reacquisitions = []
         self.reacquired_at = None
         self.reacquire_candidate = None
@@ -374,17 +372,13 @@ class Replay:
                 coast_ms=a.coast_ms, identity_max_age_s=1e9, lost_ms=a.lost_ms,
                 max_speed_mps=a.max_speed_mps, identity_aliases={OPERATOR_IDENTITY})
             # Same planner class, aimed at the body instead of the marker.
-            self.opponent_planners = {
-                cid: roi_tracker.CameraRoiPlanner(
-                    self.models[cid], c["R_world_optical"], c["position_world"],
-                    min_roi_px=a.opponent_roi_min_px, max_roi_px=a.opponent_roi_max_px,
-                    marker_size_m=a.opponent_size[0], watchdog_period_s=a.watchdog_period_s,
-                    tag_plane_z=(0.0, a.opponent_size[2]),
-                    max_incidence_deg=a.opponent_max_incidence_deg,
-                    min_marker_px=a.opponent_min_size_px,
-                    exhausted_full_frame_period_s=a.roi_exhausted_period_s or None)
-                for cid, c in cams.items()
-            }
+            self.opponent_planner_kwargs = dict(
+                min_roi_px=a.opponent_roi_min_px, max_roi_px=a.opponent_roi_max_px,
+                marker_size_m=a.opponent_size[0], watchdog_period_s=a.watchdog_period_s,
+                tag_plane_z=(0.0, a.opponent_size[2]),
+                max_incidence_deg=a.opponent_max_incidence_deg,
+                min_marker_px=a.opponent_min_size_px,
+                exhausted_full_frame_period_s=a.roi_exhausted_period_s or None)
         self.buffers = {name: AsyncObservationBuffer(int(a.group_window_ms * 1e6))
                         for name in self.filters}
         self.pending_observations = {name: [] for name in self.filters}
@@ -555,6 +549,9 @@ class Replay:
         return {"camera_id": cid, "camera": self.cams[cid], "dataset": str(self.dataset),
                 "tags": self.tags, "calibration_version": self.version,
                 "pipeline": self.pipeline_kwargs, "transport_ns": self.transport_ns,
+                "planner": self.planner_kwargs,
+                "opponent_planner": getattr(self, "opponent_planner_kwargs", None),
+                "no_roi_tracking": a.no_roi_tracking,
                 "processing_ns": self.processing_ns, "gain": a.gain, "opponent": opponent}
 
     def pose_of(self, name, now_ns):
@@ -566,68 +563,35 @@ class Replay:
         return (float(state[0]), float(state[1]), float(state[YAW]),
                 float(math.sqrt(max(covariance[0, 0], covariance[1, 1]))))
 
-    def opponent_jobs(self, now_ns, items):
-        """Main thread: what each camera should do for the opponent this instant."""
-        if not self.opponent_enabled:
-            return {cid: None for cid, _ in items}
-        tag = self.pose_of("tag_rover", now_ns)
-        opp = self.pose_of("opponent", now_ns)
+    def frame_context(self, now_ns, items):
+        """Main thread: what every camera needs from the filters for this instant.
+
+        Only track poses and flags; each camera plans its own windows from them.
+        """
+        tag = self.pose_of("tag_rover", now_ns) if self.opponent_enabled else None
+        opp = self.pose_of("opponent", now_ns) if self.opponent_enabled else None
         stamp = int(items[0][1]["stamp_ns"])
-        operator = (self.operator_box is not None and not self.operator_done
-                    and stamp == self.operator_box["stamp_ns"])
-        jobs = {}
-        for cid, _ in items:
-            camera = self.opponent_cameras[cid]
-            exclude = [r for r in (
-                camera.exclusion_rect(tag[:2], tag[2], TAG_BODY_M) if tag else None,
-                camera.exclusion_rect(opp[:2], opp[2], self.a.opponent_size) if opp else None)
-                if r is not None]
-            if operator and cid in self.operator_box["boxes_xyxy_px"]:
-                x0, y0, x1, y1 = self.operator_box["boxes_xyxy_px"][cid]
-                pad = max(40.0, 0.3 * max(x1 - x0, y1 - y0))
-                roi = (int(x0 - pad), int(y0 - pad), int(x1 - x0 + 2 * pad), int(y1 - y0 + 2 * pad))
-                centre = pixel_rays(self.models[cid], [((x0 + x1) / 2, (y0 + y1) / 2)])[0]
-                point, _ = ray_plane(centre, self.cams[cid]["R_world_optical"],
-                                     self.cams[cid]["position_world"], self.a.opponent_size[2] / 2)
-                if point is None:
-                    continue
-                jobs[cid] = {"plan": roi_tracker.Plan(roi_tracker.ROI, roi, None, "operator_box"),
-                             "prediction": point[:2], "tag_pose": tag and tag[:3],
-                             "exclude": exclude, "gate_m": 1.5,
-                             "operator_box": (x0, y0, x1, y1)}
-            elif opp is not None:
-                plan = self.opponent_planners[cid].plan(
-                    None if self.a.no_roi_tracking else (opp[0], opp[1], opp[3]), now_ns)
-                jobs[cid] = {"plan": plan, "prediction": opp[:2], "tag_pose": tag and tag[:3],
-                             "exclude": exclude,
-                             "gate_m": max(self.a.opponent_gate_m, 3.0 * opp[3])}
-            elif (tag is not None and self.operator_done
-                  and now_ns - self.last_reacquire_ns.get(cid, -10**18) >= REACQUIRE_PERIOD_NS):
-                # The opponent track is gone.  The marker can only ever name
-                # tag_rover, so the other rover is whatever blob is left well
-                # away from it -- looked for over the whole frame, sparingly.
-                self.last_reacquire_ns[cid] = now_ns
-                jobs[cid] = {"plan": roi_tracker.Plan(roi_tracker.ACQUIRE, None, None,
-                                                      "opponent_reacquire"),
-                             "prediction": None, "tag_pose": tag[:3], "exclude": exclude,
-                             "reacquire": True}
-            elif exclude:
-                # No opponent track here: still learn the background.
-                jobs[cid] = {"plan": roi_tracker.Plan(roi_tracker.IDLE, None, None, "no_track"),
-                             "prediction": None, "tag_pose": None, "exclude": exclude}
-        return jobs
+        operator = (self.opponent_enabled and self.operator_box is not None
+                    and not self.operator_done and stamp == self.operator_box["stamp_ns"])
+        common = {"now_ns": now_ns,
+                  "prediction": None if self.a.no_roi_tracking else self.track_prediction(now_ns),
+                  "opponent_enabled": self.opponent_enabled, "tag": tag, "opp": opp,
+                  "operator_done": self.operator_done}
+        return {cid: {**common, "operator_box": (self.operator_box["boxes_xyxy_px"].get(cid)
+                                                 if operator else None)}
+                for cid, _ in items}
 
     def camera_batch(self, now_ns, items):
         begin = time.perf_counter_ns()
-        prediction = None if self.a.no_roi_tracking else self.track_prediction(now_ns)
-        plans = {cid: self.planners[cid].plan(prediction, now_ns) for cid, _ in items}
-        jobs = self.opponent_jobs(now_ns, items)
+        contexts = self.frame_context(now_ns, items)
         self.main_ms["plan"].append((time.perf_counter_ns() - begin) / 1e6)
         begin = time.perf_counter_ns()
-        outputs = self.pool.run([(cid, row, plans[cid], jobs.get(cid)) for cid, row in items])
+        outputs = self.pool.run([(cid, row, contexts[cid]) for cid, row in items])
         results = [(cid, row, out) for (cid, row), out in zip(items, outputs)]
         self.batch_ms.append((time.perf_counter_ns() - begin) / 1e6)
         begin = time.perf_counter_ns()
+        plans = {cid: result["plan"] for cid, _, result in results}
+        jobs = {cid: result["job"] for cid, _, result in results if result["job"] is not None}
         self.apply_results(now_ns, plans, jobs, results)
         self.main_ms["apply"].append((time.perf_counter_ns() - begin) / 1e6)
 
@@ -644,7 +608,6 @@ class Replay:
                 continue
             plan = plans[cid]
             if plan.mode != roi_tracker.IDLE:
-                self.planners[cid].report(bool(result["hits"]))
                 timing["tag_ms"].append(result["tag_ms"])
             timing["latency_ms"].append(result["latency_ms"])
             for stage, value in result.get("stages", {}).items():
@@ -653,8 +616,6 @@ class Replay:
             timing["by_mode"][plan.mode].append(result["latency_ms"])
             if job is not None and job["plan"].mode != roi_tracker.IDLE:
                 timing["opponent_ms"].append(result["opponent_ms"])
-                if job["plan"].reason not in ("operator_box", "opponent_reacquire"):
-                    self.opponent_planners[cid].report(result.get("opponent_reading") is not None)
             if job is not None:
                 timing["background_update_ms"].append(result["background_update_ms"])
             m = self.metrics[cid]
@@ -919,8 +880,12 @@ class Replay:
             self.build_opponent_cameras()
         started = time.monotonic()
         specs = [self.worker_spec(cid) for cid in sorted(self.cams)]
-        self.pool = (POOLS["threads"](specs, a.workers or None) if a.parallel == "threads"
-                     else POOLS[a.parallel](specs))
+        if a.parallel == "threads":
+            self.pool = POOLS["threads"](specs, a.workers or None)
+        elif a.parallel == "processes":
+            self.pool = POOLS["processes"](specs, prefetch=a.prefetch, pin=a.pin_cpus)
+        else:
+            self.pool = POOLS[a.parallel](specs)
         self.background_build_s = self.pool.background_build_s()
         self.pool_start_s = time.monotonic() - started
         wall_start = time.monotonic()
@@ -1075,6 +1040,8 @@ class Replay:
             "workers": (self.a.workers or len(self.cams)) if self.a.parallel == "threads"
             else (len(self.cams) if self.a.parallel == "processes" else 1),
             "pool_start_s": getattr(self, "pool_start_s", None),
+            "prefetch": self.a.parallel == "processes" and self.a.prefetch,
+            "cpu_plan": getattr(self.pool, "cpu_plan", None),
             "stages_ms": {k: summary(v) for k, v in sorted(stages.items())},
             "wall_seconds": wall, "sim_seconds": sim_seconds,
             "frames_total": frames, "frames_processed": processed, "frames_idle": idle,
