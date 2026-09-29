@@ -299,3 +299,89 @@ class KltMarkerTracker:
             b = corners[(i + 2) % 4] - corners[(i + 1) % 4]
             signs.append(np.sign(a[0] * b[1] - a[1] * b[0]))
         return len(set(signs)) == 1 and signs[0] != 0
+
+
+class KltFeatureTracker:
+    """Follow points inside a blob between frames, same flow as KltMarkerTracker.
+
+    A rover without a marker has no four corners to follow, so this tracks
+    whatever corners its body texture offers and reports how they moved.
+    Same pyramidal LK and forward-backward check as the marker tracker; a
+    point that fails either is dropped, and too few survivors end the track.
+    Images are crops in one common rectangle, points are full-frame pixels.
+    """
+
+    def __init__(self, max_frames=8, max_reverse_error_px=0.7, min_points=6,
+                 max_points=60, window=(15, 15), levels=3):
+        import cv2
+        self.cv2 = cv2
+        self.max_frames = int(max_frames)
+        self.max_reverse_error_px = float(max_reverse_error_px)
+        self.min_points = int(min_points)
+        self.max_points = int(max_points)
+        self.window = tuple(window)
+        self.levels = int(levels)
+        self.stop()
+
+    def stop(self):
+        self.previous = self.rect = self.points = None
+        self.frames = 0
+
+    @property
+    def active(self):
+        return self.points is not None
+
+    def start(self, gray, rect, blob_mask=None):
+        """``gray`` is the crop at ``rect = (x, y, w, h)``; blob_mask the same size."""
+        corners = self.cv2.goodFeaturesToTrack(
+            gray, self.max_points, 0.01, 5, mask=None if blob_mask is None
+            else blob_mask.astype(np.uint8))
+        if corners is None or len(corners) < self.min_points:
+            self.stop()
+            return False
+        self.previous = gray
+        self.rect = tuple(int(v) for v in rect)
+        self.points = corners.reshape(-1, 2) + [self.rect[0], self.rect[1]]
+        self.frames = 0
+        return True
+
+    def track(self, crop_of):
+        """``crop_of(rect)`` returns this frame's gray crop at ``rect``.
+
+        Returns ``(old_points, new_points)`` in full-frame pixels, or None.
+        """
+        if self.points is None or self.frames >= self.max_frames:
+            self.stop()
+            return None
+        cv2 = self.cv2
+        image = crop_of(self.rect)
+        if image is None or image.shape != self.previous.shape:
+            self.stop()
+            return None
+        offset = np.array([self.rect[0], self.rect[1]], dtype=np.float32)
+        start = (self.points - offset).astype(np.float32).reshape(-1, 1, 2)
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03)
+        forward, status, _ = cv2.calcOpticalFlowPyrLK(
+            self.previous, image, start, None, winSize=self.window,
+            maxLevel=self.levels, criteria=criteria)
+        if forward is None:
+            self.stop()
+            return None
+        backward, back_status, _ = cv2.calcOpticalFlowPyrLK(
+            image, self.previous, forward, None, winSize=self.window,
+            maxLevel=self.levels, criteria=criteria)
+        if backward is None:
+            self.stop()
+            return None
+        error = np.linalg.norm(backward.reshape(-1, 2) - start.reshape(-1, 2), axis=1)
+        good = ((status.reshape(-1) == 1) & (back_status.reshape(-1) == 1)
+                & (error <= self.max_reverse_error_px))
+        if int(good.sum()) < self.min_points:
+            self.stop()
+            return None
+        old = self.points[good]
+        new = forward.reshape(-1, 2)[good] + offset
+        self.previous = image
+        self.points = new
+        self.frames += 1
+        return old, new
