@@ -35,7 +35,13 @@ MSG_HELLO = 5     # node -> laptop: JSON, first message after connect
 # Pixel formats carried by a frame.
 FORMAT_Y8 = 0
 FORMAT_JPEG = 1
-FORMAT_NAMES = {FORMAT_Y8: "y8", FORMAT_JPEG: "jpeg"}
+# Raw Bayer straight off the sensor, no ISP.  The CM4's VC4 ISP cannot convert
+# 1640x1232 at 83 fps (measured: it delivers every second frame, 41.5 fps),
+# so on that board the luminance path has to come from the raw stream.  The
+# window keeps full resolution; a 2x2 gain map on the laptop flattens the
+# mosaic, and window offsets are always even so the Bayer phase is preserved.
+FORMAT_BAYER8 = 2
+FORMAT_NAMES = {FORMAT_Y8: "y8", FORMAT_JPEG: "jpeg", FORMAT_BAYER8: "bayer8"}
 FORMAT_CODES = {name: code for code, name in FORMAT_NAMES.items()}
 
 # magic u16, version u8, type u8, header_len u16, json_len u32, data_len u32

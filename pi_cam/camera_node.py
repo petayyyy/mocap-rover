@@ -85,6 +85,13 @@ class NodeConfig:
     host: str = "0.0.0.0"
     port: int = 5600
     sensor: str = "picamera2"                 # or "synthetic"
+    # Where the luminance comes from:
+    #   "isp" -- the ISP's YUV420 main stream, Y plane (Pi 5 / CM5)
+    #   "raw" -- the sensor's raw Bayer stream, no ISP (REQUIRED on CM4: its
+    #            VC4 ISP delivers only 41.5 of 83 fps at 1640x1232)
+    stream: str = "isp"
+    # Main stream size in raw mode: the ISP still runs, so keep it small.
+    raw_mode_main_size: tuple = (320, 240)
     width: int = SENSOR_WIDTH
     height: int = SENSOR_HEIGHT
     bit_depth: int = 8
@@ -135,6 +142,8 @@ class NodeConfig:
             raise ValueError(f"unknown config keys: {sorted(unknown)}")
         data.update({k: v for k, v in overrides.items() if v is not None})
         cfg = cls(**data)
+        if cfg.stream not in ("isp", "raw"):
+            raise ValueError(f"unknown stream {cfg.stream!r}; use 'isp' or 'raw'")
         if cfg.stamp_reference not in ("exposure_start_first_row", "readout_start_first_row", "frame_end"):
             raise ValueError(f"unknown stamp_reference {cfg.stamp_reference!r}")
         if len(cfg.camera_id.encode("ascii")) > 16:
@@ -288,7 +297,9 @@ class SyntheticSensor:
         self.scratch = np.empty_like(self.base)
         self.sequence = 0
         self.next_due = None
-        self.mode = {"size": [self.width, self.height], "bit_depth": 8, "format": "synthetic"}
+        self.stream_name, self.wire_format = "main", "y8"
+        self.mode = {"size": [self.width, self.height], "bit_depth": 8, "format": "synthetic",
+                     "stream": "main", "wire_format": "y8"}
 
     @staticmethod
     def expected_pixel(row, col, sequence):
@@ -341,27 +352,42 @@ class PicameraSensor:
         self.width, self.height = cfg.width, cfg.height
         self.camera = Picamera2()
         duration_us = int(round(1_000_000 / cfg.fps))
-        config = self.camera.create_video_configuration(
-            main={"size": (cfg.width, cfg.height), "format": "YUV420"},
-            sensor={"output_size": (cfg.width, cfg.height), "bit_depth": cfg.bit_depth},
-            controls={
-                "FrameDurationLimits": (duration_us, duration_us),
-                "ExposureTime": int(cfg.exposure_us),
-                "AnalogueGain": float(cfg.analogue_gain),
-                "AeEnable": False, "AwbEnable": False,
-            },
-            buffer_count=cfg.buffer_count)
+        controls = {
+            "FrameDurationLimits": (duration_us, duration_us),
+            "ExposureTime": int(cfg.exposure_us),
+            "AnalogueGain": float(cfg.analogue_gain),
+            "AeEnable": False, "AwbEnable": False,
+        }
+        common = dict(sensor={"output_size": (cfg.width, cfg.height), "bit_depth": cfg.bit_depth},
+                      controls=controls, buffer_count=cfg.buffer_count)
+        self.raw_mode = cfg.stream == "raw"
+        if self.raw_mode:
+            # Read the sensor's own Bayer frames; the ISP only handles the small
+            # main stream picamera2 insists on, so it is never the bottleneck.
+            config = self.camera.create_video_configuration(
+                raw={"size": (cfg.width, cfg.height), "format": "SBGGR8"},
+                main={"size": tuple(cfg.raw_mode_main_size), "format": "YUV420"}, **common)
+            self.stream_name, self.wire_format = "raw", "bayer8"
+        else:
+            config = self.camera.create_video_configuration(
+                main={"size": (cfg.width, cfg.height), "format": "YUV420"}, **common)
+            self.stream_name, self.wire_format = "main", "y8"
         self.camera.configure(config)
         actual = self.camera.camera_configuration()
-        main = actual["main"]
-        self.stride = int(main["stride"])
+        plane = actual[self.stream_name]
+        self.stride = int(plane["stride"])
         sensor = actual.get("sensor", {})
         self.mode = {"size": list(sensor.get("output_size", (cfg.width, cfg.height))),
-                     "bit_depth": sensor.get("bit_depth"), "format": main["format"],
-                     "stride": self.stride, "raw": actual.get("raw", {}).get("format")}
+                     "bit_depth": sensor.get("bit_depth"), "format": plane["format"],
+                     "stride": self.stride, "stream": self.stream_name,
+                     "wire_format": self.wire_format,
+                     "raw": actual.get("raw", {}).get("format"),
+                     "main": actual.get("main", {}).get("size")}
         if tuple(self.mode["size"]) != (cfg.width, cfg.height) or self.mode["bit_depth"] != cfg.bit_depth:
             raise RuntimeError(f"libcamera picked sensor mode {self.mode}, not "
                                f"{cfg.width}x{cfg.height}/{cfg.bit_depth}-bit")
+        if self.raw_mode and tuple(plane["size"]) != (cfg.width, cfg.height):
+            raise RuntimeError(f"raw stream is {plane['size']}, not {(cfg.width, cfg.height)}")
         self.sequence = 0
         self.last_stamp = None
 
@@ -392,9 +418,9 @@ class PicameraSensor:
         request = self.camera.capture_request()
         metadata = request.get_metadata()
         try:
-            mapped = self._MappedArray(request, "main", reshape=False, write=False)
+            mapped = self._MappedArray(request, self.stream_name, reshape=False, write=False)
         except TypeError:   # older picamera2 without the reshape flag
-            mapped = self._MappedArray(request, "main")
+            mapped = self._MappedArray(request, self.stream_name)
         mapped.__enter__()
         array = mapped.array
         h, w = self.height, self.width
@@ -523,6 +549,7 @@ class CameraNode:
         self.cfg = cfg
         self.sensor = sensor or make_sensor(cfg)
         self.sensor_width, self.sensor_height = self.sensor.width, self.sensor.height
+        self.wire_format = getattr(self.sensor, "wire_format", "y8")
         self.line_time_ns = cfg.computed_line_time_ns()
         self.started_mono = time.monotonic()
         self.stop_event = threading.Event()
@@ -644,7 +671,8 @@ class CameraNode:
                                   stream["format"], stream["request_id"])
                 cuts = []
                 for w in windows:
-                    cuts.append((w, np.ascontiguousarray(frame.y[w.row0:w.row0 + w.h, w.col0:w.col0 + w.w])))
+                    cuts.append((w, np.ascontiguousarray(
+                        frame.y[w.row0:w.row0 + w.h, w.col0:w.col0 + w.w])))
                 if full is not None:
                     cuts.append((full, np.ascontiguousarray(frame.y)))
                 job = FrameJob(frame.sequence, frame.sensor_stamp_ns, stamp_ns, frame.exposure_ns,
@@ -726,11 +754,15 @@ class CameraNode:
             else:
                 data = memoryview(array).cast("B")
             node_send_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
+            # "y8" means "whatever luminance this node produces": on a board
+            # reading the raw stream those pixels are a Bayer mosaic, and the
+            # receiver must be told so it can flatten it.
+            wire = self.wire_format if w.format == "y8" else w.format
             header = proto.FrameHeader(
                 camera_id=self.cfg.camera_id, frame_seq=job.frame_seq, stamp_ns=job.stamp_ns,
                 exposure_ns=job.exposure_ns, line_time_ns=self.line_time_ns,
                 frame_duration_ns=job.frame_duration_ns, row0=w.row0, col0=w.col0,
-                width=w.w, height=w.h, format=proto.FORMAT_CODES[w.format],
+                width=w.w, height=w.h, format=proto.FORMAT_CODES[wire],
                 window_index=index, window_count=count, sensor_width=self.sensor_width,
                 sensor_height=self.sensor_height, request_id=w.request_id,
                 node_send_ns=node_send_ns, sensor_stamp_ns=job.sensor_stamp_ns,
@@ -808,6 +840,7 @@ class CameraNode:
         return {"camera_id": self.cfg.camera_id, "protocol_version": proto.PROTOCOL_VERSION,
                 "sensor_width": self.sensor_width, "sensor_height": self.sensor_height,
                 "mode": getattr(self.sensor, "mode", {}), "line_time_ns": self.line_time_ns,
+                "stream": self.cfg.stream, "wire_format": self.wire_format,
                 "line_time_source": self.cfg.line_time_source(),
                 "stamp_reference": self.cfg.stamp_reference,
                 "stamp_correction_ns": self.cfg.stamp_correction_ns,

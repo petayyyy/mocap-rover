@@ -191,7 +191,7 @@ def parse_args(argv=None):
     p.add_argument("--opponent-extent-plane", type=float, default=None,
                    help="height of the plane the silhouette extent is read on; "
                         "default half the body height")
-    p.add_argument("--silhouette-along-sigma", type=float, default=0.10,
+    p.add_argument("--silhouette-along-sigma", type=float, default=0.20,
                    help="silhouette sigma along the camera ray = this * tan(incidence)")
     p.add_argument("--background-threshold", type=float, default=12.0)
     p.add_argument("--background-alpha", type=float, default=0.02)

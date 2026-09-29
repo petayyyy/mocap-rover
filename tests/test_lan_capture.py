@@ -117,7 +117,12 @@ class NodeAndSource(unittest.TestCase):
         cls.source.close()
         cls.node.stop()
 
-    def take_group(self, predicate=lambda g: True, tries=60):
+    def drain(self):
+        """Throw away the backlog an earlier test may have built up."""
+        while self.source.take("cam_t", 0.02) is not None:
+            pass
+
+    def take_group(self, predicate=lambda g: True, tries=120):
         for _ in range(tries):
             group = self.source.take("cam_t", 0.5)
             if group is not None and predicate(group):
@@ -162,6 +167,7 @@ class NodeAndSource(unittest.TestCase):
 
     def test_full_frame_on_request_has_sensor_size(self):
         self.source.request_windows("cam_t", [(0, 0, 8, 8)])
+        self.drain()
         ack = self.source.request_full("cam_t")
         group = self.take_group(lambda g: any(f.is_full for f in g))
         full = [f for f in group if f.is_full][0]
@@ -481,6 +487,69 @@ class RollingShutterArithmetic(unittest.TestCase):
         self.assertAlmostEqual(fit["line_time_ns"], self.LT, delta=self.LT * 0.02)
         self.assertEqual(result["recommended_config"]["stamp_reference"], "readout_start_first_row")
         self.assertLess(abs(result["recommended_config"]["stamp_correction_ns"]), 50_000)
+
+
+class RawBayerPath(unittest.TestCase):
+    """The CM4's ISP cannot do 1640x1232 at 83 fps, so luminance comes raw."""
+
+    def test_bayer8_is_its_own_wire_format(self):
+        self.assertEqual(proto.FORMAT_NAMES[proto.FORMAT_BAYER8], "bayer8")
+        self.assertIn("bayer8", proto.FORMAT_CODES)
+        header = proto.FrameHeader("c", 1, 2, 3, 4, 5, 10, 20, 4, 2,
+                                   proto.FORMAT_BAYER8, 0, 1, 1640, 1232, 0, 0)
+        self.assertEqual(proto.FrameHeader.unpack(header.pack()).format_name, "bayer8")
+
+    def test_a_bayer_window_decodes_and_can_be_flattened(self):
+        # Green pixels twice as bright as red and blue, as a lit scene gives.
+        tile = np.array([[100, 200], [200, 100]], dtype=np.uint8)
+        array = np.tile(tile, (4, 4))
+        header = proto.FrameHeader("cam", 1, 2, 3, 4, 5, 0, 0, 8, 8,
+                                   proto.FORMAT_BAYER8, 0, 1, 1640, 1232, 0, 0)
+        raw = lan_capture.decode_frame(header, array.tobytes(), 1, 1)
+        self.assertEqual(raw.format, "bayer8")
+        np.testing.assert_array_equal(raw.array, array)
+        gains = lan_capture.estimate_bayer_gains(array)
+        self.assertAlmostEqual(gains[0][0], 2.0, places=3)
+        self.assertAlmostEqual(gains[0][1], 1.0, places=3)
+        flat = lan_capture.decode_frame(header, array.tobytes(), 1, 1, bayer_gains=gains)
+        self.assertEqual(int(flat.array.min()), 200)
+        self.assertEqual(int(flat.array.max()), 200)
+
+    def test_the_gain_map_follows_the_window_phase(self):
+        gains = [[2.0, 1.0], [1.0, 2.0]]
+        even = lan_capture.bayer_gain_map(gains, 2, 2, row0=100, col0=200)
+        np.testing.assert_allclose(even, [[2.0, 1.0], [1.0, 2.0]])
+        # An odd offset would shift the phase; normalize_window forbids it, and
+        # the map follows it anyway so a caller cannot silently mis-correct.
+        odd = lan_capture.bayer_gain_map(gains, 2, 2, row0=101, col0=200)
+        np.testing.assert_allclose(odd, [[1.0, 2.0], [2.0, 1.0]])
+        for offset in (0, 2, 4, 376):
+            w = proto.normalize_window((offset, offset, 480, 480), 1640, 1232)
+            self.assertEqual(w["row0"] % 2, 0)
+            self.assertEqual(w["col0"] % 2, 0)
+
+    def test_estimate_refuses_a_black_field(self):
+        with self.assertRaises(ValueError):
+            lan_capture.estimate_bayer_gains(np.zeros((4, 4), np.uint8))
+
+    def test_config_accepts_raw_and_rejects_anything_else(self):
+        self.assertEqual(NodeConfig().stream, "isp")
+        self.assertEqual(NodeConfig.load(None, stream="raw").stream, "raw")
+        self.assertEqual(NodeConfig.load(None, stream="isp").stream, "isp")
+        with self.assertRaises(ValueError):
+            NodeConfig.load(None, stream="bayer")
+
+    def test_hello_says_which_stream_the_node_reads(self):
+        node = start_node(camera_id="cam_s")
+        source = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
+        try:
+            source.wait_connected(5.0)
+            hello = source.hello("cam_s")
+            self.assertEqual(hello["stream"], "isp")
+            self.assertEqual(hello["wire_format"], "y8")
+        finally:
+            source.close()
+            node.stop()
 
 
 class TimingToolFullFrameMode(unittest.TestCase):

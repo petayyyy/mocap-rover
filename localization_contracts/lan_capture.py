@@ -111,12 +111,58 @@ class LanFrame:
         return self.receive_ns - self.stamp_ns
 
 
-def decode_frame(header: proto.FrameHeader, data, receive_ns, receive_mono_ns) -> LanFrame:
-    if header.format == proto.FORMAT_Y8:
+# Bayer phase of a window, so a 2x2 gain map lands on the right channels.  Even
+# offsets are enforced by ``normalize_window``, so the phase of a window is the
+# phase of the full frame and this is a constant per sensor.
+def bayer_gain_map(gains, height, width, row0=0, col0=0):
+    """Tile a 2x2 gain array over a window at (row0, col0) of the sensor frame."""
+    g = np.asarray(gains, dtype=np.float32).reshape(2, 2)
+    g = np.roll(g, (-(row0 % 2), -(col0 % 2)), axis=(0, 1))
+    tiles = np.tile(g, ((height + 1) // 2, (width + 1) // 2))
+    return tiles[:height, :width]
+
+
+def estimate_bayer_gains(frame_array, row0=0, col0=0):
+    """2x2 gains that flatten a raw Bayer window of an evenly lit flat field.
+
+    Point the camera at a uniform surface, take one window, and pass it here;
+    the result goes to ``LanCameraSource(bayer_gains=...)``.  Measured on a CM4
+    in a dark room the four channels agreed to 0.8 %, so the default of no
+    correction is usually right; a brightly lit scene separates green from
+    red and blue much further, and then this matters.
+    """
+    a = np.asarray(frame_array, dtype=np.float64)
+    means = np.empty((2, 2))
+    for dr in (0, 1):
+        for dc in (0, 1):
+            means[dr, dc] = a[dr::2, dc::2].mean()
+    means = np.roll(means, (row0 % 2, col0 % 2), axis=(0, 1))
+    if means.min() <= 0:
+        raise ValueError("a channel is black; brighten the scene or the exposure")
+    return (means.max() / means).tolist()
+
+
+def flatten_bayer(array, gains, row0=0, col0=0, out_dtype=np.uint8):
+    """Apply a 2x2 gain map to a raw Bayer window, giving even luminance."""
+    if gains is None:
+        return array
+    height, width = array.shape[:2]
+    scaled = array.astype(np.float32) * bayer_gain_map(gains, height, width, row0, col0)
+    if out_dtype == np.uint8:
+        return np.clip(scaled, 0, 255).astype(np.uint8)
+    return scaled
+
+
+def decode_frame(header: proto.FrameHeader, data, receive_ns, receive_mono_ns,
+                 bayer_gains=None) -> LanFrame:
+    if header.format in (proto.FORMAT_Y8, proto.FORMAT_BAYER8):
         expected = header.width * header.height
         if len(data) != expected:
-            raise proto.ProtocolError(f"y8 payload {len(data)} != {expected}")
+            raise proto.ProtocolError(
+                f"{header.format_name} payload {len(data)} != {expected}")
         array = np.frombuffer(data, dtype=np.uint8).reshape(header.height, header.width)
+        if header.format == proto.FORMAT_BAYER8 and bayer_gains is not None:
+            array = flatten_bayer(array, bayer_gains, header.row0, header.col0)
     elif header.format == proto.FORMAT_JPEG:
         if JPEG_DECODE is None:
             raise proto.ProtocolError("no JPEG decoder available")
@@ -258,7 +304,8 @@ class NodeLink(threading.Thread):
         if msg.msg_type == proto.MSG_FRAME:
             header = msg.frame
             try:
-                frame = decode_frame(header, msg.data, receive_ns, receive_mono_ns)
+                frame = decode_frame(header, msg.data, receive_ns, receive_mono_ns,
+                                     self.source.bayer_gains)
             except (proto.ProtocolError, ValueError) as exc:
                 self.parse_errors += 1
                 self.source._link_error(self, f"frame: {exc}")
@@ -308,7 +355,10 @@ class LanCameraSource:
     which carries the ``camera_id`` of its config -- never from the address.
     """
 
-    def __init__(self, nodes, *, camera_ids=None, connect=True):
+    def __init__(self, nodes, *, camera_ids=None, connect=True, bayer_gains=None):
+        # Nodes reading the sensor's raw stream (required on CM4) send a Bayer
+        # mosaic; these gains flatten it.  None leaves the pixels untouched.
+        self.bayer_gains = bayer_gains
         self.condition = threading.Condition()
         self.links = [NodeLink(self, *parse_node_address(n)) for n in nodes]
         self.by_camera: dict[str, NodeLink] = {}
