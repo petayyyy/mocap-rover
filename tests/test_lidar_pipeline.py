@@ -187,6 +187,22 @@ class SecondRover(unittest.TestCase):
         self.assertIsNone(unit.detect(scan.points, (7.0, 6.0), 0.05, 0.5, 0))
         self.assertIn("merged_cluster", unit.rejections)
 
+    def test_a_touching_rival_whose_track_is_known_is_cut_out(self):
+        # The same merged blob, but the rival's own track knows where its
+        # body is: its returns go, and what is left is this rover alone.
+        unit, scan = self.rival_at(0.8)
+        rival = (7.8, 6.0, 0.0, 0.72 + 0.24, 0.52 + 0.24)
+        cluster = unit.detect(scan.points, (7.0, 6.0), 0.05, 0.5, 0, exclude_boxes=[rival])
+        self.assertIsNotNone(cluster, unit.rejections)
+        self.assertLess(math.hypot(cluster.x - 7.0, cluster.y - 6.0), 0.06)
+
+    def test_a_box_elsewhere_changes_nothing(self):
+        unit, scan = self.rival_at(2.6)
+        plain = unit.detect(scan.points, (7.0, 6.0), 0.05, 0.5, 0)
+        boxed = unit.detect(scan.points, (7.0, 6.0), 0.05, 0.5, 0,
+                            exclude_boxes=[(9.6, 6.0, 0.0, 0.96, 0.76)])
+        self.assertEqual((plain.x, plain.y, plain.points), (boxed.x, boxed.y, boxed.points))
+
     def test_two_separated_rivals_in_a_wide_gate_block_the_update(self):
         # A wide gate is what an uncertain track produces, and it is exactly
         # when picking the nearer of two candidates would swap rovers.

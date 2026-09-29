@@ -362,8 +362,19 @@ class ArenaLidar:
 
     # ---------------------------------------------------------------- detect
 
+    @staticmethod
+    def outside_boxes(points, boxes):
+        """Which points lie outside every ``(x, y, yaw, length, width)`` box."""
+        keep = np.ones(len(points), dtype=bool)
+        for x, y, yaw, length, width in boxes or ():
+            c, s = math.cos(yaw), math.sin(yaw)
+            dx, dy = points[:, 0] - x, points[:, 1] - y
+            along, across = c * dx + s * dy, -s * dx + c * dy
+            keep &= ~((np.abs(along) <= length / 2) & (np.abs(across) <= width / 2))
+        return keep
+
     def detect(self, points, prediction, sigma_m, speed_mps=0.0, stamp_ns=0,
-               max_z_m=None, centre_method=None, top_slab_m=None):
+               max_z_m=None, centre_method=None, top_slab_m=None, exclude_boxes=()):
         """Find the rover near ``prediction``; None when it is not unambiguous.
 
         Clustering runs over the whole in-band cloud and the prediction gate is
@@ -372,6 +383,13 @@ class ArenaLidar:
         rover into one blob that still passes a size gate: two rovers 0.8 m
         apart then read as a single cluster 0.10 m off toward the intruder,
         with nothing to warn that it happened.
+
+        ``exclude_boxes`` are the other rover's body where its own track puts
+        it, ``(x, y, yaw, length, width)`` with the margin already added.
+        Its returns are removed before clustering, so two rovers driving side
+        by side 0.8 m apart -- one blob on every scan of dataset 03 at
+        t = 91-92.6 s -- still give the second one its own cluster.  The
+        caller passes a box only for a track it trusts to centimetres.
         """
         self.scans += 1
         prediction = np.asarray(prediction, dtype=float).reshape(2)
@@ -379,6 +397,8 @@ class ArenaLidar:
         if distance > self.max_useful_radius_m:
             return self._reject("beyond_useful_radius")
         candidates = points[self.static_mask(points)]
+        if exclude_boxes:
+            candidates = candidates[self.outside_boxes(candidates, exclude_boxes)]
         if len(candidates) < self.min_points_far:
             return self._reject("no_returns_in_band")
         radius = self.gate_radius(sigma_m, speed_mps)

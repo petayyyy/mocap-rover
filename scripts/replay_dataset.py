@@ -175,6 +175,11 @@ def parse_args(argv=None):
     p.add_argument("--background-stride", type=int, default=3,
                    help="use every Nth frame of the empty-arena clip")
     p.add_argument("--identity-close-m", type=float, default=1.0)
+    p.add_argument("--lidar-exclusion-margin", type=float, default=0.12,
+                   help="margin around the other rover's body cut out of a lidar scan")
+    p.add_argument("--lidar-exclusion-max-sigma", type=float, default=0.10,
+                   help="cut the other rover out only while its track is this certain; "
+                        "negative disables the cut")
     p.add_argument("--lidar-range-background", type=Path, default=None,
                    help="per-ray RangeBackground npz from scripts/build_lidar_background.py")
     a = p.parse_args(argv)
@@ -827,6 +832,7 @@ class Replay:
         scan = None
         shape = {"tag_rover": {}, "opponent": {"max_z_m": self.a.opponent_lidar_max_z,
                                                "top_slab_m": self.a.opponent_lidar_slab}}
+        bodies = {name: self.lidar_body(name, parsed["stamp_ns"]) for name in self.filters}
         for name, track in self.filters.items():
             state = track.x if track.initialized else None
             covariance = track.P if state is not None else None
@@ -845,8 +851,13 @@ class Replay:
                 sigma = math.sqrt(max(float(covariance[0, 0]), float(covariance[1, 1])))
                 speed = math.hypot(velocity[0], velocity[1])
                 before = dict(lidar.rejections)
+                others = [body for other, body in bodies.items()
+                          if other != name and body is not None]
                 cluster = lidar.detect(points, (float(state[0]), float(state[1])),
-                                       sigma, speed, parsed["stamp_ns"], **shape[name])
+                                       sigma, speed, parsed["stamp_ns"], **shape[name],
+                                       exclude_boxes=others)
+                if others:
+                    out["excluded_bodies"] = [[round(float(v), 3) for v in b] for b in others]
                 out.update(returns=scan.returns, rays=scan.rays,
                            prediction=[float(state[0]), float(state[1])],
                            prediction_sigma_m=sigma)
@@ -874,6 +885,31 @@ class Replay:
             self.out_lidar.write(json.dumps(out) + "\n")
             self.lidar_rows_written += 1
         self.lidar_ms.append((time.perf_counter_ns() - begin) / 1e6)
+
+    def lidar_body(self, name, stamp_ns):
+        """The body of rover ``name`` at ``stamp_ns`` as a lidar exclusion box, or None.
+
+        Only for a published-valid track known to ``--lidar-exclusion-max-sigma``:
+        cutting out a body where a wrong track puts it would delete the rover
+        the other track is looking for.  A heading known worse than 15 degrees
+        gives a square box of the body length.
+        """
+        a = self.a
+        f = self.filters.get(name)
+        if (a.lidar_exclusion_max_sigma < 0 or f is None or not f.initialized
+                or f.tracking_state(stamp_ns) not in ("TRACKING", "COASTING")):
+            return None
+        state, covariance = f.x, f.P
+        if math.sqrt(max(covariance[0, 0], covariance[1, 1])) > a.lidar_exclusion_max_sigma:
+            return None
+        dt = (int(stamp_ns) - int(f.stamp_ns)) / 1e9
+        x = float(state[0] + state[2] * dt)
+        y = float(state[1] + state[3] * dt)
+        length, width = (TAG_BODY_M if name == "tag_rover" else a.opponent_size)[:2]
+        if math.sqrt(max(covariance[YAW, YAW], 0.0)) > math.radians(15):
+            width = length
+        margin = 2 * a.lidar_exclusion_margin
+        return (x, y, float(state[YAW]), length + margin, width + margin)
 
     # --------------------------------------------------------------- schedule
 
@@ -1038,7 +1074,9 @@ class Replay:
                           "min_size_px": a.opponent_min_size_px, "gate_m": a.opponent_gate_m,
                           "lidar_max_z_m": a.opponent_lidar_max_z,
                           "lidar_top_slab_m": a.opponent_lidar_slab,
-                          "identity_close_m": a.identity_close_m, "silhouette": "extent"}
+                          "identity_close_m": a.identity_close_m, "silhouette": "extent",
+                          "lidar_exclusion_margin_m": a.lidar_exclusion_margin,
+                          "lidar_exclusion_max_sigma_m": a.lidar_exclusion_max_sigma}
                          if self.opponent_enabled else None),
             "gain": a.gain,
             "replay": {
