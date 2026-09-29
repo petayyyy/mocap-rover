@@ -41,6 +41,15 @@ def summary(values):
             "p95": float(np.percentile(a, 95)), "max": float(a.max()), "mean": float(a.mean())}
 
 
+def _delta(end, start, key):
+    """Counter difference over this run, or the raw value if no baseline exists."""
+    if not end or end.get(key) is None:
+        return None
+    if not start or start.get(key) is None:
+        return end[key]
+    return end[key] - start[key]
+
+
 def fmt(s, scale=1.0, unit=""):
     if not s or s["n"] == 0:
         return "n=0"
@@ -123,6 +132,23 @@ def main(argv=None):
     per = {cid: {"window_latency_ns": [], "full_latency_ns": [], "node_latency_ns": [],
                  "net_latency_ns": [], "period_dev_ns": [], "stamps": [], "seqs": [],
                  "statuses": [], "window_bytes": 0, "full_bytes": 0} for cid in cams}
+    # The node's counters run from ITS start, not from ours, so a run that
+    # follows a saturating one would inherit its drops.  Take a baseline and
+    # report differences; ask for a status so we do not wait for the next tick.
+    baseline = {}
+    for cid in cams:
+        try:
+            source.request_status(cid, timeout=2.0)
+        except (LanNotConnected, TimeoutError):
+            pass
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and len(baseline) < len(cams):
+        for cid in cams:
+            status = source.status(cid)
+            if cid not in baseline and status is not None:
+                baseline[cid] = status
+        if len(baseline) < len(cams):
+            time.sleep(0.05)
     cpu = LaptopCpu()
     cpu_samples = []
     start = time.monotonic()
@@ -215,8 +241,11 @@ def main(argv=None):
             "ptp_state": s_end.get("ptp", {}).get("state"),
             "soc_temp_c": summary(temps), "node_cpu_percent": summary(node_cpu),
             "throttled_flags": throttled,
-            "node_frames_missed": s_end.get("frames_missed"),
-            "node_frames_dropped_queue": s_end.get("frames_dropped_queue"),
+            "node_frames_missed": _delta(s_end, baseline.get(cid), "frames_missed"),
+            "node_frames_dropped_queue": _delta(s_end, baseline.get(cid), "frames_dropped_queue"),
+            "node_frames_missed_total": s_end.get("frames_missed"),
+            "node_frames_dropped_queue_total": s_end.get("frames_dropped_queue"),
+            "node_uptime_s": s_end.get("uptime_s"),
             "node_capture_to_send_ms": s_end.get("capture_to_send_ms"),
             "line_time_ns": s_end.get("line_time_ns"), "exposure_ns": s_end.get("exposure_ns"),
             "link": stats["links"],
@@ -230,7 +259,9 @@ def main(argv=None):
     for cid, r in report["cameras"].items():
         print(f"\n[{cid}] frames {r['frames_received']} ({r['delivered_fps']:.1f}/s), "
               f"laptop drops {r['laptop_dropped']}, node missed {r['node_frames_missed']}, "
-              f"node dropped {r['node_frames_dropped_queue']}")
+              f"node dropped {r['node_frames_dropped_queue']} "
+              f"(node totals since its start: missed {r['node_frames_missed_total']}, "
+              f"dropped {r['node_frames_dropped_queue_total']})")
         print(f"  sensor fps       {fmt(r['sensor_fps'], 1)}")
         print(f"  window latency   {fmt(r['window_latency'], 1e6, 'ms')}")
         print(f"  full latency     {fmt(r['full_latency'], 1e6, 'ms')}")

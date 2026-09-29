@@ -483,6 +483,36 @@ class RollingShutterArithmetic(unittest.TestCase):
         self.assertLess(abs(result["recommended_config"]["stamp_correction_ns"]), 50_000)
 
 
+class TimingToolFullFrameMode(unittest.TestCase):
+    def test_counters_are_reported_per_run_not_since_the_node_started(self):
+        # The node's counters run from its own start, so a run following a
+        # saturating one inherited thousands of drops that were not its own.
+        import lan_camera_timing as tool
+        self.assertEqual(tool._delta({"frames_missed": 10}, {"frames_missed": 4},
+                                     "frames_missed"), 6)
+        self.assertEqual(tool._delta({"frames_missed": 10}, None, "frames_missed"), 10)
+        self.assertIsNone(tool._delta({}, {"frames_missed": 1}, "frames_missed"))
+        self.assertIsNone(tool._delta(None, None, "frames_missed"))
+
+    def test_stream_full_mode_measures_full_frames_and_clears_it_afterwards(self):
+        import lan_camera_timing as tool
+        node = start_node(camera_id="camera_f")
+        try:
+            report = tool.main(["--nodes", f"127.0.0.1:{node.port}", "--seconds", "1.0",
+                                "--stream-full", "2", "--full-format", "y8"])
+        finally:
+            node.stop()
+        cam = report["cameras"]["camera_f"]
+        self.assertEqual(report["stream_full_divisor"], 2)
+        self.assertEqual(report["windows"], [], "stream_full must not also ask for windows")
+        self.assertEqual(cam["window_latency"]["n"], 0)
+        self.assertGreater(cam["full_latency"]["n"], 10)
+        self.assertEqual(cam["node_frames_missed"], 0)
+        # Every other frame at 100 fps.
+        self.assertAlmostEqual(cam["delivered_fps"], 50.0, delta=15.0)
+        self.assertIsNone(node.full_stream, "the stream was left running on the node")
+
+
 class ExposureSweep(unittest.TestCase):
     """The probe that decided the timestamp reference without an LED."""
 
