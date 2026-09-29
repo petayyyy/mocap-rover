@@ -102,7 +102,8 @@ class ArenaLidar:
                  sigma_range_m=0.02, sigma_shape_m=0.01,
                  top_slab_m=0.03, trim_percentile=2.0, trim_min_points=20,
                  max_useful_radius_m=DEFAULT_MAX_USEFUL_RADIUS_M, background=None,
-                 range_background=None):
+                 range_background=None, masked_zones=None, mask_margin_m=0.2,
+                 centre_method="top_extent", reject_radius_m=0.6):
         self.position = np.asarray(sensor_position, dtype=float).reshape(3)
         self.rotation = np.asarray(sensor_rotation, dtype=float).reshape(3, 3)
         self.z_band = (float(z_band[0]), float(z_band[1]))
@@ -136,6 +137,14 @@ class ArenaLidar:
         # organized grid before it becomes points, so floor and walls leave
         # at the ray where they are cheapest to recognise.
         self.range_background = range_background
+        # Floor areas never to be read as a rover (obstacles, a pit): same
+        # zones and margin semantics as br_lidar.  Empty in Gazebo.
+        self.masked_zones = list(masked_zones or ())
+        self.mask_margin_m = float(mask_margin_m)
+        if centre_method not in self.CENTRE_METHODS:
+            raise ValueError(f"centre_method must be one of {self.CENTRE_METHODS}")
+        self.centre_method = centre_method
+        self.reject_radius_m = float(reject_radius_m)
         self.scans = 0
         self.detections = 0
         self.rejections = {}
@@ -203,6 +212,10 @@ class ArenaLidar:
                 & (points[:, 1] >= low) & (points[:, 1] <= high))
         if self.background is not None:
             keep &= ~self.background.contains(points)
+        if self.masked_zones:
+            from .foreground import in_masked_zone
+            keep &= ~in_masked_zone(points[:, 0], points[:, 1], self.masked_zones,
+                                    self.mask_margin_m)
         return keep
 
     def gate_radius(self, sigma_m, speed_mps, dwell_s=0.02):
@@ -283,7 +296,35 @@ class ArenaLidar:
     def _min_points(self, distance):
         return self.min_points if distance <= self.far_range_m else self.min_points_far
 
-    def centre_of(self, cluster):
+    CENTRE_METHODS = ("top_extent", "extent", "median")
+
+    def centre_of(self, cluster, method=None, top_slab_m=None):
+        """Centre of the cluster in arena XY by the chosen method.
+
+        ``top_extent`` (default) is the trimmed extent of the top slab, below.
+        ``extent`` is the trimmed extent of the whole cluster: for a body whose
+        highest part is off-centre -- the opponent's cabin sits 0.12 m aft --
+        the top slab is not the body.  ``median`` is br_lidar's robust centre,
+        the median again after dropping points beyond ``reject_radius_m``.
+        """
+        method = method or self.centre_method
+        if method == "top_extent":
+            return self._top_extent_centre(cluster, top_slab_m)
+        xy = cluster[:, :2]
+        if method == "median":
+            centre = np.median(xy, axis=0)
+            far = np.linalg.norm(xy - centre, axis=1) > self.reject_radius_m
+            if far.any() and (~far).sum() >= self.min_points_far:
+                centre = np.median(xy[~far], axis=0)
+            return centre, cluster
+        if len(cluster) >= self.trim_min_points:
+            low = np.percentile(xy, self.trim_percentile, axis=0)
+            high = np.percentile(xy, 100 - self.trim_percentile, axis=0)
+        else:
+            low, high = xy.min(axis=0), xy.max(axis=0)
+        return (low + high) / 2, cluster
+
+    def _top_extent_centre(self, cluster, top_slab_m=None):
         """Centre of the rover's top surface, in arena XY.
 
         Not the centroid: a radial fan samples the near side of a horizontal
@@ -297,7 +338,8 @@ class ArenaLidar:
         the near face and occluded on the far one, which is a real asymmetry
         rather than a sampling artefact, and no choice of statistic fixes it.
         """
-        top = cluster[cluster[:, 2] >= float(np.max(cluster[:, 2])) - self.top_slab_m]
+        slab = self.top_slab_m if top_slab_m is None else float(top_slab_m)
+        top = cluster[cluster[:, 2] >= float(np.max(cluster[:, 2])) - slab]
         if len(top) < 3:
             top = cluster
         if len(top) >= self.trim_min_points:
@@ -320,7 +362,8 @@ class ArenaLidar:
 
     # ---------------------------------------------------------------- detect
 
-    def detect(self, points, prediction, sigma_m, speed_mps=0.0, stamp_ns=0):
+    def detect(self, points, prediction, sigma_m, speed_mps=0.0, stamp_ns=0,
+               max_z_m=None, centre_method=None, top_slab_m=None):
         """Find the rover near ``prediction``; None when it is not unambiguous.
 
         Clustering runs over the whole in-band cloud and the prediction gate is
@@ -346,7 +389,7 @@ class ArenaLidar:
         for cluster in self._clusters(candidates, cell):
             if len(cluster) < self._min_points(distance):
                 continue
-            centre, top = self.centre_of(cluster)
+            centre, top = self.centre_of(cluster, centre_method, top_slab_m)
             residual = float(np.linalg.norm(centre - prediction))
             if residual > radius:
                 continue
@@ -359,7 +402,7 @@ class ArenaLidar:
                 continue
             if len(cluster) >= 8 and max(extent[0], extent[1]) < self.min_extent_m:
                 continue
-            if float(np.max(cluster[:, 2])) > self.max_z_m:
+            if float(np.max(cluster[:, 2])) > (self.max_z_m if max_z_m is None else max_z_m):
                 continue
             accepted.append((residual, cluster, centre, extent, top))
         if oversized and not accepted:

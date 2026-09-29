@@ -301,6 +301,47 @@ class PerRayBackground(unittest.TestCase):
         self.assertEqual(again.min_margin_m, 0.2)
 
 
+class OpponentOptions(unittest.TestCase):
+    """The same detector for a taller rover whose highest part is off-centre."""
+
+    TALL = ((6.0 + 3.0, 6.0, 0.25), (0.9, 0.52, 0.22))        # deck
+    CABIN = ((6.0 + 3.0 - 0.12, 6.0, 0.41), (0.38, 0.44, 0.14))  # to 0.48 m
+
+    def scan(self, **kwargs):
+        unit = lidar(**kwargs)
+        return unit, unit.scan_to_arena(lr.render(None, extra_boxes=[self.TALL, self.CABIN]))
+
+    def test_a_body_taller_than_the_default_height_gate_needs_its_own(self):
+        unit, scan = self.scan()
+        self.assertIsNone(unit.detect(scan.points, (9.0, 6.0), 0.05))
+        cluster = unit.detect(scan.points, (9.0, 6.0), 0.05, max_z_m=0.55)
+        self.assertIsNotNone(cluster, unit.rejections)
+
+    def test_a_thicker_top_slab_is_not_pulled_to_the_cabin(self):
+        unit, scan = self.scan()
+        thin = unit.detect(scan.points, (9.0, 6.0), 0.05, max_z_m=0.55)
+        thick = unit.detect(scan.points, (9.0, 6.0), 0.05, max_z_m=0.55, top_slab_m=0.30)
+        self.assertGreater(abs(thin.x - 9.0), 0.05)
+        self.assertLess(abs(thick.x - 9.0), abs(thin.x - 9.0))
+
+    def test_every_centre_method_is_selectable(self):
+        unit, scan = self.scan()
+        for method in ArenaLidar.CENTRE_METHODS:
+            cluster = unit.detect(scan.points, (9.0, 6.0), 0.05, max_z_m=0.55,
+                                  centre_method=method)
+            self.assertIsNotNone(cluster, (method, unit.rejections))
+        with self.assertRaises(ValueError):
+            lidar(centre_method="mean")
+
+    def test_a_masked_zone_hides_what_stands_in_it(self):
+        crate = ((7.0, 6.0, 0.25), (0.6, 0.6, 0.5))
+        unit = lidar(masked_zones=[("rect", 6.8, 5.8, 7.2, 6.2)])
+        scan = unit.scan_to_arena(lr.render((8.4, 6.0), extra_boxes=[crate]))
+        kept = scan.points[unit.static_mask(scan.points)]
+        self.assertEqual(int((np.linalg.norm(kept[:, :2] - [7.0, 6.0], axis=1) < 0.4).sum()), 0)
+        self.assertIsNotNone(unit.detect(scan.points, (8.4, 6.0), 0.05))
+
+
 class FloorFit(unittest.TestCase):
     """fit_floor checks the tool, not the world: a known plane must come back."""
 
