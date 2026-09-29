@@ -337,22 +337,34 @@ class ImmRoverFilter:
     def initialized(self):
         return self.xs is not None
 
+    @staticmethod
+    def _combine(weights, xs, Ps=None):
+        """Weighted mean of model states (heading wrapped) and its spread covariance.
+
+        Vectorised: the Python sums over models this replaces were the largest
+        single cost of the 200 Hz publication.
+        """
+        X = np.stack(xs)
+        mean = weights @ X
+        mean[YAW] = wrap(mean[YAW])
+        if Ps is None:
+            return mean, None
+        spread = X - mean
+        return mean, (np.einsum("i,ijk->jk", weights, np.stack(Ps))
+                      + (spread.T * weights) @ spread)
+
     @property
     def x(self):
         """Probability-weighted combination of the model states."""
         if self.xs is None:
             return None
-        combined = sum(w * xi for w, xi in zip(self.mu, self.xs))
-        combined[YAW] = wrap(combined[YAW])
-        return combined
+        return self._combine(self.mu, self.xs)[0]
 
     @property
     def P(self):
         if self.Ps is None:
             return None
-        mean = self.x
-        return sum(w * (Pi + np.outer(xi - mean, xi - mean))
-                   for w, xi, Pi in zip(self.mu, self.xs, self.Ps))
+        return self._combine(self.mu, self.xs, self.Ps)[1]
 
     def reset(self):
         self.xs = self.Ps = self.stamp_ns = None
@@ -391,10 +403,7 @@ class ImmRoverFilter:
         mixed_x, mixed_P = [], []
         for j in range(n):
             weights = self.transition[:, j] * self.mu / normalizer[j]
-            xj = sum(w * xi for w, xi in zip(weights, self.xs))
-            xj[YAW] = wrap(xj[YAW])
-            Pj = sum(w * (Pi + np.outer(xi - xj, xi - xj))
-                     for w, xi, Pi in zip(weights, self.xs, self.Ps))
+            xj, Pj = self._combine(weights, self.xs, self.Ps)
             mixed_x.append(xj)
             mixed_P.append(Pj)
         return mixed_x, mixed_P

@@ -144,12 +144,13 @@ def main(argv=None):
             continue
         for f in group:
             latency = f.receive_ns - f.stamp_ns
+            # Wire bytes, so a JPEG window counts its compressed size.
             if f.is_full:
                 d["full_latency_ns"].append(latency)
-                d["full_bytes"] += f.array.size
+                d["full_bytes"] += f.payload_bytes
             else:
                 d["window_latency_ns"].append(latency)
-                d["window_bytes"] += f.array.size
+                d["window_bytes"] += f.payload_bytes
             d["node_latency_ns"].append(f.node_send_ns - f.stamp_ns)
             d["net_latency_ns"].append(f.receive_ns - f.node_send_ns)
         d["stamps"].append(group[0].stamp_ns)

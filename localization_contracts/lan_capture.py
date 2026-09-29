@@ -80,6 +80,9 @@ class LanFrame:
     sensor_stamp_ns: int = 0
     clock_offset_ns: int = 0
     ptp_offset_ns: int | None = None
+    # Payload bytes as they travelled: for JPEG this is the compressed size,
+    # which is what the link actually carried, not the decoded pixel count.
+    payload_bytes: int = 0
 
     def __iter__(self):
         """The eight-field source contract, in order."""
@@ -128,7 +131,8 @@ def decode_frame(header: proto.FrameHeader, data, receive_ns, receive_mono_ns) -
                     header.frame_seq, header.frame_duration_ns, header.format_name,
                     header.window_index, header.window_count, header.sensor_width,
                     header.sensor_height, header.request_id, header.node_send_ns,
-                    header.sensor_stamp_ns, header.clock_offset_ns, header.ptp_offset_ns)
+                    header.sensor_stamp_ns, header.clock_offset_ns, header.ptp_offset_ns,
+                    len(data))
 
 
 class LanNotConnected(ConnectionError):

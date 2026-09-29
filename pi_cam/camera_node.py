@@ -106,9 +106,18 @@ class NodeConfig:
     pixel_rate_hz: int = IMX219_PIXEL_RATE_HZ
     line_rate_factor: int = IMX219_BINNED_8BIT_RATE_FACTOR
     ptp_enabled: bool = True
-    ptp_pmc: str = "pmc"
+    # Absolute path: pmc lives in /usr/sbin, which is not on the PATH of a
+    # systemd service running as an unprivileged user.
+    ptp_pmc: str = "/usr/sbin/pmc"
     ptp_uds: str = "/var/run/ptp4l"
     ptp_period_s: float = 1.0
+    # pmc binds its own reply socket next to ptp4l's, under a root-owned
+    # directory, so an unprivileged node cannot query it at all
+    # ("uds: bind failed: Permission denied").  With this set, the node calls
+    # pmc through sudo, which needs one NOPASSWD line for pmc alone (see
+    # pi_cam/README.md).  The offset is diagnostic only: frame timestamps stay
+    # correct without it, because they ride CLOCK_REALTIME, which phc2sys syncs.
+    ptp_pmc_sudo: bool = True
     synthetic_fps: float = 83.0
     synthetic_width: int = SENSOR_WIDTH
     synthetic_height: int = SENSOR_HEIGHT
@@ -189,15 +198,24 @@ class PtpMonitor(threading.Thread):
             return {"offset_ns": self.offset_ns, "state": self.state,
                     "age_s": age, "error": self.error}
 
+    def command(self):
+        argv = [self.cfg.ptp_pmc, "-u", "-b", "0", "-s", self.cfg.ptp_uds,
+                "GET CURRENT_DATA_SET", "GET PORT_DATA_SET"]
+        return ["sudo", "-n", *argv] if self.cfg.ptp_pmc_sudo else argv
+
     def poll_once(self):
         try:
-            out = subprocess.run(
-                [self.cfg.ptp_pmc, "-u", "-b", "0", "-s", self.cfg.ptp_uds,
-                 "GET CURRENT_DATA_SET", "GET PORT_DATA_SET"],
-                capture_output=True, text=True, timeout=2.0).stdout
+            result = subprocess.run(self.command(), capture_output=True, text=True, timeout=2.0)
+            out = result.stdout
         except (OSError, subprocess.SubprocessError) as exc:
             with self.lock:
                 self.state, self.error = "unavailable", str(exc)
+            return
+        if not out.strip():
+            with self.lock:
+                self.state = "unavailable"
+                self.error = (result.stderr or "").strip().splitlines()[-1:] or ["no output"]
+                self.error = self.error[0]
             return
         offset = re.search(r"offsetFromMaster\s+(-?\d+(?:\.\d+)?)", out)
         state = re.search(r"portState\s+(\w+)", out)
@@ -235,6 +253,10 @@ class Frame:
 
     def release(self):
         if self._release is not None:
+            # Drop our view of the DMA buffer FIRST: while a numpy array still
+            # exports it, picamera2's allocator refuses to close at stop() with
+            # "cannot close exported pointers exist".
+            self.y = None
             self._release()
             self._release = None
 
@@ -345,6 +367,10 @@ class PicameraSensor:
         self.camera.start()
 
     def stop(self):
+        # Any frame still mapped keeps the DMA buffers exported; give the
+        # allocator a moment to see the last release before closing.
+        import gc
+        gc.collect()
         self.camera.stop()
 
     def set_controls(self, exposure_us=None, gain=None, fps=None):

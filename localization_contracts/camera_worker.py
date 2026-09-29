@@ -33,7 +33,7 @@ from .apriltag import Detection
 from .camera_model import CameraModel
 from .cuboid import localize_box
 from .foreground import ClipBackground
-from .frame_source import DatasetFrameSource
+from .frame_source import CameraFrame, DatasetFrameSource
 from .image_pipeline import OneCameraImagePipeline
 from .opponent_camera import OpponentCamera
 
@@ -68,6 +68,7 @@ class CameraWorker:
             Path(spec["dataset"]) / f"{cid}.mkv", cid, transport_ns=self.transport_ns,
             line_time_ns=spec["pipeline"].get("line_time_ns", 0.0), gain=spec["gain"])
         self.opponent = None
+        self.prefetched = None          # (index, image, decode_ms)
         self.background_build_s = 0.0
         opponent = spec.get("opponent")
         if opponent is not None:
@@ -90,8 +91,16 @@ class CameraWorker:
         busy = plan.mode != roi_tracker.IDLE or (
             job is not None and job["plan"].mode != roi_tracker.IDLE)
         begin = time.perf_counter_ns()
-        frame = self.source.read(row, decode=busy)
-        decode_ms = (time.perf_counter_ns() - begin) / 1e6
+        index = int(row["index"])
+        if self.prefetched is not None and self.prefetched[0] == index:
+            _, image, decode_ms = self.prefetched
+            stamp = int(row["stamp_ns"])
+            frame = CameraFrame(cid, image if busy else None, stamp, 0, 0,
+                                self.source.line_time_ns, 0, stamp + self.transport_ns, index)
+        else:
+            frame = self.source.read(row, decode=busy)
+            decode_ms = (time.perf_counter_ns() - begin) / 1e6
+        self.prefetched = None
         if not busy:
             return {"idle": True, "decode_ms": decode_ms}
         image = frame.image
@@ -133,6 +142,22 @@ class CameraWorker:
             result.update(self.process_opponent(image, job, result["stages"]))
         result["latency_ms"] = tag_ms + result["opponent_ms"]
         return result
+
+    def prefetch(self):
+        """Decode the next frame now, while the caller is busy elsewhere.
+
+        Whether a frame will be looked at is only known when its plan comes,
+        so this decodes it either way; an idle frame's decode is then wasted
+        on this worker, never on the main thread.  The frame is the same one
+        ``process`` would have read, so the output does not change.
+        """
+        index = self.source.next_index
+        begin = time.perf_counter_ns()
+        try:
+            image = self.source.read_image(index)
+        except RuntimeError:             # past the end of the video
+            return
+        self.prefetched = (index, image, (time.perf_counter_ns() - begin) / 1e6)
 
     def process_opponent(self, image, job, stages):
         camera = self.opponent
@@ -206,7 +231,7 @@ class ThreadPool(InlinePool):
         super().close()
 
 
-def _serve(connection, spec, threads):
+def _serve(connection, spec, threads, prefetch=True):
     import cv2
     cv2.setNumThreads(threads)
     try:
@@ -224,6 +249,9 @@ def _serve(connection, spec, threads):
             connection.send(("ok", worker.process(*message)))
         except Exception as error:          # noqa: BLE001 -- reported to the parent
             connection.send(("error", repr(error)))
+            continue
+        if prefetch:
+            worker.prefetch()
     worker.close()
     connection.close()
 

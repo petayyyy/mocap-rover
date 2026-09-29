@@ -144,6 +144,7 @@ def main(argv=None):
     (out / "truth.jsonl").write_text("")
     clock_file = (out / "clock.jsonl").open("w")
     counts = {"frames": dict.fromkeys(recorded, 0), "size_errors": 0, "windows_ignored": 0}
+    wire_bytes = dict.fromkeys(recorded, 0)
     first_stamp = {}
     last_stamp = {}
     wall_start = time.monotonic()
@@ -179,6 +180,7 @@ def main(argv=None):
                    "format": frame.format}
             writers[cid].queue.put((frame.array.tobytes(), row))
             counts["frames"][cid] += 1
+            wire_bytes[cid] += frame.payload_bytes
             first_stamp.setdefault(cid, frame.stamp_ns)
             last_stamp[cid] = frame.stamp_ns
         if now_mono - last_print >= 1.0:
@@ -213,7 +215,8 @@ def main(argv=None):
         achieved[cid] = {
             "frames": n, "fps": n / wall_seconds if wall_seconds else 0.0,
             "fps_by_stamps": (n - 1) / span if span > 0 else None,
-            "mbit_s": writers[cid].bytes * 8 / wall_seconds / 1e6 if wall_seconds else 0.0,
+            "mbit_s_decoded": writers[cid].bytes * 8 / wall_seconds / 1e6 if wall_seconds else 0.0,
+            "mbit_s_wire": wire_bytes[cid] * 8 / wall_seconds / 1e6 if wall_seconds else 0.0,
             "laptop_dropped": stats["dropped"].get(cid, 0),
             "node_frames_dropped_queue": (statuses[cid] or {}).get("frames_dropped_queue"),
             "node_frames_missed": (statuses[cid] or {}).get("frames_missed"),

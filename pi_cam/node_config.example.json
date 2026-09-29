@@ -22,7 +22,8 @@
   "pixel_rate_hz": 182400000,
   "line_rate_factor": 2,
   "ptp_enabled": true,
-  "ptp_pmc": "pmc",
+  "ptp_pmc": "/usr/sbin/pmc",
+  "ptp_pmc_sudo": true,
   "ptp_uds": "/var/run/ptp4l",
   "ptp_period_s": 1.0
 }
