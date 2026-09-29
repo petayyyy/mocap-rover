@@ -27,8 +27,45 @@ START_NS = 44_294_000_000          # datasets do not start at zero
 CAMERAS = {"camera_1": (3.0, 2.0, 2.9), "camera_2": (4.0, 2.0, 2.9)}
 
 
+OPPONENT_XY = (3.6, 3.0)
+OPPONENT_YAW = 0.3
+
+
 def rover_xy(i):
     return 3.3 + 0.01 * i, 2.2
+
+
+def paint_opponent(rgb, position):
+    """The opponent as a plain cuboid, 0.9 x 0.52 x 0.483, through the pinhole."""
+    from localization_contracts.camera_model import CameraModel
+    model = CameraModel(arena_render.K, [0.0] * 5, arena_render.IMAGE_SIZE)
+    c, s = np.cos(OPPONENT_YAW), np.sin(OPPONENT_YAW)
+    pts = np.array([[a * 0.45, b * 0.26, z] for a in (-1, 1) for b in (-1, 1) for z in (0, 0.483)])
+    pts[:, :2] = pts[:, :2] @ np.array([[c, s], [-s, c]]) + OPPONENT_XY
+    uv = model.project((pts - np.asarray(position)) @ arena_render.camera_rotation())
+    import cv2
+    out = rgb.copy()
+    cv2.fillConvexPoly(out, cv2.convexHull(np.round(uv).astype(np.int32)), (200, 80, 60))
+    return out
+
+
+def write_video(path, frames, width, height):
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+         "-s", f"{width}x{height}", "-r", "80", "-i", "-", "-c:v", "ffv1", str(path)],
+        input=b"".join(f.tobytes() for f in frames), check=True)
+
+
+def write_background(root):
+    """The empty arena: same cameras, same size, nothing on the floor."""
+    width, height = arena_render.IMAGE_SIZE
+    for name in CAMERAS:
+        empty = np.full((height, width, 3), 150, np.uint8)
+        write_video(root / f"{name}.mkv", [empty] * 4, width, height)
+        with (root / f"{name}.jsonl").open("w") as handle:
+            for i in range(4):
+                handle.write(json.dumps({"camera_id": name, "stamp_ns": i, "wall_ns": i,
+                                         "index": i}) + "\n")
 
 
 def write_dataset(root):
@@ -43,12 +80,8 @@ def write_dataset(root):
         frames = []
         for i in range(FRAMES):
             gray = arena_render.render(position, R, rover_xy(i))
-            frames.append(np.repeat(gray[:, :, None], 3, axis=2))
-        subprocess.run(
-            ["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
-             "-s", f"{width}x{height}", "-r", "80", "-i", "-", "-c:v", "ffv1",
-             str(root / f"{name}.mkv")],
-            input=b"".join(f.tobytes() for f in frames), check=True)
+            frames.append(paint_opponent(np.repeat(gray[:, :, None], 3, axis=2), position))
+        write_video(root / f"{name}.mkv", frames, width, height)
         with (root / f"{name}.jsonl").open("w") as handle:
             for i in range(FRAMES):
                 handle.write(json.dumps({"camera_id": name, "stamp_ns": START_NS + i * PERIOD_NS,
@@ -71,8 +104,9 @@ def write_dataset(root):
             x, y = rover_xy((i - 10) * 5 / 12)
             handle.write(json.dumps({"object_id": "tag_rover", "stamp_ns": stamp, "x": x,
                                      "y": y, "z": 0.14, "yaw": 0.0}) + "\n")
-            handle.write(json.dumps({"object_id": "opponent", "stamp_ns": stamp, "x": 3.6,
-                                     "y": 3.0, "z": 0.14, "yaw": 0.3}) + "\n")
+            handle.write(json.dumps({"object_id": "opponent", "stamp_ns": stamp,
+                                     "x": OPPONENT_XY[0], "y": OPPONENT_XY[1], "z": 0.14,
+                                     "yaw": OPPONENT_YAW}) + "\n")
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is needed to write FFV1")
@@ -84,6 +118,9 @@ class ReplayDataset(unittest.TestCase):
         cls.dataset = cls.root / "dataset"
         cls.dataset.mkdir()
         write_dataset(cls.dataset)
+        cls.background = cls.root / "background"
+        cls.background.mkdir()
+        write_background(cls.background)
         import replay_dataset
         cls.replay = replay_dataset
         cls.out = cls.root / "replay"
@@ -179,6 +216,36 @@ class ReplayDataset(unittest.TestCase):
                 out.append(row)
             return out
         self.assertEqual(strip(self.out / "odometry.jsonl"), strip(again / "odometry.jsonl"))
+
+    def run_replay(self, name, *extra):
+        out = self.root / name
+        with open(self.root / f"{name}.log", "w") as sink:
+            stdout, sys.stdout = sys.stdout, sink
+            stderr, sys.stderr = sys.stderr, sink
+            try:
+                self.replay.main([str(self.dataset), "--output", str(out),
+                                  "--camera-background", str(self.background), *extra])
+            finally:
+                sys.stdout, sys.stderr = stdout, stderr
+        return out
+
+    def test_the_opponent_is_tracked_from_the_operator_box(self):
+        for gain in ("1.0", "0.6"):
+            with self.subTest(gain=gain):
+                out = self.run_replay(f"opponent_{gain}", "--gain", gain)
+                rows = [json.loads(l) for l in (out / "odometry.jsonl").read_text().splitlines()]
+                valid = [r for r in rows if r["object_id"] == "opponent" and r["valid"]]
+                self.assertTrue(valid)
+                last = valid[-1]["state"]
+                self.assertLess(np.hypot(last["x"] - OPPONENT_XY[0], last["y"] - OPPONENT_XY[1]), 0.08)
+                methods = {json.loads(l)["observation"]["method"]
+                           for l in (out / "observations.jsonl").read_text().splitlines()
+                           if '"opponent"' in l}
+                self.assertIn("operator_box", methods)
+                self.assertIn("silhouette_extent", methods)
+                status = json.loads((out / "status.json").read_text())
+                self.assertEqual(status["identity"]["swaps"], 0)
+                self.assertTrue(status["opponent_enabled"])
 
     def test_an_existing_output_is_never_overwritten(self):
         with self.assertRaises(SystemExit):

@@ -60,12 +60,20 @@ from localization_contracts.detector import PROFILES  # noqa: E402
 from localization_contracts.image_pipeline import OneCameraImagePipeline  # noqa: E402
 from localization_contracts.marker_families import normalize_marker_family  # noqa: E402
 from localization_contracts.rover_filter import (  # noqa: E402
-    AsyncObservationBuffer, ImmRoverFilter, measurement_from_observation,
-    observation_stamp_ns,
+    AsyncObservationBuffer, ImmRoverFilter, Measurement, POSITION, YAW, YAW_ONLY,
+    measurement_from_observation, observation_stamp_ns,
 )
+from localization_contracts.contracts import Observation, SCHEMA_VERSION, FRAME_ARENA  # noqa: E402
+from localization_contracts.cuboid import localize_box  # noqa: E402
+from localization_contracts.foreground import ClipBackground  # noqa: E402
+from localization_contracts.identity import TwoRoverIdentity  # noqa: E402
+from localization_contracts.opponent_camera import OpponentCamera, SILHOUETTE  # noqa: E402
+from localization_contracts.ray_plane import pixel_rays, ray_plane  # noqa: E402
 
 # Opponent cuboid as the operator sees it: 0.9 x 0.52 m, top at 0.483 m.
 OPPONENT_SIZE_M = (0.9, 0.52, 0.483)
+OPERATOR_IDENTITY = "operator:opponent"
+TAG_BODY_M = (0.72, 0.52, 0.40)
 
 # Event order at one instant: a measurement that arrives at t is visible to
 # the tick at t, and the clock is advanced before anything reads it.
@@ -140,6 +148,29 @@ def parse_args(argv=None):
     p.add_argument("--lidar-background", default=None,
                    help="voxel map JSON; config/lidar_background.json when present")
     p.add_argument("--no-lidar-background", action="store_true")
+    p.add_argument("--camera-background", type=Path, default=None,
+                   help="empty-arena dataset directory; enables the opponent track "
+                        "(camera background model + silhouettes + lidar)")
+    p.add_argument("--no-opponent", action="store_true",
+                   help="tag_rover only even when --camera-background is given")
+    p.add_argument("--gain", type=float, default=1.0,
+                   help="multiply every decoded frame by this (lighting robustness check)")
+    p.add_argument("--opponent-size", type=float, nargs=3, default=(0.9, 0.52, 0.483),
+                   metavar=("LENGTH", "WIDTH", "TOP"),
+                   help="measured once before the match")
+    p.add_argument("--opponent-roi-min-px", type=int, default=240)
+    p.add_argument("--opponent-roi-max-px", type=int, default=900)
+    p.add_argument("--opponent-max-incidence-deg", type=float, default=75.0)
+    p.add_argument("--opponent-min-size-px", type=float, default=40.0)
+    p.add_argument("--opponent-gate-m", type=float, default=0.8)
+    p.add_argument("--opponent-lidar-max-z", type=float, default=0.55)
+    p.add_argument("--opponent-lidar-slab", type=float, default=0.14,
+                   help="top slab for the opponent cluster centre (cabin sits aft)")
+    p.add_argument("--background-threshold", type=float, default=12.0)
+    p.add_argument("--background-alpha", type=float, default=0.02)
+    p.add_argument("--background-stride", type=int, default=3,
+                   help="use every Nth frame of the empty-arena clip")
+    p.add_argument("--identity-close-m", type=float, default=1.0)
     p.add_argument("--lidar-range-background", type=Path, default=None,
                    help="per-ray RangeBackground npz from scripts/build_lidar_background.py")
     a = p.parse_args(argv)
@@ -317,10 +348,32 @@ class Replay:
         for planner in self.planners.values():
             planner.tag_plane_z = (min(planes), max(planes))
         aliases = {f"{self.marker_family}:{int(i)}" for i in self.tags}
-        # Tag-only: the opponent has no measurement source in this tract yet.
         self.filters = {"tag_rover": ImmRoverFilter(
             coast_ms=a.coast_ms, identity_max_age_s=a.identity_max_age_s,
             lost_ms=a.lost_ms, max_speed_mps=a.max_speed_mps, identity_aliases=aliases)}
+        self.opponent_enabled = a.camera_background is not None and not a.no_opponent
+        self.guard = TwoRoverIdentity(close_m=a.identity_close_m)
+        self.opponent_cameras = {}
+        self.operator_box = None
+        if self.opponent_enabled:
+            # Same filter class.  Only the operator's rectangle confirms this
+            # identity; it never expires because nothing later can re-confirm
+            # it -- the marker guard below is what keeps the tracks apart.
+            self.filters["opponent"] = ImmRoverFilter(
+                coast_ms=a.coast_ms, identity_max_age_s=1e9, lost_ms=a.lost_ms,
+                max_speed_mps=a.max_speed_mps, identity_aliases={OPERATOR_IDENTITY})
+            # Same planner class, aimed at the body instead of the marker.
+            self.opponent_planners = {
+                cid: roi_tracker.CameraRoiPlanner(
+                    self.models[cid], c["R_world_optical"], c["position_world"],
+                    min_roi_px=a.opponent_roi_min_px, max_roi_px=a.opponent_roi_max_px,
+                    marker_size_m=a.opponent_size[0], watchdog_period_s=a.watchdog_period_s,
+                    tag_plane_z=(0.0, a.opponent_size[2]),
+                    max_incidence_deg=a.opponent_max_incidence_deg,
+                    min_marker_px=a.opponent_min_size_px,
+                    exhausted_full_frame_period_s=a.roi_exhausted_period_s or None)
+                for cid, c in cams.items()
+            }
         self.buffers = {name: AsyncObservationBuffer(int(a.group_window_ms * 1e6))
                         for name in self.filters}
         self.pending_observations = {name: [] for name in self.filters}
@@ -335,7 +388,9 @@ class Replay:
         self.published_times = {name: collections.deque(maxlen=300) for name in self.filters}
         self.timing = {cid: {"latency_ms": [], "decode_ms": [], "idle_decode_ms": [],
                              "by_mode": collections.defaultdict(list),
-                             "reasons": collections.Counter()} for cid in cams}
+                             "reasons": collections.Counter(), "tag_ms": [],
+                             "opponent_ms": [], "background_update_ms": [],
+                             "opponent_reasons": collections.Counter()} for cid in cams}
         self.batch_ms = []
         self.lidar_ms = []
         self.last_clock_ns = None
@@ -386,6 +441,12 @@ class Replay:
         buffer = self.buffers.get(obs.object_id)
         if buffer is None:
             return
+        if obs.object_id == "tag_rover" and "opponent" in self.filters:
+            tag, opp = self.pose_of("tag_rover", now_ns), self.pose_of("opponent", now_ns)
+            if tag and opp and self.guard.marker_says_swap(
+                    observation_stamp_ns(obs), obs.position_m[:2], tag[:2], opp[:2]):
+                self.guard.swap(observation_stamp_ns(obs), self.filters["tag_rover"],
+                                self.filters["opponent"], obs.position_m[:2])
         for measurement in measurement_from_observation(obs):
             buffer.push(measurement)
         self.pending_observations[obs.object_id].append(obs)
@@ -406,7 +467,7 @@ class Replay:
                         continue
                     ok = (obs.camera_id, stamp) in taken
                     self.record_observation(obs, ok, "fusion_accepted" if ok else "fusion_gate", now_ns)
-                    if ok:
+                    if ok and obs.camera_id in self.metrics and name == "tag_rover":
                         self.metrics[obs.camera_id]["tag_accepted"] += 1
                         row = self.frame_rows.get((obs.camera_id, obs.capture_time_ns))
                         if row is not None:
@@ -416,6 +477,7 @@ class Replay:
     def publish(self, now_ns):
         self.drain(now_ns)
         time_uncertain = self.last_clock_ns is None or now_ns - self.last_clock_ns > 200_000_000
+        published = {}
         for name, f in self.filters.items():
             item = f.publish(now_ns)
             state = item["state"]
@@ -437,6 +499,9 @@ class Replay:
             if time_uncertain:
                 row.update(valid=False, tracking_state="TIME_UNCERTAIN")
             self.out_odom.write(json.dumps(row) + "\n")
+            published[name] = (state["x"], state["y"]) if row["valid"] and state else None
+        if "opponent" in self.filters:
+            self.guard.observe_tracks(now_ns, published.get("tag_rover"), published.get("opponent"))
 
     @staticmethod
     def rate(stamps):
@@ -445,12 +510,20 @@ class Replay:
 
     # ------------------------------------------------------------ camera side
 
-    def process_frame(self, cid, row, plan):
-        """Worker body: decode, then detector + PnP.  Touches only this camera."""
+    def process_frame(self, cid, row, plan, opponent=None):
+        """Worker body: decode, marker detector + PnP, opponent silhouette.
+
+        Touches only this camera's objects.  ``opponent`` is None or a dict
+        prepared by the main thread: plan, prediction, poses, exclusions.
+        """
+        busy = plan.mode != roi_tracker.IDLE or (
+            opponent is not None and opponent["plan"].mode != roi_tracker.IDLE)
         begin = time.perf_counter_ns()
-        image = self.sources[cid].read(int(row["index"]), decode=plan.mode != roi_tracker.IDLE)
+        image = self.sources[cid].read(int(row["index"]), decode=busy)
+        if busy and self.a.gain != 1.0:
+            image = cv2.convertScaleAbs(image, alpha=self.a.gain)
         decode_ms = (time.perf_counter_ns() - begin) / 1e6
-        if plan.mode == roi_tracker.IDLE:
+        if not busy:
             return {"idle": True, "decode_ms": decode_ms}
         if [image.shape[1], image.shape[0]] != list(self.cams[cid]["image_size"]):
             raise ValueError(f"{cid}: image size differs from calibration")
@@ -459,9 +532,10 @@ class Replay:
         processed = received + self.processing_ns
         pipe = self.pipes[cid]
         begin = time.perf_counter_ns()
+        hits = ()
         if plan.mode == roi_tracker.ROI:
             hits = pipe.roi_detector.detect(image, roi=plan.roi)
-        else:
+        elif plan.mode != roi_tracker.IDLE:
             hits = pipe.detector.detect(image)
         observations, diagnostics, qualities, reprojection = [], [], [], []
         rejections = collections.Counter()
@@ -476,38 +550,132 @@ class Replay:
                 reprojection.append(float(obs.pixel_features["reprojection_error_px"]))
             else:
                 rejections[str(diagnostic.get("reason", "unknown"))] += 1
-        latency_ms = (time.perf_counter_ns() - begin) / 1e6
-        return {"idle": False, "decode_ms": decode_ms, "latency_ms": latency_ms,
-                "hits": hits, "observations": observations, "diagnostics": diagnostics,
-                "qualities": qualities, "reprojection": reprojection,
-                "rejections": dict(rejections), "stamp": stamp,
-                "received": received, "processed": processed}
+        tag_ms = (time.perf_counter_ns() - begin) / 1e6
+        result = {"idle": False, "decode_ms": decode_ms, "tag_ms": tag_ms,
+                  "hits": hits, "observations": observations, "diagnostics": diagnostics,
+                  "qualities": qualities, "reprojection": reprojection,
+                  "rejections": dict(rejections), "stamp": stamp,
+                  "received": received, "processed": processed,
+                  "opponent_ms": 0.0, "background_update_ms": 0.0}
+        if opponent is not None:
+            result.update(self.process_opponent(cid, image, opponent))
+        result["latency_ms"] = tag_ms + result["opponent_ms"]
+        return result
+
+    def process_opponent(self, cid, image, job):
+        camera = self.opponent_cameras[cid]
+        plan = job["plan"]
+        out = {"opponent_reading": None, "opponent_diag": None}
+        begin = time.perf_counter_ns()
+        gain = camera.background.gain(image, job["exclude"])
+        if plan.mode != roi_tracker.IDLE:
+            roi = plan.roi if plan.roi is not None else (0, 0, image.shape[1], image.shape[0])
+            reading, diag = camera.read(image, roi, job["prediction"], job["tag_pose"], gain,
+                                        job.get("gate_m"))
+            out["opponent_reading"], out["opponent_diag"] = reading, diag
+            if reading is None and job.get("operator_box") is not None:
+                # The operator's rectangle stands even when the silhouette in
+                # it cannot be read: fall back to the box itself, through the
+                # camera's own lens.
+                fit = localize_box(job["operator_box"], self.cams[cid],
+                                   dimensions=self.a.opponent_size,
+                                   camera_model=self.models[cid])
+                out["opponent_box_fit"] = fit
+        out["opponent_ms"] = (time.perf_counter_ns() - begin) / 1e6
+        begin = time.perf_counter_ns()
+        camera.background.update(image, job["exclude"], gain)
+        out["background_update_ms"] = (time.perf_counter_ns() - begin) / 1e6
+        return out
+
+    def pose_of(self, name, now_ns):
+        """(x, y, yaw, sigma) of a live track, or None."""
+        f = self.filters.get(name)
+        if f is None or not f.initialized or f.tracking_state(now_ns) == "LOST":
+            return None
+        state, covariance = f.x, f.P
+        return (float(state[0]), float(state[1]), float(state[YAW]),
+                float(math.sqrt(max(covariance[0, 0], covariance[1, 1]))))
+
+    def opponent_jobs(self, now_ns, items):
+        """Main thread: what each camera should do for the opponent this instant."""
+        if not self.opponent_enabled:
+            return {cid: None for cid, _ in items}
+        tag = self.pose_of("tag_rover", now_ns)
+        opp = self.pose_of("opponent", now_ns)
+        stamp = int(items[0][1]["stamp_ns"])
+        operator = (self.operator_box is not None and not self.filters["opponent"].initialized
+                    and stamp == self.operator_box["stamp_ns"])
+        jobs = {}
+        for cid, _ in items:
+            camera = self.opponent_cameras[cid]
+            exclude = [r for r in (
+                camera.exclusion_rect(tag[:2], tag[2], TAG_BODY_M) if tag else None,
+                camera.exclusion_rect(opp[:2], opp[2], self.a.opponent_size) if opp else None)
+                if r is not None]
+            if operator and cid in self.operator_box["boxes_xyxy_px"]:
+                x0, y0, x1, y1 = self.operator_box["boxes_xyxy_px"][cid]
+                pad = max(40.0, 0.3 * max(x1 - x0, y1 - y0))
+                roi = (int(x0 - pad), int(y0 - pad), int(x1 - x0 + 2 * pad), int(y1 - y0 + 2 * pad))
+                centre = pixel_rays(self.models[cid], [((x0 + x1) / 2, (y0 + y1) / 2)])[0]
+                point, _ = ray_plane(centre, self.cams[cid]["R_world_optical"],
+                                     self.cams[cid]["position_world"], self.a.opponent_size[2] / 2)
+                if point is None:
+                    continue
+                jobs[cid] = {"plan": roi_tracker.Plan(roi_tracker.ROI, roi, None, "operator_box"),
+                             "prediction": point[:2], "tag_pose": tag and tag[:3],
+                             "exclude": exclude, "gate_m": 1.5,
+                             "operator_box": (x0, y0, x1, y1)}
+            elif opp is not None:
+                plan = self.opponent_planners[cid].plan(
+                    None if self.a.no_roi_tracking else (opp[0], opp[1], opp[3]), now_ns)
+                jobs[cid] = {"plan": plan, "prediction": opp[:2], "tag_pose": tag and tag[:3],
+                             "exclude": exclude,
+                             "gate_m": max(self.a.opponent_gate_m, 3.0 * opp[3])}
+            elif exclude:
+                # No opponent track here: still learn the background.
+                jobs[cid] = {"plan": roi_tracker.Plan(roi_tracker.IDLE, None, None, "no_track"),
+                             "prediction": None, "tag_pose": None, "exclude": exclude}
+        return jobs
 
     def camera_batch(self, now_ns, items):
         prediction = None if self.a.no_roi_tracking else self.track_prediction(now_ns)
         plans = {cid: self.planners[cid].plan(prediction, now_ns) for cid, _ in items}
+        jobs = self.opponent_jobs(now_ns, items)
         begin = time.perf_counter_ns()
-        futures = [(cid, row, self.pool.submit(self.process_frame, cid, row, plans[cid]))
+        futures = [(cid, row, self.pool.submit(self.process_frame, cid, row, plans[cid],
+                                               jobs.get(cid)))
                    for cid, row in items]
         results = [(cid, row, future.result()) for cid, row, future in futures]
         self.batch_ms.append((time.perf_counter_ns() - begin) / 1e6)
         for cid, row, result in results:
             timing = self.timing[cid]
             timing["reasons"][f"{plans[cid].mode}:{plans[cid].reason}"] += 1
+            job = jobs.get(cid)
+            if job is not None:
+                timing["opponent_reasons"][f"{job['plan'].mode}:{job['plan'].reason}"] += 1
             if result["idle"]:
                 self.metrics[cid]["idle_frames"] += 1
                 timing["idle_decode_ms"].append(result["decode_ms"])
                 continue
             plan = plans[cid]
-            self.planners[cid].report(bool(result["hits"]))
+            if plan.mode != roi_tracker.IDLE:
+                self.planners[cid].report(bool(result["hits"]))
+                timing["tag_ms"].append(result["tag_ms"])
             timing["latency_ms"].append(result["latency_ms"])
             timing["decode_ms"].append(result["decode_ms"])
             timing["by_mode"][plan.mode].append(result["latency_ms"])
+            if job is not None and job["plan"].mode != roi_tracker.IDLE:
+                timing["opponent_ms"].append(result["opponent_ms"])
+                if job["plan"].reason != "operator_box":
+                    self.opponent_planners[cid].report(result.get("opponent_reading") is not None)
+            if job is not None:
+                timing["background_update_ms"].append(result["background_update_ms"])
             m = self.metrics[cid]
             m["processed"] += 1
             m["tag_hits"] += len(result["hits"])
             m["last_capture_ns"] = result["stamp"]
             m["latency_ms"] = result["latency_ms"]
+            reading = result.get("opponent_reading")
             frame = {
                 "camera_id": cid, "sequence": int(row["index"]), "capture_ns": result["stamp"],
                 "received_wall_ns": result["received"], "processed_wall_ns": result["processed"],
@@ -516,11 +684,19 @@ class Replay:
                 "pnp_valid": len(result["observations"]), "fusion_accepted": 0,
                 "best_quality": max(result["qualities"]) if result["qualities"] else None,
                 "best_reprojection_px": min(result["reprojection"]) if result["reprojection"] else None,
-                "latency_ms": result["latency_ms"], "decode_ms": result["decode_ms"],
+                "latency_ms": result["latency_ms"], "tag_ms": result["tag_ms"],
+                "opponent_ms": result["opponent_ms"],
+                "background_update_ms": result["background_update_ms"],
+                "decode_ms": result["decode_ms"],
                 "mode": plan.mode, "plan_reason": plan.reason,
                 "roi": list(plan.roi) if plan.roi else None,
                 "pnp_rejections": result["rejections"],
                 "pnp_diagnostics": result["diagnostics"],
+                "opponent_mode": job["plan"].mode if job else None,
+                "opponent_reason": job["plan"].reason if job else None,
+                "opponent_roi": list(job["plan"].roi) if job and job["plan"].roi else None,
+                "opponent_method": reading.method if reading else None,
+                "opponent_diag": result.get("opponent_diag"),
             }
             self.frame_rows[(cid, result["stamp"])] = frame
             self.frame_order.append(frame)
@@ -529,6 +705,49 @@ class Replay:
                     self.push(result["processed"], ENQUEUE, ("obs", obs))
                 else:
                     self.enqueue(obs, now_ns)
+            if job is not None and (reading is not None or result.get("opponent_box_fit")):
+                self.opponent_observation(cid, row, result, job, now_ns)
+
+    def opponent_observation(self, cid, row, result, job, now_ns):
+        """Main thread: one opponent reading -> Observation + filter measurements."""
+        reading = result.get("opponent_reading")
+        operator = job["plan"].reason == "operator_box"
+        if reading is not None:
+            x, y, cov = reading.x, reading.y, reading.covariance_xy
+            method = "operator_box" if operator else reading.method
+            features = {"incidence_deg": math.degrees(reading.incidence_rad),
+                        "pixels": reading.pixels, "reading": reading.method, **reading.detail}
+        else:
+            fit = result["opponent_box_fit"]
+            x, y = fit["position_m"][:2]
+            cov = (0.1 ** 2, 0.0, 0.0, 0.1 ** 2)
+            method = "operator_box"
+            features = {"box_fit_rms_px": fit["box_fit_rms_px"], "reading": "box_fit"}
+        stamp = result["stamp"]
+        sigma = math.sqrt(max(cov[0], cov[3]))
+        obs = Observation(
+            SCHEMA_VERSION, cid, int(row["index"]), f"{cid}:{int(row['index'])}:opponent",
+            "opponent", stamp, "sim", 0, 0, result["received"], result["processed"],
+            self.version, FRAME_ARENA, (float(x), float(y), self.a.base_z_nominal),
+            (cov[0], cov[1], 0.0, cov[2], cov[3], 0.0, 0.0, 0.0, 0.04),
+            max(0.0, min(1.0, 0.05 / (0.05 + sigma))), method, None, None,
+            pose_6d_valid=False, attitude_state="unknown", pixel_features=features).validate()
+        measurements = [Measurement(stamp, POSITION, (float(x), float(y)), tuple(cov), cid,
+                                    OPERATOR_IDENTITY if operator else None, operator,
+                                    obs.quality)]
+        f = self.filters["opponent"]
+        if reading is not None and reading.yaw_axis is not None and f.initialized \
+                and reading.detail.get("length_m", 0) > 1.2 * reading.detail.get("width_m", 1):
+            # The long axis says nothing about which end is the front; take
+            # the end nearer the track's own heading.
+            axis = reading.yaw_axis
+            if abs(math.remainder(axis - float(f.x[YAW]), 2 * math.pi)) > math.pi / 2:
+                axis = math.remainder(axis + math.pi, 2 * math.pi)
+            measurements.append(Measurement(stamp, YAW_ONLY, (axis,), (math.radians(10) ** 2,),
+                                            cid, None, False, obs.quality))
+        for measurement in measurements:
+            self.buffers["opponent"].push(measurement)
+        self.pending_observations["opponent"].append(obs)
 
     # ------------------------------------------------------------- lidar side
 
@@ -539,39 +758,56 @@ class Replay:
                       "elevation": z["elevation"].astype(float),
                       "range_min": float(z["range_min"]), "range_max": float(z["range_max"]),
                       "stamp_ns": int(row["stamp_ns"])}
-        track = self.filters["tag_rover"]
-        state = track.x if track.initialized else None
-        covariance = track.P if state is not None else None
-        tracking = track.tracking_state(parsed["stamp_ns"])
-        out = {"stamp_ns": parsed["stamp_ns"], "wall_ns": int(now_ns),
-               "replay_wall_ns": time.monotonic_ns(), "tracking_state": tracking}
-        if state is None or not lidar_pipeline.may_continue(tracking):
-            out["reason"] = "no_confirmed_track"
-        else:
-            lidar = self.lidar
-            scan = lidar.scan_to_arena(parsed)
-            velocity = (float(state[2]), float(state[3]), 0.0)
-            points = lidar.deskew(scan, velocity)
-            sigma = math.sqrt(max(float(covariance[0, 0]), float(covariance[1, 1])))
-            speed = math.hypot(velocity[0], velocity[1])
-            before = dict(lidar.rejections)
-            cluster = lidar.detect(points, (float(state[0]), float(state[1])),
-                                   sigma, speed, parsed["stamp_ns"])
-            out.update(returns=scan.returns, rays=scan.rays,
-                       prediction=[float(state[0]), float(state[1])], prediction_sigma_m=sigma)
-            if cluster is None:
-                new = [k for k, v in lidar.rejections.items() if v != before.get(k)]
-                out["reason"] = new[0] if new else "unknown"
+        scan = None
+        shape = {"tag_rover": {}, "opponent": {"max_z_m": self.a.opponent_lidar_max_z,
+                                               "top_slab_m": self.a.opponent_lidar_slab}}
+        for name, track in self.filters.items():
+            state = track.x if track.initialized else None
+            covariance = track.P if state is not None else None
+            tracking = track.tracking_state(parsed["stamp_ns"])
+            out = {"object_id": name, "stamp_ns": parsed["stamp_ns"], "wall_ns": int(now_ns),
+                   "replay_wall_ns": time.monotonic_ns(), "tracking_state": tracking}
+            # The lidar continues a track; it never creates one, for either rover.
+            if state is None or not lidar_pipeline.may_continue(tracking):
+                out["reason"] = "no_confirmed_track"
             else:
-                out.update(reason="accepted", x=cluster.x, y=cluster.y, z_max=cluster.z_max,
-                           points=cluster.points, extent_x=cluster.extent_x,
-                           extent_y=cluster.extent_y, residual_m=cluster.residual_m,
-                           sigma_m=cluster.sigma_m)
-                self.buffers["tag_rover"].push(lidar_pipeline.measurement_from_cluster(cluster))
-        out["processing_ms"] = (time.perf_counter_ns() - begin) / 1e6
-        self.lidar_ms.append(out["processing_ms"])
-        self.out_lidar.write(json.dumps(out) + "\n")
-        self.lidar_rows_written += 1
+                lidar = self.lidar
+                if scan is None:
+                    scan = lidar.scan_to_arena(parsed)
+                velocity = (float(state[2]), float(state[3]), 0.0)
+                points = lidar.deskew(scan, velocity)
+                sigma = math.sqrt(max(float(covariance[0, 0]), float(covariance[1, 1])))
+                speed = math.hypot(velocity[0], velocity[1])
+                before = dict(lidar.rejections)
+                cluster = lidar.detect(points, (float(state[0]), float(state[1])),
+                                       sigma, speed, parsed["stamp_ns"], **shape[name])
+                out.update(returns=scan.returns, rays=scan.rays,
+                           prediction=[float(state[0]), float(state[1])],
+                           prediction_sigma_m=sigma)
+                if cluster is None:
+                    new = [k for k, v in lidar.rejections.items() if v != before.get(k)]
+                    out["reason"] = new[0] if new else "unknown"
+                else:
+                    out.update(reason="accepted", x=cluster.x, y=cluster.y, z_max=cluster.z_max,
+                               points=cluster.points, extent_x=cluster.extent_x,
+                               extent_y=cluster.extent_y, residual_m=cluster.residual_m,
+                               sigma_m=cluster.sigma_m)
+                    measurement = lidar_pipeline.measurement_from_cluster(cluster)
+                    self.buffers[name].push(measurement)
+                    variance = cluster.sigma_m ** 2
+                    self.pending_observations[name].append(Observation(
+                        SCHEMA_VERSION, "lidar", int(row["file"].split("_")[-1].split(".")[0]),
+                        f"lidar:{parsed['stamp_ns']}:{name}", name, parsed["stamp_ns"], "sim",
+                        0, 0, int(now_ns), int(now_ns), self.version, FRAME_ARENA,
+                        (cluster.x, cluster.y, self.a.base_z_nominal),
+                        (variance, 0.0, 0.0, 0.0, variance, 0.0, 0.0, 0.0, 0.04),
+                        measurement.quality, "lidar_cluster",
+                        pixel_features={"points": cluster.points,
+                                        "residual_m": cluster.residual_m}).validate())
+            out["processing_ms"] = (time.perf_counter_ns() - begin) / 1e6
+            self.out_lidar.write(json.dumps(out) + "\n")
+            self.lidar_rows_written += 1
+        self.lidar_ms.append((time.perf_counter_ns() - begin) / 1e6)
 
     # --------------------------------------------------------------- schedule
 
@@ -629,6 +865,9 @@ class Replay:
         operator_box = operator_box_from_truth(self.dataset, self.cams, self.models,
                                                self.stamps_by_camera)
         self.write_parameters(out, operator_box)
+        self.operator_box = operator_box
+        if self.opponent_enabled:
+            self.build_opponent_cameras()
         self.sources = {cid: FrameSource(self.dataset / f"{cid}.mkv") for cid in self.cams}
         workers = a.workers or len(self.cams)
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
@@ -671,6 +910,26 @@ class Replay:
         (out / "status.json").write_text(json.dumps(status, indent=2) + "\n")
         return status
 
+    def build_opponent_cameras(self):
+        """Background per camera from the empty-arena clip; the only prior besides size."""
+        a = self.a
+        started = time.monotonic()
+        for cid, cam in self.cams.items():
+            source = FrameSource(a.camera_background / f"{cid}.mkv")
+            index = read_jsonl(a.camera_background / f"{cid}.jsonl")
+
+            def frames():
+                for row in index[::a.background_stride]:
+                    yield source.read(int(row["index"]))
+            background = ClipBackground.from_frames(
+                frames(), threshold=a.background_threshold, alpha=a.background_alpha)
+            source.close()
+            self.opponent_cameras[cid] = OpponentCamera(
+                cid, self.models[cid], cam["R_world_optical"], cam["position_world"],
+                background, size_m=a.opponent_size, tag_size_m=TAG_BODY_M,
+                gate_m=a.opponent_gate_m)
+        self.background_build_s = time.monotonic() - started
+
     # ---------------------------------------------------------------- reports
 
     def write_parameters(self, out, operator_box):
@@ -703,7 +962,19 @@ class Replay:
                                        if a.lidar_range_background else None),
             "camera_policy": "asynchronous_group_window",
             "covariance_model": "ray_plane_anisotropic_v2",
-            "opponent_enabled": False,
+            "opponent_enabled": self.opponent_enabled,
+            "opponent": ({"size_m": list(a.opponent_size), "camera_background": str(a.camera_background),
+                          "background_threshold": a.background_threshold,
+                          "background_alpha": a.background_alpha,
+                          "background_stride": a.background_stride,
+                          "roi_px": [a.opponent_roi_min_px, a.opponent_roi_max_px],
+                          "max_incidence_deg": a.opponent_max_incidence_deg,
+                          "min_size_px": a.opponent_min_size_px, "gate_m": a.opponent_gate_m,
+                          "lidar_max_z_m": a.opponent_lidar_max_z,
+                          "lidar_top_slab_m": a.opponent_lidar_slab,
+                          "identity_close_m": a.identity_close_m, "silhouette": "extent"}
+                         if self.opponent_enabled else None),
+            "gain": a.gain,
             "replay": {
                 "dataset": str(self.dataset), "cameras": sorted(self.cams),
                 "seconds": a.seconds, "transport_ms": a.transport_ms,
@@ -734,6 +1005,8 @@ class Replay:
                 "processed_frames": len(t["latency_ms"]), "idle_frames": len(t["idle_decode_ms"]),
                 "mode_share": {m: round(n / max(frames, 1), 4) for m, n in sorted(modes.items())},
                 "plan_reasons": dict(sorted(t["reasons"].items())),
+                "opponent_plan_reasons": dict(sorted(t["opponent_reasons"].items())),
+                "tag_ms": summary(t["tag_ms"]), "opponent_ms": summary(t["opponent_ms"]),
                 "latency_ms": summary(t["latency_ms"]),
                 "latency_ms_by_mode": {k: summary(v) for k, v in sorted(t["by_mode"].items())},
                 "decode_ms": summary(t["decode_ms"] + t["idle_decode_ms"]),
@@ -749,6 +1022,13 @@ class Replay:
             "fps_processed": processed / max(wall, 1e-9),
             "realtime_ratio": sim_seconds / max(wall, 1e-9),
             "latency_ms_all_cameras": summary(all_latency),
+            "tag_ms_all_cameras": summary(
+                [v for t in self.timing.values() for v in t["tag_ms"]]),
+            "opponent_ms_all_cameras": summary(
+                [v for t in self.timing.values() for v in t["opponent_ms"]]),
+            "background_update_ms_all_cameras": summary(
+                [v for t in self.timing.values() for v in t["background_update_ms"]]),
+            "background_build_s": getattr(self, "background_build_s", None),
             "batch_wall_ms": summary(self.batch_ms),
             "lidar_processing_ms": summary(self.lidar_ms),
             "cameras": per_camera,
@@ -757,7 +1037,8 @@ class Replay:
     def status(self, wall):
         f = self.filters["tag_rover"]
         return {
-            "phase": "REPLAY", "hardware_verified": False, "opponent_enabled": False,
+            "phase": "REPLAY", "hardware_verified": False,
+            "opponent_enabled": self.opponent_enabled,
             "wall_seconds": wall, "calibration_version": self.version,
             "marker_family": self.marker_family, "marker_ids": sorted(self.tags),
             "cameras": {k: dict(v) for k, v in self.metrics.items()},
@@ -775,6 +1056,7 @@ class Replay:
                        "rows": self.lidar_rows_written}
                       if self.lidar is not None else None),
             "clock": {"sim_start_ns": self.t0, "sim_end_ns": self.end_ns},
+            "identity": self.guard.summary() if self.opponent_enabled else None,
             "errors": list(self.errors),
         }
 
