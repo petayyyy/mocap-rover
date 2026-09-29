@@ -162,14 +162,20 @@ class ClipBackground(BackgroundModel):
         r0 = self.next_band
         r1 = min(self.height, r0 + self.band_rows)
         self.next_band = 0 if r1 >= self.height else r1
-        band = np.asarray(image)[r0:r1].astype(np.float32) * (1.0 / max(gain, 1e-3))
-        ys, xs = np.mgrid[r0:r1, 0:self.width]
-        keep = self._outside(None, ys, xs, exclude)
+        band = np.ascontiguousarray(np.asarray(image)[r0:r1])
+        if abs(gain - 1.0) > 1e-3:
+            band = cv2.convertScaleAbs(band, alpha=1.0 / max(gain, 1e-3))
+        keep = np.full((r1 - r0, self.width), 255, np.uint8)
+        for x, y, w, h in exclude or ():
+            ya, yb = max(y, r0) - r0, min(y + h, r1) - r0
+            xa, xb = max(x, 0), min(x + w, self.width)
+            if ya < yb and xa < xb:
+                keep[ya:yb, xa:xb] = 0
         if self.pixel_mask is not None:
-            keep &= ~self.pixel_mask[r0:r1]
+            keep[self.pixel_mask[r0:r1]] = 0
         target = self.mean[r0:r1]
-        target[keep] += self.alpha * (band[keep] - target[keep])
-        self.mean_u8[r0:r1] = np.clip(np.rint(target), 0, 255).astype(np.uint8)
+        cv2.accumulateWeighted(band, target, self.alpha, mask=keep)
+        self.mean_u8[r0:r1] = cv2.convertScaleAbs(target)
 
 
 @dataclass(frozen=True)
