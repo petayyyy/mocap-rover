@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import concurrent.futures
 import dataclasses
 import heapq
 import json
@@ -54,20 +53,18 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from localization_contracts import lidar_pipeline, roi_tracker  # noqa: E402
-from localization_contracts.apriltag import Detection, marker_plane_z  # noqa: E402
+from localization_contracts.apriltag import marker_plane_z  # noqa: E402
 from localization_contracts.camera_model import CameraModel  # noqa: E402
 from localization_contracts.detector import PROFILES  # noqa: E402
-from localization_contracts.image_pipeline import OneCameraImagePipeline  # noqa: E402
 from localization_contracts.marker_families import normalize_marker_family  # noqa: E402
 from localization_contracts.rover_filter import (  # noqa: E402
     AsyncObservationBuffer, ImmRoverFilter, Measurement, POSITION, YAW, YAW_ONLY,
     measurement_from_observation, observation_stamp_ns,
 )
 from localization_contracts.contracts import Observation, SCHEMA_VERSION, FRAME_ARENA  # noqa: E402
-from localization_contracts.cuboid import localize_box  # noqa: E402
-from localization_contracts.foreground import ClipBackground  # noqa: E402
 from localization_contracts.identity import TwoRoverIdentity  # noqa: E402
 from localization_contracts.opponent_camera import OpponentCamera, SILHOUETTE  # noqa: E402
+from localization_contracts.camera_worker import POOLS  # noqa: E402
 from localization_contracts.ray_plane import pixel_rays, ray_plane  # noqa: E402
 
 # Opponent cuboid as the operator sees it: 0.9 x 0.52 m, top at 0.483 m.
@@ -105,7 +102,10 @@ def parse_args(argv=None):
     p.add_argument("--processing-ms", type=float, default=0.0,
                    help="simulated detector+PnP cost between arrival and the filter")
     p.add_argument("--workers", type=int, default=0,
-                   help="camera worker threads; 0 = one per camera")
+                   help="camera worker threads with --parallel threads; 0 = one per camera")
+    p.add_argument("--parallel", choices=sorted(POOLS), default="threads",
+                   help="how the cameras run: one thread each (default), one process "
+                        "each, or all inline on one thread; the output is identical")
     # Everything below mirrors run_localization.py, same names and defaults.
     p.add_argument("--detector-scale", type=float, default=1.0)
     p.add_argument("--detector-profile", choices=PROFILES,
@@ -327,20 +327,13 @@ class Replay:
             line_time_ns=a.line_time_ns,
         )
         self.pose_gates = pose_gates
-        self.pipes = {
-            cid: OneCameraImagePipeline(
-                cid, np.array(c["K"]).reshape(3, 3), c["D"],
-                {"rotation": c["R_world_optical"], "translation": c["position_world"]},
-                self.tags, self.version, family=self.marker_family,
-                tag_size_m=self.tag_size_m, detector_scale=a.detector_scale,
-                detector_profile=a.detector_profile, marker_ids=tuple(self.tags),
-                roi_detector_profile=a.roi_detector_profile,
-                quality_min=a.tag_quality_min,
-                max_reprojection_px=a.tag_max_reprojection_px,
-                max_planar_tilt_deg=a.tag_max_planar_tilt_deg,
-                min_side_px=a.tag_min_side_px, image_size=c["image_size"], **pose_gates)
-            for cid, c in cams.items()
-        }
+        self.pipeline_kwargs = dict(
+            family=self.marker_family, tag_size_m=self.tag_size_m,
+            detector_scale=a.detector_scale, detector_profile=a.detector_profile,
+            marker_ids=tuple(self.tags), roi_detector_profile=a.roi_detector_profile,
+            quality_min=a.tag_quality_min, max_reprojection_px=a.tag_max_reprojection_px,
+            max_planar_tilt_deg=a.tag_max_planar_tilt_deg, min_side_px=a.tag_min_side_px,
+            **pose_gates)
         self.models = {cid: CameraModel.from_config(c) for cid, c in cams.items()}
         self.planners = {
             cid: roi_tracker.CameraRoiPlanner(
@@ -405,8 +398,10 @@ class Replay:
                              "by_mode": collections.defaultdict(list),
                              "reasons": collections.Counter(), "tag_ms": [],
                              "opponent_ms": [], "background_update_ms": [],
-                             "opponent_reasons": collections.Counter()} for cid in cams}
+                             "opponent_reasons": collections.Counter(),
+                             "stages": collections.defaultdict(list)} for cid in cams}
         self.batch_ms = []
+        self.main_ms = {"plan": [], "apply": [], "publish": []}
         self.lidar_ms = []
         self.last_clock_ns = None
         self.errors = []
@@ -505,6 +500,11 @@ class Replay:
                 self.pending_observations[name] = remaining
 
     def publish(self, now_ns):
+        begin = time.perf_counter_ns()
+        self._publish(now_ns)
+        self.main_ms["publish"].append((time.perf_counter_ns() - begin) / 1e6)
+
+    def _publish(self, now_ns):
         self.drain(now_ns)
         time_uncertain = self.last_clock_ns is None or now_ns - self.last_clock_ns > 200_000_000
         published = {}
@@ -540,82 +540,19 @@ class Replay:
 
     # ------------------------------------------------------------ camera side
 
-    def process_frame(self, cid, row, plan, opponent=None):
-        """Worker body: decode, marker detector + PnP, opponent silhouette.
-
-        Touches only this camera's objects.  ``opponent`` is None or a dict
-        prepared by the main thread: plan, prediction, poses, exclusions.
-        """
-        busy = plan.mode != roi_tracker.IDLE or (
-            opponent is not None and opponent["plan"].mode != roi_tracker.IDLE)
-        begin = time.perf_counter_ns()
-        image = self.sources[cid].read(int(row["index"]), decode=busy)
-        if busy and self.a.gain != 1.0:
-            image = cv2.convertScaleAbs(image, alpha=self.a.gain)
-        decode_ms = (time.perf_counter_ns() - begin) / 1e6
-        if not busy:
-            return {"idle": True, "decode_ms": decode_ms}
-        if [image.shape[1], image.shape[0]] != list(self.cams[cid]["image_size"]):
-            raise ValueError(f"{cid}: image size differs from calibration")
-        stamp = int(row["stamp_ns"])
-        received = stamp + self.transport_ns
-        processed = received + self.processing_ns
-        pipe = self.pipes[cid]
-        begin = time.perf_counter_ns()
-        hits = ()
-        if plan.mode == roi_tracker.ROI:
-            hits = pipe.roi_detector.detect(image, roi=plan.roi)
-        elif plan.mode != roi_tracker.IDLE:
-            hits = pipe.detector.detect(image)
-        observations, diagnostics, qualities, reprojection = [], [], [], []
-        rejections = collections.Counter()
-        for hit in hits:
-            obs = pipe.observer.observe(Detection(
-                cid, int(row["index"]), hit.tag_id, hit.corners, stamp, received, processed))
-            diagnostic = pipe.observer.last_diagnostic or {}
-            diagnostics.append({"tag_id": int(hit.tag_id), **diagnostic})
-            if obs is not None:
-                observations.append(obs)
-                qualities.append(float(obs.quality))
-                reprojection.append(float(obs.pixel_features["reprojection_error_px"]))
-            else:
-                rejections[str(diagnostic.get("reason", "unknown"))] += 1
-        tag_ms = (time.perf_counter_ns() - begin) / 1e6
-        result = {"idle": False, "decode_ms": decode_ms, "tag_ms": tag_ms,
-                  "hits": hits, "observations": observations, "diagnostics": diagnostics,
-                  "qualities": qualities, "reprojection": reprojection,
-                  "rejections": dict(rejections), "stamp": stamp,
-                  "received": received, "processed": processed,
-                  "opponent_ms": 0.0, "background_update_ms": 0.0}
-        if opponent is not None:
-            result.update(self.process_opponent(cid, image, opponent))
-        result["latency_ms"] = tag_ms + result["opponent_ms"]
-        return result
-
-    def process_opponent(self, cid, image, job):
-        camera = self.opponent_cameras[cid]
-        plan = job["plan"]
-        out = {"opponent_reading": None, "opponent_diag": None}
-        begin = time.perf_counter_ns()
-        gain = camera.background.gain(image, job["exclude"])
-        if plan.mode != roi_tracker.IDLE:
-            roi = plan.roi if plan.roi is not None else (0, 0, image.shape[1], image.shape[0])
-            reading, diag = camera.read(image, roi, job["prediction"], job["tag_pose"], gain,
-                                        job.get("gate_m"))
-            out["opponent_reading"], out["opponent_diag"] = reading, diag
-            if reading is None and job.get("operator_box") is not None:
-                # The operator's rectangle stands even when the silhouette in
-                # it cannot be read: fall back to the box itself, through the
-                # camera's own lens.
-                fit = localize_box(job["operator_box"], self.cams[cid],
-                                   dimensions=self.a.opponent_size,
-                                   camera_model=self.models[cid])
-                out["opponent_box_fit"] = fit
-        out["opponent_ms"] = (time.perf_counter_ns() - begin) / 1e6
-        begin = time.perf_counter_ns()
-        camera.background.update(image, job["exclude"], gain)
-        out["background_update_ms"] = (time.perf_counter_ns() - begin) / 1e6
-        return out
+    def worker_spec(self, cid):
+        """Everything a CameraWorker needs, as plain data (it may live in another process)."""
+        a = self.a
+        opponent = None
+        if self.opponent_enabled:
+            opponent = {"background_dir": str(a.camera_background),
+                        "stride": a.background_stride, "threshold": a.background_threshold,
+                        "alpha": a.background_alpha, "size": tuple(a.opponent_size),
+                        "tag_size": TAG_BODY_M, "gate_m": a.opponent_gate_m}
+        return {"camera_id": cid, "camera": self.cams[cid], "dataset": str(self.dataset),
+                "tags": self.tags, "calibration_version": self.version,
+                "pipeline": self.pipeline_kwargs, "transport_ns": self.transport_ns,
+                "processing_ns": self.processing_ns, "gain": a.gain, "opponent": opponent}
 
     def pose_of(self, name, now_ns):
         """(x, y, yaw, sigma) of a live track, or None."""
@@ -678,15 +615,20 @@ class Replay:
         return jobs
 
     def camera_batch(self, now_ns, items):
+        begin = time.perf_counter_ns()
         prediction = None if self.a.no_roi_tracking else self.track_prediction(now_ns)
         plans = {cid: self.planners[cid].plan(prediction, now_ns) for cid, _ in items}
         jobs = self.opponent_jobs(now_ns, items)
+        self.main_ms["plan"].append((time.perf_counter_ns() - begin) / 1e6)
         begin = time.perf_counter_ns()
-        futures = [(cid, row, self.pool.submit(self.process_frame, cid, row, plans[cid],
-                                               jobs.get(cid)))
-                   for cid, row in items]
-        results = [(cid, row, future.result()) for cid, row, future in futures]
+        outputs = self.pool.run([(cid, row, plans[cid], jobs.get(cid)) for cid, row in items])
+        results = [(cid, row, out) for (cid, row), out in zip(items, outputs)]
         self.batch_ms.append((time.perf_counter_ns() - begin) / 1e6)
+        begin = time.perf_counter_ns()
+        self.apply_results(now_ns, plans, jobs, results)
+        self.main_ms["apply"].append((time.perf_counter_ns() - begin) / 1e6)
+
+    def apply_results(self, now_ns, plans, jobs, results):
         for cid, row, result in results:
             timing = self.timing[cid]
             timing["reasons"][f"{plans[cid].mode}:{plans[cid].reason}"] += 1
@@ -702,6 +644,8 @@ class Replay:
                 self.planners[cid].report(bool(result["hits"]))
                 timing["tag_ms"].append(result["tag_ms"])
             timing["latency_ms"].append(result["latency_ms"])
+            for stage, value in result.get("stages", {}).items():
+                timing["stages"][stage].append(value)
             timing["decode_ms"].append(result["decode_ms"])
             timing["by_mode"][plan.mode].append(result["latency_ms"])
             if job is not None and job["plan"].mode != roi_tracker.IDLE:
@@ -970,9 +914,12 @@ class Replay:
         self.operator_box = operator_box
         if self.opponent_enabled:
             self.build_opponent_cameras()
-        self.sources = {cid: FrameSource(self.dataset / f"{cid}.mkv") for cid in self.cams}
-        workers = a.workers or len(self.cams)
-        self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+        started = time.monotonic()
+        specs = [self.worker_spec(cid) for cid in sorted(self.cams)]
+        self.pool = (POOLS["threads"](specs, a.workers or None) if a.parallel == "threads"
+                     else POOLS[a.parallel](specs))
+        self.background_build_s = self.pool.background_build_s()
+        self.pool_start_s = time.monotonic() - started
         wall_start = time.monotonic()
         next_report = self.t0
         with (out / "observations.jsonl").open("w") as self.out_obs, \
@@ -1000,9 +947,7 @@ class Replay:
                           f"{time.monotonic() - wall_start:7.1f} s", file=sys.stderr, flush=True)
                     next_report += 2_000_000_000
             self.drain(self.end_ns, force=True)
-        self.pool.shutdown()
-        for source in self.sources.values():
-            source.close()
+        self.pool.close()
         wall = time.monotonic() - wall_start
         with (out / "camera_frames.jsonl").open("w") as handle:
             for row in self.frame_order:
@@ -1013,24 +958,15 @@ class Replay:
         return status
 
     def build_opponent_cameras(self):
-        """Background per camera from the empty-arena clip; the only prior besides size."""
-        a = self.a
-        started = time.monotonic()
-        for cid, cam in self.cams.items():
-            source = FrameSource(a.camera_background / f"{cid}.mkv")
-            index = read_jsonl(a.camera_background / f"{cid}.jsonl")
+        """Geometry of each camera for the main thread's exclusion windows.
 
-            def frames():
-                for row in index[::a.background_stride]:
-                    yield source.read(int(row["index"]))
-            background = ClipBackground.from_frames(
-                frames(), threshold=a.background_threshold, alpha=a.background_alpha)
-            source.close()
+        The background models live in the camera workers.
+        """
+        for cid, cam in self.cams.items():
             self.opponent_cameras[cid] = OpponentCamera(
-                cid, self.models[cid], cam["R_world_optical"], cam["position_world"],
-                background, size_m=a.opponent_size, tag_size_m=TAG_BODY_M,
-                gate_m=a.opponent_gate_m)
-        self.background_build_s = time.monotonic() - started
+                cid, self.models[cid], cam["R_world_optical"], cam["position_world"], None,
+                size_m=self.a.opponent_size, tag_size_m=TAG_BODY_M,
+                gate_m=self.a.opponent_gate_m)
 
     # ---------------------------------------------------------------- reports
 
@@ -1114,12 +1050,29 @@ class Replay:
                 "latency_ms": summary(t["latency_ms"]),
                 "latency_ms_by_mode": {k: summary(v) for k, v in sorted(t["by_mode"].items())},
                 "decode_ms": summary(t["decode_ms"] + t["idle_decode_ms"]),
+                "stages_ms": {k: summary(v) for k, v in sorted(t["stages"].items())},
             }
         sim_seconds = (self.end_ns - self.t0) / 1e9
         frames = processed + idle
+        stages = collections.defaultdict(list)
+        for t in self.timing.values():
+            for stage, values in t["stages"].items():
+                stages[stage].extend(values)
+        stages["decode_ms"] = [v for t in self.timing.values() for v in t["decode_ms"]]
+        stages["decode_idle_ms"] = [v for t in self.timing.values() for v in t["idle_decode_ms"]]
+        stages["main_plan_ms"] = self.main_ms["plan"]
+        stages["main_apply_ms"] = self.main_ms["apply"]
+        stages["main_filter_publish_ms"] = self.main_ms["publish"]
         return {
-            "note": "latency_ms is wall time of detector + PnP per frame; decoding is excluded",
-            "workers": self.a.workers or len(self.cams),
+            "note": "latency_ms is wall time of detector + PnP + opponent per frame; decoding "
+                    "is excluded.  stages_ms: per busy frame (camera side) or per call "
+                    "(main_*: plan = ROI and opponent plans for one instant, apply = results "
+                    "into the filters for one instant, filter_publish = one 200 Hz tick)",
+            "parallel": self.a.parallel,
+            "workers": (self.a.workers or len(self.cams)) if self.a.parallel == "threads"
+            else (len(self.cams) if self.a.parallel == "processes" else 1),
+            "pool_start_s": getattr(self, "pool_start_s", None),
+            "stages_ms": {k: summary(v) for k, v in sorted(stages.items())},
             "wall_seconds": wall, "sim_seconds": sim_seconds,
             "frames_total": frames, "frames_processed": processed, "frames_idle": idle,
             "fps_total": frames / max(wall, 1e-9),

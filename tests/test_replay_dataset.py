@@ -229,6 +229,27 @@ class ReplayDataset(unittest.TestCase):
                 sys.stdout, sys.stderr = stdout, stderr
         return out
 
+    def test_threads_processes_and_one_thread_give_the_same_output(self):
+        def strip(path):
+            rows = []
+            for line in path.read_text().splitlines():
+                row = json.loads(line)
+                row.pop("replay_wall_ns", None)
+                rows.append(row)
+            return rows
+        outputs = {mode: self.run_replay(f"parallel_{mode}", "--parallel", mode)
+                   for mode in ("threads", "processes", "inline")}
+        base = strip(outputs["threads"] / "odometry.jsonl")
+        self.assertTrue(base)
+        for mode in ("processes", "inline"):
+            with self.subTest(mode=mode):
+                self.assertEqual(strip(outputs[mode] / "odometry.jsonl"), base)
+        timing = json.loads((outputs["processes"] / "timing.json").read_text())
+        self.assertEqual(timing["parallel"], "processes")
+        for stage in ("decode_ms", "detect_ms", "pnp_ms", "gain_ms", "background_update_ms",
+                      "main_filter_publish_ms"):
+            self.assertIn(stage, timing["stages_ms"])
+
     def test_the_opponent_is_tracked_from_the_operator_box(self):
         for gain in ("1.0", "0.6"):
             with self.subTest(gain=gain):
