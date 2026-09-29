@@ -191,6 +191,8 @@ def parse_args(argv=None):
     p.add_argument("--opponent-extent-plane", type=float, default=None,
                    help="height of the plane the silhouette extent is read on; "
                         "default half the body height")
+    p.add_argument("--silhouette-along-sigma", type=float, default=0.10,
+                   help="silhouette sigma along the camera ray = this * tan(incidence)")
     p.add_argument("--background-threshold", type=float, default=12.0)
     p.add_argument("--background-alpha", type=float, default=0.02)
     p.add_argument("--background-stride", type=int, default=3,
@@ -590,7 +592,8 @@ class Replay:
                         "stride": a.background_stride, "threshold": a.background_threshold,
                         "alpha": a.background_alpha, "size": tuple(a.opponent_size),
                         "tag_size": TAG_BODY_M, "gate_m": a.opponent_gate_m,
-                        "extent_plane_z": a.opponent_extent_plane}
+                        "extent_plane_z": a.opponent_extent_plane,
+                        "along_sigma_scale": a.silhouette_along_sigma}
         return {"camera_id": cid, "camera": self.cams[cid], "dataset": str(self.dataset),
                 "tags": self.tags, "calibration_version": self.version,
                 "pipeline": self.pipeline_kwargs, "transport_ns": self.transport_ns,

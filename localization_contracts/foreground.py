@@ -229,7 +229,8 @@ class SilhouetteObserver:
     def __init__(self, camera_model, R_world_camera, camera_position, *,
                  size_m=(0.9, 0.52, 0.483), estimator="extent", min_pixels=150,
                  reject_radius_m=0.6, pixel_step=3, zones=None, max_extent_m=1.8,
-                 extent_plane_z=None, trim_percentile=2.0, min_extent_fraction=0.9):
+                 extent_plane_z=None, trim_percentile=2.0, min_extent_fraction=0.9,
+                 along_sigma_scale=0.10):
         if estimator not in self.ESTIMATORS:
             raise ValueError(f"estimator must be one of {self.ESTIMATORS}")
         self.model = camera_model
@@ -255,6 +256,11 @@ class SilhouetteObserver:
         # the silhouettes on dataset 01 and 4.7 % on 03, all 0.2-0.7 m off
         # (P50 0.47 m); none within 0.1 m.  0 disables the check.
         self.min_extent_fraction = float(min_extent_fraction)
+        # sigma along the ray = along_sigma_scale * tan(incidence).  This
+        # error is a bias of the view (which heights form the near and far
+        # edge), the same frame after frame, so it does not average out over
+        # the 83 frames a second one camera sends; see the replay option.
+        self.along_sigma_scale = float(along_sigma_scale)
         self.last_reason = None
 
     # ---------------------------------------------------------------- model
@@ -383,7 +389,7 @@ class SilhouetteObserver:
                 or width < self.min_extent_fraction * self.width):
             return self._reject("blob_smaller_than_body")
 
-        along_sigma_scale = 0.10
+        along_sigma_scale = self.along_sigma_scale
         if self.estimator == "extent":
             flat = points
             guess = np.median(flat, axis=0)
