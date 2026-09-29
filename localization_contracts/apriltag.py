@@ -320,6 +320,7 @@ class PnpAprilTagObserver(AprilTagObserver):
 
         pnp = self._solve_pnp(image, d.tag_id, side)
         if pnp is None:
+            self.last_diagnostic["incidence_deg"] = math.degrees(incidence)
             return None
         T_arena_base, reproj, tilt, candidates = pnp
 
@@ -465,6 +466,7 @@ class PnpAprilTagObserver(AprilTagObserver):
         T_arena_camera[:3, 3] = self.t_arena_camera
         tag_points = np.asarray([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], dtype=np.float64)
         candidates = []
+        residuals = []
         for rvec, tvec in starts:
             rvec, tvec = cv2.solvePnPRefineLM(
                 object_points, image_pnp, self.K, distortion, rvec.copy(), tvec.copy()
@@ -484,6 +486,7 @@ class PnpAprilTagObserver(AprilTagObserver):
                 continue
             projected = self.camera_model.project(points_camera)
             reproj = float(np.sqrt(np.mean(np.sum((projected - image) ** 2, axis=1))))
+            residuals.append(reproj)
             # Refinement started from the ill-conditioned IPPE branch can walk
             # away entirely and land at a near-zero tilt with a huge residual.
             # Ordering by tilt first let those win and then killed the frame on
@@ -498,7 +501,9 @@ class PnpAprilTagObserver(AprilTagObserver):
             tilt = math.acos(alignment)
             candidates.append((tilt, reproj, T_arena_base))
         if not candidates:
-            return self._reject("no_physical_solution", side_px=side)
+            return self._reject("no_physical_solution", side_px=side,
+                                min_reprojection_px=min(residuals) if residuals else None,
+                                candidate_count=len(residuals))
         tilt, reproj, T_arena_base = min(candidates, key=lambda item: (item[0], item[1]))
         if tilt > self.max_planar_tilt_rad:
             return self._reject("nonplanar_pose", side_px=side,
