@@ -61,6 +61,7 @@ from localization_contracts.image_pipeline import OneCameraImagePipeline  # noqa
 from localization_contracts.marker_families import normalize_marker_family  # noqa: E402
 from localization_contracts.rover_filter import (  # noqa: E402
     AsyncObservationBuffer, ImmRoverFilter, measurement_from_observation,
+    observation_stamp_ns,
 )
 
 # Opponent cuboid as the operator sees it: 0.9 x 0.52 m, top at 0.483 m.
@@ -87,6 +88,8 @@ def parse_args(argv=None):
                    help="render stamp to arrival on the laptop, per frame")
     p.add_argument("--lidar-transport-ms", type=float, default=None,
                    help="scan stamp to arrival; defaults to --transport-ms")
+    p.add_argument("--line-time-ns", type=float, default=0.0,
+                   help="rolling-shutter line time; 0 for Gazebo, about 9500 for IMX219")
     p.add_argument("--processing-ms", type=float, default=0.0,
                    help="simulated detector+PnP cost between arrival and the filter")
     p.add_argument("--workers", type=int, default=0,
@@ -279,6 +282,7 @@ class Replay:
             base_z_tolerance_m=a.base_z_tolerance, max_incidence_deg=a.max_incidence_deg,
             pnp_ray_disagreement_m=a.pnp_ray_disagreement,
             min_edge_distance_px=a.min_edge_distance_px, xy_source=a.xy_source,
+            line_time_ns=a.line_time_ns,
         )
         self.pose_gates = pose_gates
         self.pipes = {
@@ -390,10 +394,11 @@ class Replay:
                 window = {m.stamp_ns for m in group}
                 remaining = []
                 for obs in self.pending_observations[name]:
-                    if obs.capture_time_ns not in window:
+                    stamp = observation_stamp_ns(obs)
+                    if stamp not in window:
                         remaining.append(obs)
                         continue
-                    ok = (obs.camera_id, obs.capture_time_ns) in taken
+                    ok = (obs.camera_id, stamp) in taken
                     self.record_observation(obs, ok, "fusion_accepted" if ok else "fusion_gate", now_ns)
                     if ok:
                         self.metrics[obs.camera_id]["tag_accepted"] += 1
@@ -677,6 +682,7 @@ class Replay:
             "max_incidence_deg": a.max_incidence_deg,
             "pnp_ray_disagreement_m": a.pnp_ray_disagreement,
             "min_edge_distance_px": a.min_edge_distance_px, "xy_source": a.xy_source,
+            "line_time_ns": a.line_time_ns,
             "publish_hz": a.publish_hz, "group_window_ms": a.group_window_ms,
             "coast_ms": a.coast_ms, "identity_max_age_s": a.identity_max_age_s,
             "lost_ms": a.lost_ms, "roi_min_px": a.roi_min_px, "roi_max_px": a.roi_max_px,

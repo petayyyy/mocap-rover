@@ -95,7 +95,7 @@ class PnpAprilTagObserver(AprilTagObserver):
                  plane_normal_world=(0.0, 0.0, 1.0),
                  tag_placement=None, inverted_base_z_m=0.225,
                  sigma_px_corner=None, sigma_plane_m=0.02,
-                 sigma_extrinsic_m=0.01):
+                 sigma_extrinsic_m=0.01, line_time_ns=0):
         super().__init__(config, float(K[0][0]), float(K[1][1]), float(K[0][2]), float(K[1][2]), quality_min)
         self.K = np.asarray(K, dtype=np.float64).reshape(3, 3)
         self.D = np.asarray(D, dtype=np.float64).reshape(-1)
@@ -136,6 +136,13 @@ class PnpAprilTagObserver(AprilTagObserver):
         # not, and pretending otherwise is what made the old fixed 4 mm
         # covariance reject good handoffs.
         self.sigma_px_corner = tuple(sigma_px_corner or ((60.0, 0.30), (30.0, 0.50), (0.0, 0.80)))
+        # Rolling shutter: row r of the frame is exposed r * line_time after
+        # the frame stamp.  The IMX219 reads a line in about 9.5 us, so the
+        # bottom of a 1232-row frame is 11.7 ms -- 13 cm at 11 m/s -- later
+        # than the top.  Gazebo renders a global shutter, hence 0 by default.
+        self.line_time_ns = float(line_time_ns)
+        if self.line_time_ns < 0:
+            raise ValueError("line_time_ns must be nonnegative")
         self.last_diagnostic = None
         self.R_arena_camera, self.t_arena_camera = self._transform(camera_pose)
         self.camera_model = camera_model or self._default_model(image_size)
@@ -379,6 +386,8 @@ class PnpAprilTagObserver(AprilTagObserver):
         if quality < self.quality_min:
             return self._reject("quality", **diagnostic)
 
+        row = float(image[:, 1].mean())
+        exposure_ns = int(d.capture_time_ns + round(row * self.line_time_ns))
         self.last_diagnostic = {"accepted": True, "reason": "accepted", **diagnostic}
         return Observation(
             SCHEMA_VERSION, d.camera_id, d.frame_seq,
@@ -393,6 +402,10 @@ class PnpAprilTagObserver(AprilTagObserver):
                 "yaw_rad": yaw, "yaw_sigma_rad": sigma_yaw,
                 "xy_sigma_m": float(math.sqrt(max(block[0, 0], block[1, 1]))),
                 "xy_source": self.xy_source,
+                # When the marker was actually exposed; the filter uses this,
+                # not the frame stamp and never the arrival time.
+                "exposure_time_ns": exposure_ns, "exposure_row_px": row,
+                "line_time_ns": self.line_time_ns,
                 "rotation_arena_base": T_arena_base[:3, :3].tolist(),
                 "pnp_candidate_count": candidates,
                 **diagnostic,

@@ -307,6 +307,29 @@ class IdealFisheyeCamera(unittest.TestCase):
                         result.pixel_features["yaw_rad"] - yaw, 2 * math.pi)), math.radians(1))
 
 
+class RollingShutter(unittest.TestCase):
+    """The marker is stamped when its rows were exposed, not at frame start."""
+
+    def test_the_exposure_time_follows_the_marker_row(self):
+        from localization_contracts.rover_filter import measurement_from_observation
+        camera, R = (9.0, 9.0, 2.9), ar.camera_rotation()
+        results = {}
+        for line_time in (0.0, 9500.0):
+            obs = observer(camera, R, line_time_ns=line_time)
+            result, _ = look(obs, camera, R, (9.4, 8.7))
+            self.assertIsNotNone(result, obs.last_diagnostic)
+            results[line_time] = result
+        row = results[9500.0].pixel_features["exposure_row_px"]
+        self.assertGreater(row, 0)
+        self.assertEqual(results[0.0].pixel_features["exposure_time_ns"], 100)
+        self.assertEqual(results[9500.0].pixel_features["exposure_time_ns"],
+                         100 + round(row * 9500.0))
+        stamps = {m.stamp_ns for m in measurement_from_observation(results[9500.0])}
+        self.assertEqual(stamps, {100 + round(row * 9500.0)})
+        # Only the stamp moves; the geometry is the same frame.
+        self.assertEqual(results[0.0].position_m, results[9500.0].position_m)
+
+
 class TagTransforms(unittest.TestCase):
     """Marker id 1 is mounted with R_base_tag = diag(1,-1,-1), facing down.
 

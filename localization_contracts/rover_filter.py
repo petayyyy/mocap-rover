@@ -62,14 +62,26 @@ class Measurement:
         return z, R
 
 
+def observation_stamp_ns(observation):
+    """When the observed feature was exposed.
+
+    ``pixel_features["exposure_time_ns"]`` carries the rolling-shutter row
+    correction when the observer knows the line time; otherwise the frame's
+    capture stamp.  Arrival time is never a measurement time.
+    """
+    features = observation.pixel_features or {}
+    return int(features.get("exposure_time_ns", observation.capture_time_ns))
+
+
 def measurement_from_observation(observation, source=None):
     """Adapt a marker Observation into a position + yaw pair."""
     block = covariance_matrix(observation.covariance_m2, 2)
     camera = source or observation.camera_id
     identity = (None if observation.marker_id is None
                 else f"{observation.marker_family}:{observation.marker_id}")
+    stamp = observation_stamp_ns(observation)
     out = [Measurement(
-        int(observation.capture_time_ns), POSITION,
+        stamp, POSITION,
         (float(observation.position_m[0]), float(observation.position_m[1])),
         tuple(block.reshape(-1)), camera, identity, True,
         float(observation.quality),
@@ -78,7 +90,7 @@ def measurement_from_observation(observation, source=None):
     if "yaw_rad" in features and observation.pose_6d_valid:
         sigma = float(features.get("yaw_sigma_rad", math.radians(8.0)))
         out.append(Measurement(
-            int(observation.capture_time_ns), YAW_ONLY,
+            stamp, YAW_ONLY,
             (float(features["yaw_rad"]),), (sigma ** 2,), camera,
             identity, False, float(observation.quality),
         ))
