@@ -47,11 +47,12 @@ class Crossing(unittest.TestCase):
                 tag_fix, opponent_fix = a, b
             tag.apply_group([fix(t_ms, tag_fix, "blob")])
             opponent.apply_group([fix(t_ms, opponent_fix, "blob")])
-            tag.publish(int(t_ms * MS))
-            opponent.publish(int(t_ms * MS))
-            guard.observe_tracks(t_ms * MS, tag.x[:2], opponent.x[:2])
+            # What the guard sees is what is published: each track at t.
+            tag_xy = np.array([tag.publish(int(t_ms * MS))["state"][k] for k in "xy"])
+            opponent_xy = np.array([opponent.publish(int(t_ms * MS))["state"][k] for k in "xy"])
+            guard.observe_tracks(t_ms * MS, tag_xy, opponent_xy)
             if t_ms > 1800 and step % 8 == 0:       # the marker is read again
-                if guard.marker_says_swap(t_ms * MS, a, tag.x[:2], opponent.x[:2]):
+                if guard.marker_says_swap(t_ms * MS, a, tag_xy, opponent_xy):
                     guard.swap(t_ms * MS, tag, opponent, a)
                     swaps.append(t_ms)
                 tag.apply_group([fix(t_ms, a, "marker", "tag36h11:0", True, 0.01)])
@@ -66,7 +67,8 @@ class Crossing(unittest.TestCase):
         self.assertEqual([e["event"] for e in guard.events], ["encounter", "swap"])
         a, b = paths(180 * 12.5 / 1000)
         # Each estimate ends on the rover it belongs to; roles stayed put.
-        self.assertLess(np.linalg.norm(tag.x[:2] - a), 0.1)
+        final = tag.publish(int(180 * 12.5 * MS))["state"]
+        self.assertLess(np.linalg.norm(np.array([final["x"], final["y"]]) - a), 0.1)
         self.assertEqual(tag.identity, "tag36h11:0")
         self.assertEqual(opponent.identity, "operator:opponent")
 

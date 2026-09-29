@@ -437,7 +437,7 @@ class Replay:
         f = self.filters["tag_rover"]
         if not f.initialized or f.tracking_state(now_ns) == "LOST":
             return None
-        state, covariance = f.x, f.P
+        state, covariance, _ = f.state_at(now_ns)
         return (float(state[0]), float(state[1]),
                 float(math.sqrt(max(covariance[0, 0], covariance[1, 1]))))
 
@@ -562,7 +562,7 @@ class Replay:
         f = self.filters.get(name)
         if f is None or not f.initialized or f.tracking_state(now_ns) == "LOST":
             return None
-        state, covariance = f.x, f.P
+        state, covariance, _ = f.state_at(now_ns)
         return (float(state[0]), float(state[1]), float(state[YAW]),
                 float(math.sqrt(max(covariance[0, 0], covariance[1, 1]))))
 
@@ -781,8 +781,7 @@ class Replay:
                                                "top_slab_m": self.a.opponent_lidar_slab}}
         bodies = {name: self.lidar_body(name, parsed["stamp_ns"]) for name in self.filters}
         for name, track in self.filters.items():
-            state = track.x if track.initialized else None
-            covariance = track.P if state is not None else None
+            state, covariance, _ = track.state_at(now_ns)
             tracking = track.tracking_state(parsed["stamp_ns"])
             out = {"object_id": name, "stamp_ns": parsed["stamp_ns"], "wall_ns": int(now_ns),
                    "replay_wall_ns": time.monotonic_ns(), "tracking_state": tracking}
@@ -846,10 +845,11 @@ class Replay:
         if (a.lidar_exclusion_max_sigma < 0 or f is None or not f.initialized
                 or f.tracking_state(stamp_ns) not in ("TRACKING", "COASTING")):
             return None
-        state, covariance = f.x, f.P
+        state, covariance, _ = f.state_at(stamp_ns)
         if math.sqrt(max(covariance[0, 0], covariance[1, 1])) > a.lidar_exclusion_max_sigma:
             return None
-        dt = (int(stamp_ns) - int(f.stamp_ns)) / 1e9
+        # A scan older than the filter's last measurement: back along the velocity.
+        dt = (int(stamp_ns) - max(int(stamp_ns), int(f.stamp_ns))) / 1e9
         x = float(state[0] + state[2] * dt)
         y = float(state[1] + state[3] * dt)
         length, width = (TAG_BODY_M if name == "tag_rover" else a.opponent_size)[:2]

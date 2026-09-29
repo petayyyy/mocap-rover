@@ -669,17 +669,38 @@ class ImmRoverFilter:
             return COASTING
         return TRACKING
 
+    def state_at(self, stamp_ns):
+        """``(x, P, mu)`` predicted to ``stamp_ns`` without touching the filter.
+
+        Looking at the track must not change it.  When publishing advanced the
+        filter to every 200 Hz tick, each camera measurement -- captured 15 ms
+        before it arrives -- was older than the filter and went through the
+        rewind-and-replay path, and the IMM mixed its models once per tick, so
+        the estimate depended on the publication rate.  Now the filter's own
+        time is the last measurement's; publication predicts a copy.
+        """
+        if self.xs is None:
+            return None, None, self.mu.copy()
+        stamp_ns = int(stamp_ns)
+        if stamp_ns <= self.stamp_ns:
+            return self.x, self.P, self.mu.copy()
+        saved = (self.xs, self.Ps, self.stamp_ns)
+        try:
+            self.predict_to(stamp_ns)
+            return self.x, self.P, self.mu.copy()
+        finally:
+            self.xs, self.Ps, self.stamp_ns = saved
+
     def publish(self, stamp_ns):
-        """Propagate to ``stamp_ns`` and report; never invents a measurement."""
+        """Report the track predicted to ``stamp_ns``; never invents a measurement."""
         stamp_ns = int(stamp_ns)
         if self.xs is None:
             return {"valid": False, "tracking_state": LOST, "stamp_ns": stamp_ns,
                     "state": None, "covariance": None, "measurement_age_ms": None,
                     "identity_age_ms": None, "sources": (), "identity": None,
                     "model_probabilities": [float(v) for v in self.mu]}
-        self.predict_to(stamp_ns)
+        combined, covariance, _ = self.state_at(stamp_ns)
         state = self.tracking_state(stamp_ns)
-        combined = self.x
         age = stamp_ns - (stamp_ns if self.last_measurement_ns is None else self.last_measurement_ns)
         return {
             "valid": state in (TRACKING, COASTING),
@@ -690,7 +711,7 @@ class ImmRoverFilter:
                 "vx": float(combined[VX]), "vy": float(combined[VY]),
                 "yaw": float(combined[YAW]), "yaw_rate": float(combined[OMEGA]),
             },
-            "covariance": [[float(v) for v in row] for row in self.P],
+            "covariance": [[float(v) for v in row] for row in covariance],
             "measurement_age_ms": age / 1e6,
             "identity_age_ms": (stamp_ns - self.last_identity_ns) / 1e6
             if self.last_identity_ns is not None else None,

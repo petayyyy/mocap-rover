@@ -204,6 +204,17 @@ class TrackingStates(unittest.TestCase):
                                                   identity=None, confirms=False)])
         self.assertEqual([m.kind for m in taken], [POSITION])
 
+    def test_publishing_does_not_change_the_filter(self):
+        before = (self.filter.x.copy(), self.filter.P.copy(), self.filter.stamp_ns)
+        for t in (5, 10, 15, 20):
+            self.filter.publish(t * MS)
+        np.testing.assert_array_equal(self.filter.x, before[0])
+        np.testing.assert_array_equal(self.filter.P, before[1])
+        self.assertEqual(self.filter.stamp_ns, before[2])
+        # A measurement captured before the last tick is not "late".
+        self.filter.apply_group([position(12, 3.01, 3.0)])
+        self.assertEqual(self.filter.out_of_sequence, 0)
+
     def test_an_uninitialised_filter_reports_lost_not_a_pose(self):
         published = ImmRoverFilter().publish(0)
         self.assertEqual(published["tracking_state"], LOST)

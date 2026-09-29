@@ -194,8 +194,14 @@ class FastSweep(unittest.TestCase):
         self.assertEqual(self.sim.filter.identity, "tag36h11:0")
 
     def test_late_cameras_are_replayed_not_discarded(self):
-        self.assertGreater(self.sim.filter.out_of_sequence, 0)
-        self.assertEqual(self.sim.filter.too_old, 0)
+        # Every measurement that arrived, however late, was either applied or
+        # gated; none was dropped as too old.  (Rewind-and-replay itself is
+        # covered by test_rover_filter.OutOfSequence: since publication no
+        # longer advances the filter, a camera 95 ms late is only out of
+        # sequence when a later capture was applied first.)
+        f = self.sim.filter
+        self.assertEqual(f.too_old, 0)
+        self.assertEqual(f.accepted + f.rejected, 2 * self.sim.accepted_observations)
 
     def test_every_published_state_is_labelled_honestly(self):
         for item in self.sim.published:
