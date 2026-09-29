@@ -225,7 +225,7 @@ class SilhouetteObserver:
 
     def __init__(self, camera_model, R_world_camera, camera_position, *,
                  size_m=(0.9, 0.52, 0.483), estimator="extent", min_pixels=150,
-                 reject_radius_m=0.6, pixel_step=3, zones=None, max_extent_m=1.6,
+                 reject_radius_m=0.6, pixel_step=3, zones=None, max_extent_m=1.8,
                  extent_plane_z=None, trim_percentile=2.0):
         if estimator not in self.ESTIMATORS:
             raise ValueError(f"estimator must be one of {self.ESTIMATORS}")
@@ -301,13 +301,16 @@ class SilhouetteObserver:
             if area < self.min_pixels:
                 continue
             bx, by, bw, bh = (int(v) for v in stats[label, :4])
-            ys, xs = np.nonzero(labels[by:by + bh, bx:bx + bw] == label)
             step = self.pixel_step
-            pick = (ys % step == 0) & (xs % step == 0)
-            pixels = np.column_stack([xs[pick] + bx + x0, ys[pick] + by + y0]).astype(float)
+            # Sample on a grid by slicing: nonzero over the whole component
+            # and a modulo filter cost more than everything after it.
+            ys, xs = np.nonzero(labels[by:by + bh:step, bx:bx + bw:step] == label)
+            pixels = np.column_stack([xs * step + bx + x0, ys * step + by + y0]).astype(float)
             if len(pixels) < 10:
                 continue
-            points, valid = pixels_to_plane(self.model, self.R, self.C, pixels, self.top)
+            # extent reads everything on the half-height plane; the others on the top.
+            plane = self.extent_plane_z if self.estimator == "extent" else self.top
+            points, valid = pixels_to_plane(self.model, self.R, self.C, pixels, plane)
             points = points[valid, :2]
             if len(points) < 10:
                 continue
@@ -329,15 +332,18 @@ class SilhouetteObserver:
         if touches:
             # The window cut the body: its outline is the window's, not the rover's.
             return self._reject("blob_clipped_by_window")
-        contour_mask = (labels[by:by + bh, bx:bx + bw] == label).astype(np.uint8)
-        contours, _ = cv2.findContours(contour_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        outline = max(contours, key=len).reshape(-1, 2).astype(float) + [bx + x0, by + y0]
-        hull_px = cv2.convexHull(outline.astype(np.float32)).reshape(-1, 2)
-        edge, valid = pixels_to_plane(self.model, self.R, self.C, outline[::2], self.top)
-        edge = edge[valid, :2]
-        if len(edge) < 8:
-            return self._reject("outline_off_plane")
-        observed = cv2.convexHull(edge.astype(np.float32)).reshape(-1, 2).astype(float)
+        hull_px = cv2.convexHull(pixels_all.astype(np.float32)).reshape(-1, 2)
+        observed = None
+        if self.estimator == "fit":
+            contour_mask = (labels[by:by + bh, bx:bx + bw] == label).astype(np.uint8)
+            contours, _ = cv2.findContours(contour_mask, cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_NONE)
+            outline = max(contours, key=len).reshape(-1, 2).astype(float) + [bx + x0, by + y0]
+            edge, valid = pixels_to_plane(self.model, self.R, self.C, outline[::2], self.top)
+            edge = edge[valid, :2]
+            if len(edge) < 8:
+                return self._reject("outline_off_plane")
+            observed = cv2.convexHull(edge.astype(np.float32)).reshape(-1, 2).astype(float)
 
         # Orientation and size from the principal axes of the blob.
         centred = points - points.mean(axis=0)
@@ -352,9 +358,7 @@ class SilhouetteObserver:
 
         along_sigma_scale = 0.10
         if self.estimator == "extent":
-            flat, ok = pixels_to_plane(self.model, self.R, self.C, pixels_all,
-                                       self.extent_plane_z)
-            flat = flat[ok, :2]
+            flat = points
             guess = np.median(flat, axis=0)
             radial = guess - self.C[:2]
             norm = float(np.linalg.norm(radial))
