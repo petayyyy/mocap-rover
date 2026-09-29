@@ -587,6 +587,13 @@ class ImmRoverFilter:
         for measurement in group:
             weight = self._huber_weight(measurement) if robust else 1.0
             ok, model_likelihood = self._apply_one(measurement, weight)
+            if not ok and measurement.kind == YAW_ONLY and measurement.identity is not None:
+                # A marker's heading is the reference.  If the track's yaw has
+                # drifted or locked the wrong way round (a velocity heading
+                # taken for the reverse direction), the gate would refuse the
+                # very measurement that can correct it, forever: reset instead.
+                self._reset_yaw(measurement)
+                ok, model_likelihood = True, np.ones(len(self.models))
             if not ok:
                 continue
             applied = True
@@ -623,6 +630,15 @@ class ImmRoverFilter:
             self.applied.append((min(m.stamp_ns for m in group), tuple(group)))
             self._push_history()
         return applied_measurements
+
+    def _reset_yaw(self, measurement):
+        z, R = measurement.as_arrays()
+        for state, covariance in zip(self.xs, self.Ps):
+            state[YAW] = wrap(float(z[0]))
+            covariance[YAW, :] = 0.0
+            covariance[:, YAW] = 0.0
+            covariance[YAW, YAW] = float(R[0, 0])
+        self.yaw_resets = getattr(self, "yaw_resets", 0) + 1
 
     def _heading_from_velocity(self):
         if self.heading_after_ns <= 0 or self.stamp_ns is None:

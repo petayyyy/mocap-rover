@@ -218,6 +218,14 @@ class HeadingFromVelocity(unittest.TestCase):
         self.assertLess(abs(published["state"]["yaw"]), math.radians(3))
         self.assertLess(published["yaw_age_ms"], 20)
 
+    def test_a_marker_heading_undoes_a_yaw_locked_the_wrong_way(self):
+        f = ImmRoverFilter()
+        f.apply_group([position(0, 2.0, 3.0), yaw(0, math.pi, sigma=math.radians(1))])
+        for step in range(1, 30):                    # tight around the wrong yaw
+            f.apply_group([yaw(step * 12, math.pi, sigma=math.radians(1))])
+        f.apply_group([position(400, 2.0, 3.0), yaw(400, 0.0)])
+        self.assertLess(abs(f.publish(400 * MS)["state"]["yaw"]), math.radians(3))
+
     def test_disabled_the_yaw_stays_where_the_marker_left_it(self):
         published = self.drive(heading_after_ms=0)
         self.assertGreater(abs(published["state"]["yaw"]), 0.3)
