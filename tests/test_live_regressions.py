@@ -180,6 +180,26 @@ class EstimatorRegressions(unittest.TestCase):
         )
         self.assertFalse(localized["yaw_valid"])
 
+    def test_cuboid_box_is_read_through_the_fisheye_lens(self):
+        # The IMX219 calibration: ideal equidistant fisheye, D = [0, 0, 0, 0].
+        from localization_contracts.camera_model import CameraModel
+        from localization_contracts.cuboid import localize_box
+
+        c = {"K": [734.5, 0, 820, 0, 734.5, 616, 0, 0, 1], "D": [0.0] * 4,
+             "distortion_model": "fisheye", "image_size": [1640, 1232],
+             "position_world": [3, 6, 2.9],
+             "R_world_optical": [[0, -1, 0], [-1, 0, 0], [0, 0, -1]]}
+        model = CameraModel.from_config(c)
+        pts = np.array([[x, y, z] for x in (-0.45, 0.45) for y in (-0.26, 0.26)
+                        for z in (0, 0.483)])
+        c0, s0 = np.cos(0.4), np.sin(0.4)
+        world = pts @ np.array([[c0, -s0, 0], [s0, c0, 0], [0, 0, 1]]).T + [5.2, 7.8, 0]
+        uv = model.project((world - np.array(c["position_world"])) @ np.array(c["R_world_optical"]))
+        box = np.r_[uv.min(axis=0), uv.max(axis=0)]
+        localized = localize_box(box, c, dimensions=(0.9, 0.52, 0.483))
+        self.assertLess(np.linalg.norm(np.array(localized["position_m"][:2]) - [5.2, 7.8]), 0.02)
+        self.assertLess(localized["box_fit_rms_px"], 1.0)
+
     def test_printed_marker_axes_match_configured_tag_frame(self):
         import xml.etree.ElementTree as ET
         from pathlib import Path
