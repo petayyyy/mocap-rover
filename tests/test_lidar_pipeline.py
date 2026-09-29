@@ -8,8 +8,8 @@ import numpy as np
 
 import lidar_render as lr
 from localization_contracts.lidar_pipeline import (
-    ArenaLidar, LidarCluster, StaticVoxelMap, measurement_from_cluster,
-    parse_laser_scan,
+    ArenaLidar, LidarCluster, RangeBackground, StaticVoxelMap, fit_floor,
+    measurement_from_cluster, parse_laser_scan, sensor_level_points,
 )
 from localization_contracts.rover_filter import POSITION
 
@@ -255,6 +255,88 @@ class Background(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerRayBackground(unittest.TestCase):
+    """Range per ray, the way the real Airy pipeline subtracts the arena."""
+
+    CRATE = ((7.0, 6.0, 0.25), (0.6, 0.6, 0.5))
+
+    def test_a_learned_background_removes_floor_and_a_static_obstacle(self):
+        empty = [lr.render(None, extra_boxes=[self.CRATE])["ranges"] for _ in range(3)]
+        background = RangeBackground.build(empty)
+        unit = lidar(range_background=background)
+        scan = unit.scan_to_arena(lr.render((8.2, 6.0), extra_boxes=[self.CRATE]))
+        near_crate = np.linalg.norm(scan.points[:, :2] - np.array([7.0, 6.0]), axis=1) < 0.45
+        self.assertEqual(int(near_crate.sum()), 0)
+        # Nothing but the rover survives: every return is on it.
+        self.assertLess(float(np.max(np.linalg.norm(scan.points[:, :2] - [8.2, 6.0], axis=1))), 0.8)
+        cluster = unit.detect(scan.points, (8.2, 6.0), 0.05, 0.5, 0)
+        self.assertIsNotNone(cluster, unit.rejections)
+        self.assertLess(math.hypot(cluster.x - 8.2, cluster.y - 6.0), 0.06)
+
+    def test_the_margin_follows_the_spread_of_each_ray(self):
+        grids = [np.full((2, 3), 5.0), np.full((2, 3), 5.0)]
+        grids[1][0, 0] = 4.0                    # a wandering grazing ray
+        background = RangeBackground.build(grids, percentile=80, min_hits=1)
+        probe = np.full((2, 3), 4.7)
+        mask = background.foreground(probe)
+        self.assertFalse(mask[0, 0])            # inside that ray's 4 sigma
+        self.assertTrue(mask[1, 1])             # 0.3 m nearer than a steady ray
+
+    def test_a_ray_never_seen_empty_reports_nothing(self):
+        grids = [np.array([[5.0, np.inf]]), np.array([[5.0, np.inf]])]
+        background = RangeBackground.build(grids)
+        self.assertEqual(background.foreground(np.array([[1.0, 1.0]])).tolist(), [[True, False]])
+
+    def test_a_background_survives_a_round_trip(self):
+        import tempfile
+        from pathlib import Path
+        background = RangeBackground.build([lr.render(None)["ranges"]] * 2, min_margin_m=0.2)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bg.npz"
+            background.save(path)
+            again = RangeBackground.load(path)
+        np.testing.assert_array_equal(again.threshold, background.threshold)
+        self.assertEqual(again.min_margin_m, 0.2)
+
+
+class FloorFit(unittest.TestCase):
+    """fit_floor checks the tool, not the world: a known plane must come back."""
+
+    @staticmethod
+    def plane(tilt_deg, height, azimuth_deg=30.0, n=20000, seed=4):
+        rng = np.random.default_rng(seed)
+        xy = rng.uniform(-6, 6, (n, 2))
+        tilt, azimuth = math.radians(tilt_deg), math.radians(azimuth_deg)
+        normal = np.array([math.sin(tilt) * math.cos(azimuth),
+                           math.sin(tilt) * math.sin(azimuth), math.cos(tilt)])
+        z = -(height + normal[0] * xy[:, 0] + normal[1] * xy[:, 1]) / normal[2]
+        points = np.column_stack([xy, z + rng.normal(0, 0.005, n)])
+        wall = np.column_stack([np.full(3000, 5.9), rng.uniform(-6, 6, 3000),
+                                rng.uniform(-height, -height + 0.4, 3000)])
+        return np.vstack([points, wall]), normal
+
+    def test_a_two_degree_tilt_is_recovered(self):
+        points, normal = self.plane(2.0, 2.75)
+        fit = fit_floor(points, expected_height=2.75)
+        self.assertAlmostEqual(fit.tilt_deg, 2.0, delta=0.05)
+        self.assertAlmostEqual(fit.height_m, 2.75, delta=0.01)
+        self.assertGreater(float(np.dot(fit.normal, normal)), math.cos(math.radians(0.05)))
+        self.assertLess(fit.residual_p95_m, 0.015)
+        self.assertGreater(min(fit.span_m), 3.0)
+
+    def test_a_level_ray_cast_floor_is_level(self):
+        parsed = lr.render(None)
+        fit = fit_floor(sensor_level_points(parsed, lr.SENSOR_ROTATION),
+                        expected_height=float(lr.SENSOR_POSITION[2]))
+        self.assertLess(fit.tilt_deg, 0.1)
+        self.assertAlmostEqual(fit.height_m, 2.75, delta=0.01)
+
+    def test_a_plane_steeper_than_the_limit_is_refused(self):
+        points, _ = self.plane(15.0, 2.75)
+        with self.assertRaises(ValueError):
+            fit_floor(points, expected_height=2.75, max_tilt_deg=10.0)
 
 
 class DefaultsAreNotCopied(unittest.TestCase):

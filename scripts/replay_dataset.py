@@ -140,6 +140,8 @@ def parse_args(argv=None):
     p.add_argument("--lidar-background", default=None,
                    help="voxel map JSON; config/lidar_background.json when present")
     p.add_argument("--no-lidar-background", action="store_true")
+    p.add_argument("--lidar-range-background", type=Path, default=None,
+                   help="per-ray RangeBackground npz from scripts/build_lidar_background.py")
     a = p.parse_args(argv)
     if a.seconds < 0:
         p.error("--seconds must be nonnegative")
@@ -350,11 +352,15 @@ class Replay:
         elif a.lidar_background and not a.no_lidar_background:
             raise SystemExit(f"no lidar background at {path}")
         self.lidar_background_path = str(path) if background is not None else None
+        range_background = None
+        if a.lidar_range_background is not None:
+            range_background = lidar_pipeline.RangeBackground.load(a.lidar_range_background)
         return lidar_pipeline.ArenaLidar(
             lidar_config["position_world"], lidar_config["R_world_sensor"],
             z_band=tuple(a.lidar_z_band), sweep_duration_s=a.lidar_sweep_s,
             max_useful_radius_m=a.lidar_max_radius, max_extent_m=a.lidar_max_extent,
-            min_points=a.lidar_min_points, background=background)
+            min_points=a.lidar_min_points, background=background,
+            range_background=range_background)
 
     # ------------------------------------------------------------ filter side
 
@@ -693,6 +699,8 @@ class Replay:
             "lidar_topic": (self.cfg.get("lidar") or {}).get("topic") if self.lidar else None,
             "lidar_max_radius_m": a.lidar_max_radius, "lidar_sweep_s": a.lidar_sweep_s,
             "lidar_background": getattr(self, "lidar_background_path", None),
+            "lidar_range_background": (str(a.lidar_range_background)
+                                       if a.lidar_range_background else None),
             "camera_policy": "asynchronous_group_window",
             "covariance_model": "ray_plane_anisotropic_v2",
             "opponent_enabled": False,

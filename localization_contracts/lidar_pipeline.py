@@ -101,7 +101,8 @@ class ArenaLidar:
                  max_extent_m=DEFAULT_MAX_EXTENT_M, min_extent_m=0.10, max_z_m=0.45,
                  sigma_range_m=0.02, sigma_shape_m=0.01,
                  top_slab_m=0.03, trim_percentile=2.0, trim_min_points=20,
-                 max_useful_radius_m=DEFAULT_MAX_USEFUL_RADIUS_M, background=None):
+                 max_useful_radius_m=DEFAULT_MAX_USEFUL_RADIUS_M, background=None,
+                 range_background=None):
         self.position = np.asarray(sensor_position, dtype=float).reshape(3)
         self.rotation = np.asarray(sensor_rotation, dtype=float).reshape(3, 3)
         self.z_band = (float(z_band[0]), float(z_band[1]))
@@ -131,6 +132,10 @@ class ArenaLidar:
         # without anything needing to be retuned.
         self.max_useful_radius_m = float(max_useful_radius_m)
         self.background = background
+        # Per-ray empty-arena ranges (RangeBackground).  Applied to the
+        # organized grid before it becomes points, so floor and walls leave
+        # at the ray where they are cheapest to recognise.
+        self.range_background = range_background
         self.scans = 0
         self.detections = 0
         self.rejections = {}
@@ -146,6 +151,15 @@ class ArenaLidar:
         valid = (np.isfinite(ranges)
                  & (ranges > parsed["range_min"])
                  & (ranges < parsed["range_max"]))
+        # The footprint model needs the sensor's real angular pitch: the
+        # constants below are the L2's, and the Airy is three times finer in
+        # azimuth.  An organized grid states its own pitch.
+        if len(azimuth) > 1:
+            self.azimuth_step_rad = float(abs(np.median(np.diff(azimuth))))
+        if len(elevation) > 1:
+            self.elevation_step_rad = float(abs(np.median(np.diff(elevation))))
+        if self.range_background is not None:
+            valid &= self.range_background.foreground(ranges)
         rows, columns = np.nonzero(valid)
         if rows.size == 0:
             return Scan(np.empty((0, 3)), np.empty(0, dtype=np.int64),
@@ -219,8 +233,10 @@ class ArenaLidar:
         height = max(self.position[2] - float(surface_z), 1e-3)
         slant = math.hypot(distance, height)
         cos_theta = max(height / slant, 1e-3)
-        radial = height / cos_theta ** 2 * self.ELEVATION_STEP_RAD
-        tangential = slant * self.AZIMUTH_STEP_RAD
+        elevation_step = getattr(self, "elevation_step_rad", self.ELEVATION_STEP_RAD)
+        azimuth_step = getattr(self, "azimuth_step_rad", self.AZIMUTH_STEP_RAD)
+        radial = height / cos_theta ** 2 * elevation_step
+        tangential = slant * azimuth_step
         return float(max(radial, tangential))
 
     def _clusters(self, points, cell=None):
@@ -485,3 +501,212 @@ class StaticVoxelMap:
         out.voxels = {tuple(int(v) for v in key) for key in data["voxels"]}
         out._rebuild()
         return out
+
+
+class RangeBackground:
+    """Empty-arena range and spread for every ray of the organized grid.
+
+    Subtracting occupancy seen from above cannot work for a ceiling lidar:
+    the empty floor occupies every cell, and the rover would be erased with
+    it.  What changes when a rover arrives is the range along each ray, so
+    that is what is stored -- one distance and one spread per (channel,
+    azimuth) ray.  A return is foreground when it comes back closer than the
+    background by ``max(min_margin_m, sigma_factor * sigma)``: grazing rays
+    wander more from revolution to revolution and get a wider margin.
+
+    Built from a high percentile, not the mean, so a person crossing during
+    the capture does not pull the floor closer.  Rays seen fewer than
+    ``min_hits`` times have no background and never report foreground.
+    The same principle runs on the real Airy in br_lidar/airy_py/background.py.
+    """
+
+    def __init__(self, distance, sigma, seen, *, min_margin_m=0.12, sigma_factor=4.0,
+                 floor=None):
+        self.distance = np.asarray(distance, dtype=np.float32)
+        self.sigma = np.asarray(sigma, dtype=np.float32)
+        self.seen = np.asarray(seen, dtype=bool)
+        if not (self.distance.shape == self.sigma.shape == self.seen.shape):
+            raise ValueError("distance, sigma and seen must share one grid shape")
+        self.min_margin_m = float(min_margin_m)
+        self.sigma_factor = float(sigma_factor)
+        self.floor = floor
+        self.threshold = np.where(
+            self.seen,
+            self.distance - np.maximum(self.min_margin_m, self.sigma_factor * self.sigma),
+            0.0).astype(np.float32)
+
+    @classmethod
+    def build(cls, grids, percentile=80.0, min_hits=None, **kwargs):
+        """From organized range grids of the empty arena; 0/inf/nan = no return."""
+        data = np.stack([np.asarray(g, dtype=np.float32) for g in grids])
+        if data.ndim != 3 or len(data) == 0:
+            raise ValueError("need at least one 2-D range grid")
+        valid = np.isfinite(data) & (data > 0)
+        hits = valid.sum(axis=0)
+        if min_hits is None:
+            min_hits = max(1, int(math.ceil(0.5 * len(data))))
+        masked = np.where(valid, data, np.nan)
+        with np.errstate(all="ignore"):
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                distance = np.nanpercentile(masked, float(percentile), axis=0)
+                sigma = np.nanstd(masked, axis=0)
+        seen = hits >= int(min_hits)
+        distance = np.where(seen, np.nan_to_num(distance), 0.0)
+        sigma = np.where(seen, np.nan_to_num(sigma), 0.0)
+        return cls(distance, sigma, seen, **kwargs)
+
+    def foreground(self, ranges):
+        """Boolean grid: which returns are closer than the empty arena."""
+        ranges = np.asarray(ranges)
+        if ranges.shape != self.threshold.shape:
+            raise ValueError(f"scan grid {ranges.shape} does not match background "
+                             f"{self.threshold.shape}")
+        with np.errstate(invalid="ignore"):
+            return (self.threshold > 0) & np.isfinite(ranges) & (ranges < self.threshold)
+
+    def save(self, path):
+        data = dict(distance=self.distance, sigma=self.sigma, seen=self.seen,
+                    min_margin_m=self.min_margin_m, sigma_factor=self.sigma_factor)
+        if self.floor is not None:
+            data.update(self.floor.to_arrays())
+        np.savez_compressed(path, **data)
+
+    @classmethod
+    def load(cls, path, **overrides):
+        with np.load(path, allow_pickle=False) as d:
+            floor = FloorFit.from_arrays(d) if "floor_normal" in d.files else None
+            kwargs = dict(min_margin_m=float(d["min_margin_m"]),
+                          sigma_factor=float(d["sigma_factor"]))
+            kwargs.update(overrides)
+            return cls(d["distance"], d["sigma"], d["seen"], floor=floor, **kwargs)
+
+    def summary(self):
+        d, s = self.distance[self.seen], self.sigma[self.seen]
+        return {"rays": int(self.seen.size), "rays_with_background": int(self.seen.sum()),
+                "distance_m": [float(d.min()), float(d.max())] if d.size else None,
+                "sigma_p50_mm": float(np.median(s) * 1000) if s.size else None,
+                "sigma_p95_mm": float(np.percentile(s, 95) * 1000) if s.size else None,
+                "min_margin_m": self.min_margin_m, "sigma_factor": self.sigma_factor}
+
+
+@dataclass(frozen=True)
+class FloorFit:
+    """Floor plane in the lidar's level frame: ``normal . p + height = 0``."""
+
+    normal: tuple
+    height_m: float
+    tilt_deg: float
+    inlier_fraction: float
+    residual_p95_m: float
+    span_m: tuple
+
+    def to_arrays(self):
+        return dict(floor_normal=np.asarray(self.normal, dtype=float),
+                    floor_height_m=np.float64(self.height_m),
+                    floor_tilt_deg=np.float64(self.tilt_deg),
+                    floor_inlier_fraction=np.float64(self.inlier_fraction),
+                    floor_residual_p95_m=np.float64(self.residual_p95_m),
+                    floor_span_m=np.asarray(self.span_m, dtype=float))
+
+    @classmethod
+    def from_arrays(cls, d):
+        return cls(tuple(float(v) for v in d["floor_normal"]), float(d["floor_height_m"]),
+                   float(d["floor_tilt_deg"]), float(d["floor_inlier_fraction"]),
+                   float(d["floor_residual_p95_m"]),
+                   tuple(float(v) for v in d["floor_span_m"]))
+
+
+def fit_floor(points, expected_height, *, max_tilt_deg=10.0, height_tolerance=0.5,
+              distance_threshold=0.03, min_span=3.0, iterations=400, seed=0):
+    """Floor plane under a ceiling lidar: constrained RANSAC, then SVD.
+
+    ``points`` are in the sensor's level frame -- sensor at the origin, +Z up
+    -- so the floor is expected at ``z = -expected_height``.  Candidate
+    planes steeper than ``max_tilt_deg`` or further than ``height_tolerance``
+    from the expected height are refused before they are scored, so a wall
+    can never win.  Dense returns under the sensor are thinned to one per
+    10 cm cell first, or the patch below it would decide the tilt alone.
+    Raises ValueError when no plane has the required support and span.
+    Same procedure as br_lidar/airy_py/floor_calibration.py.
+    """
+    settings = (expected_height, max_tilt_deg, height_tolerance, distance_threshold, min_span)
+    if (not np.all(np.isfinite(settings)) or expected_height <= 0
+            or not 0 < max_tilt_deg < 45 or height_tolerance <= 0
+            or distance_threshold <= 0 or min_span <= 0):
+        raise ValueError("invalid floor fit settings")
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
+    points = points[np.isfinite(points).all(axis=1)]
+    radius = np.hypot(points[:, 0], points[:, 1])
+    band = height_tolerance + math.tan(math.radians(max_tilt_deg)) * radius
+    points = points[np.abs(points[:, 2] + expected_height) <= band]
+    if len(points) < 100:
+        raise ValueError("too few returns near the expected floor height")
+    _, first = np.unique(np.floor(points / 0.10).astype(np.int64), axis=0, return_index=True)
+    points = points[np.sort(first)]
+    rng = np.random.default_rng(seed)
+    if len(points) > 12000:
+        points = points[rng.choice(len(points), 12000, replace=False)]
+    if len(points) < 100:
+        raise ValueError("too little spatially distinct floor data")
+    cosine = math.cos(math.radians(max_tilt_deg))
+    best_mask, best_count = None, 0
+    for _ in range(int(iterations)):
+        sample = points[rng.choice(len(points), 3, replace=False)]
+        normal = np.cross(sample[1] - sample[0], sample[2] - sample[0])
+        norm = np.linalg.norm(normal)
+        if norm < 1e-9:
+            continue
+        normal = normal / norm
+        if normal[2] < 0:
+            normal = -normal
+        height = -float(normal @ sample[0])
+        if normal[2] < cosine or abs(height - expected_height) > height_tolerance:
+            continue
+        mask = np.abs(points @ normal + height) <= distance_threshold
+        count = int(mask.sum())
+        if count > best_count:
+            best_count, best_mask = count, mask
+    required = max(100, int(math.ceil(0.35 * len(points))))
+    if best_count < required:
+        raise ValueError("no floor plane with enough support")
+    mask = best_mask
+    for _ in range(3):
+        centre = points[mask].mean(axis=0)
+        _, _, axes = np.linalg.svd(points[mask] - centre, full_matrices=False)
+        normal = axes[-1] if axes[-1][2] >= 0 else -axes[-1]
+        height = -float(normal @ centre)
+        mask = np.abs(points @ normal + height) <= distance_threshold
+        if int(mask.sum()) < required:
+            raise ValueError("floor refinement lost support")
+    if normal[2] < cosine or height <= 0 or abs(height - expected_height) > height_tolerance:
+        raise ValueError("floor tilt or height outside the allowed range")
+    inliers = points[mask]
+    xy = inliers[:, :2] - inliers[:, :2].mean(axis=0)
+    _, axes = np.linalg.eigh(np.cov(xy.T))
+    spans = np.diff(np.percentile(xy @ axes, [5, 95], axis=0), axis=0)[0]
+    if float(np.min(spans)) < min_span:
+        raise ValueError(f"floor coverage {spans[0]:.2f} x {spans[1]:.2f} m is below {min_span} m")
+    residual = float(np.percentile(np.abs(inliers @ normal + height), 95))
+    return FloorFit(tuple(float(v) for v in normal), float(height),
+                    float(math.degrees(math.acos(min(1.0, float(normal[2]))))),
+                    float(mask.mean()), residual, (float(spans[0]), float(spans[1])))
+
+
+def sensor_level_points(parsed, rotation):
+    """Organized ranges -> points in the sensor's level frame (origin, +Z up).
+
+    Rotated by the nominal mounting but not translated, which is the frame
+    ``fit_floor`` checks the mounting height and tilt in.
+    """
+    ranges = np.asarray(parsed["ranges"], dtype=float)
+    valid = (np.isfinite(ranges) & (ranges > parsed["range_min"])
+             & (ranges < parsed["range_max"]))
+    rows, columns = np.nonzero(valid)
+    r = ranges[rows, columns]
+    az = np.asarray(parsed["azimuth"], dtype=float)[columns]
+    el = np.asarray(parsed["elevation"], dtype=float)[rows]
+    local = np.column_stack([r * np.cos(el) * np.cos(az), r * np.cos(el) * np.sin(az),
+                             r * np.sin(el)])
+    return local @ np.asarray(rotation, dtype=float).reshape(3, 3).T
