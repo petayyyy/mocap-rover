@@ -59,6 +59,22 @@ class OpponentView(unittest.TestCase):
         self.assertGreater(diag["tag_excluded_px"], 0)
         self.assertLess(math.hypot(reading.x - opponent[0], reading.y - opponent[1]), 0.08)
 
+    def test_a_blob_merged_with_the_tag_rover_is_refused(self):
+        # Bodies overlapping in the image: what is left after the cut is not
+        # the opponent's outline.
+        opponent, tag = np.array([4.4, 7.0]), np.array([4.4, 6.55])
+        frame = textured_body(textured_body(self.empty, tag, 0.0, TAG, seed=1), opponent, 0.0)
+        roi = window((4.4, 6.8), half=330)
+        reading, diag = self.camera.read(frame, roi, opponent, tag_pose=(*tag, 0.0))
+        self.assertIsNone(reading)
+        self.assertEqual(diag["silhouette"], "blob_cut_by_other_rover")
+
+    def test_without_a_prediction_the_largest_blob_is_taken(self):
+        xy = np.array([4.2, 7.1])
+        reading, diag = self.camera.read(textured_body(self.empty, xy, 0.4), window(xy), None)
+        self.assertIsNotNone(reading, diag)
+        self.assertLess(math.hypot(reading.x - xy[0], reading.y - xy[1]), 0.06)
+
     def test_flow_bridges_a_frame_whose_blob_is_cut_by_the_window(self):
         xy = np.array([4.2, 7.1])
         first, _ = self.camera.read(textured_body(self.empty, xy, 0.4), window(xy), xy)

@@ -290,8 +290,13 @@ class SilhouetteObserver:
         self.last_reason = reason
         return None
 
-    def measure(self, mask, roi, prediction_xy, gate_m=1.0, frame_size=None):
-        """Read the blob nearest the prediction; None with ``last_reason`` if not."""
+    def measure(self, mask, roi, prediction_xy, gate_m=1.0, frame_size=None, cut_mask=None):
+        """Read the blob nearest the prediction; None with ``last_reason`` if not.
+
+        ``prediction_xy`` None takes the largest blob (reacquisition).
+        ``cut_mask`` marks pixels removed before the call (the other rover's
+        predicted body); a blob touching them has a cut for an outline.
+        """
         x0, y0 = int(roi[0]), int(roi[1])
         count, labels, stats, _ = cv2.connectedComponentsWithStats(
             mask.astype(np.uint8), connectivity=8)
@@ -319,9 +324,12 @@ class SilhouetteObserver:
                 if len(points) < 10:
                     continue
             centre = np.median(points, axis=0)
-            distance = float(np.linalg.norm(centre - np.asarray(prediction_xy, dtype=float)))
-            if distance > gate_m:
-                continue
+            if prediction_xy is None:
+                distance = -float(area)          # largest first
+            else:
+                distance = float(np.linalg.norm(centre - np.asarray(prediction_xy, dtype=float)))
+                if distance > gate_m:
+                    continue
             touches = (bx == 0 or by == 0 or bx + bw >= mask.shape[1]
                        or by + bh >= mask.shape[0])
             if best is None or distance < best[0]:
@@ -332,6 +340,12 @@ class SilhouetteObserver:
         if touches:
             # The window cut the body: its outline is the window's, not the rover's.
             return self._reject("blob_clipped_by_window")
+        if cut_mask is not None:
+            # Same for the other rover's body cut out of a merged blob.
+            near = cv2.dilate(cut_mask[by:by + bh, bx:bx + bw].astype(np.uint8),
+                              np.ones((5, 5), np.uint8)).astype(bool)
+            if (near & (labels[by:by + bh, bx:bx + bw] == label)).any():
+                return self._reject("blob_cut_by_other_rover")
         hull_px = cv2.convexHull(pixels_all.astype(np.float32)).reshape(-1, 2)
         observed = None
         if self.estimator == "fit":

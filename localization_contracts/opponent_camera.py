@@ -99,6 +99,7 @@ class OpponentCamera:
         roi = (x0, y0, min(W, x + w) - x0, min(H, y + h) - y0)
         mask = self.background.foreground(image, roi, gain)
         excluded = 0
+        cut = None
         if tag_pose is not None:
             hull = body_hull_px(self.model, self.R, self.C, tag_pose[:2], tag_pose[2],
                                 self.tag_size, self.exclusion_margin_m)
@@ -107,10 +108,17 @@ class OpponentCamera:
                                 - [roi[0], roi[1]]).astype(np.int32)
                 cut = np.zeros(mask.shape, np.uint8)
                 cv2.fillConvexPoly(cut, poly, 1)
-                excluded = int((mask & cut.astype(bool)).sum())
-                mask &= ~cut.astype(bool)
+                # Only foreground that was actually removed counts: a separate
+                # tag_rover blob is removed whole and touches nothing, a merged
+                # one leaves the opponent's blob with a cut edge.
+                cut = mask & cut.astype(bool)
+                excluded = int(cut.sum())
+                mask &= ~cut
+                if not excluded:
+                    cut = None
         fg_ms = (time.perf_counter() - begin) * 1e3
-        found = self.observer.measure(mask, roi, prediction_xy, gate_m or self.gate_m)
+        found = self.observer.measure(mask, roi, prediction_xy, gate_m or self.gate_m,
+                                      cut_mask=cut)
         diag = {"foreground_px": int(mask.sum()), "tag_excluded_px": excluded,
                 "gain": float(gain), "foreground_ms": fg_ms,
                 "silhouette": self.observer.last_reason}
