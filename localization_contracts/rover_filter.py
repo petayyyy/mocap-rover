@@ -295,8 +295,8 @@ class ImmRoverFilter:
                  huber_delta=1.5, arena_bounds=(-0.3, 12.3),
                  initial_speed_sigma=6.0, identity_aliases=None,
                  identity_hold_max_s=0.0, hold_sigma_m=0.10, hold_confirm_ms=250.0,
-                 hold_source="lidar", heading_after_ms=500.0, heading_min_speed_mps=1.0,
-                 heading_sigma_deg=6.0):
+                 hold_source="lidar", heading_after_ms=0.0, heading_min_speed_mps=1.0,
+                 heading_sigma_deg=6.0, marker_yaw_reset=False):
         self.models = list(models or (MotionModel(), CoordinatedTurnModel()))
         n = len(self.models)
         if transition is None:
@@ -335,6 +335,12 @@ class ImmRoverFilter:
         # On both datasets' truth the velocity direction differs from the yaw
         # by P95 7-8 deg above 1 m/s (5-6 deg above 2 m/s), hence 6 deg plus
         # the velocity's own uncertainty.  0 disables it.
+        # Reset the yaw to a marker heading the gate keeps refusing (three in
+        # a row from two cameras, agreeing within 10 deg).  Off by default:
+        # in the synthetic sweep of test_localization_endtoend, whose rover
+        # reverses instantly at the walls, it lowers valid coverage from 0.95
+        # to 0.91 for a reason not yet established.
+        self.marker_yaw_reset = bool(marker_yaw_reset)
         self.heading_after_ns = int(heading_after_ms * 1e6)
         self.heading_min_speed = float(heading_min_speed_mps)
         self.heading_sigma = math.radians(heading_sigma_deg)
@@ -588,13 +594,18 @@ class ImmRoverFilter:
         for measurement in group:
             weight = self._huber_weight(measurement) if robust else 1.0
             ok, model_likelihood = self._apply_one(measurement, weight)
-            if not ok and measurement.kind == YAW_ONLY and measurement.identity is not None:
-                # A marker's heading is the reference.  If the track's yaw has
-                # drifted or locked the wrong way round (a velocity heading
-                # taken for the reverse direction), the gate would refuse the
-                # very measurement that can correct it, forever: reset instead.
-                self._reset_yaw(measurement)
-                ok, model_likelihood = True, np.ones(len(self.models))
+            if measurement.kind == YAW_ONLY and measurement.identity is not None:
+                if ok:
+                    self.refused_marker_yaws = []
+                elif self.marker_yaw_reset and self._marker_yaw_persists(measurement):
+                    # A marker's heading is the reference.  If the track's yaw
+                    # drifted or locked the wrong way round (a velocity heading
+                    # taken for the reverse direction), the gate would refuse
+                    # the very measurement that can correct it, forever.  One
+                    # refused marker yaw may be a PnP flip; three in a row that
+                    # agree within 10 deg are not: reset to them.
+                    self._reset_yaw(measurement)
+                    ok, model_likelihood = True, np.ones(len(self.models))
             if not ok:
                 continue
             applied = True
@@ -634,6 +645,19 @@ class ImmRoverFilter:
             self.applied.append((min(m.stamp_ns for m in group), tuple(group)))
             self._push_history()
         return applied_measurements
+
+    def _marker_yaw_persists(self, measurement, needed=3, agree_rad=math.radians(10)):
+        value = float(measurement.value[0])
+        refused = getattr(self, "refused_marker_yaws", [])
+        if refused and abs(wrap(refused[-1][0] - value)) > agree_rad:
+            refused = []
+        refused = refused + [(value, measurement.source)]
+        self.refused_marker_yaws = refused
+        # Two cameras at least: one camera can repeat the same PnP flip.
+        if len(refused) >= needed and len({source for _, source in refused}) >= 2:
+            self.refused_marker_yaws = []
+            return True
+        return False
 
     def _reset_yaw(self, measurement):
         z, R = measurement.as_arrays()

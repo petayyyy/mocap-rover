@@ -219,7 +219,7 @@ def parse_args(argv=None):
 
 def heading_kwargs(a):
     return dict(heading_after_ms=a.heading_after_ms, heading_min_speed_mps=a.heading_min_speed,
-                heading_sigma_deg=a.heading_sigma_deg)
+                heading_sigma_deg=a.heading_sigma_deg, marker_yaw_reset=True)
 
 
 def read_jsonl(path):

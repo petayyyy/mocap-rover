@@ -205,6 +205,7 @@ class IdentityHold(unittest.TestCase):
 
 class HeadingFromVelocity(unittest.TestCase):
     def drive(self, **kwargs):
+        kwargs.setdefault("heading_after_ms", 500.0)
         f = ImmRoverFilter(**kwargs)
         f.apply_group([position(0, 2.0, 3.0), yaw(0, 0.6)])     # marker: yaw 0.6 rad off
         for step in range(1, 120):
@@ -219,11 +220,12 @@ class HeadingFromVelocity(unittest.TestCase):
         self.assertLess(published["yaw_age_ms"], 20)
 
     def test_a_marker_heading_undoes_a_yaw_locked_the_wrong_way(self):
-        f = ImmRoverFilter()
+        f = ImmRoverFilter(marker_yaw_reset=True)
         f.apply_group([position(0, 2.0, 3.0), yaw(0, math.pi, sigma=math.radians(1))])
         for step in range(1, 30):                    # tight around the wrong yaw
             f.apply_group([yaw(step * 12, math.pi, sigma=math.radians(1))])
-        f.apply_group([position(400, 2.0, 3.0), yaw(400, 0.0)])
+        for k, camera in enumerate(("camera_1", "camera_2", "camera_3")):
+            f.apply_group([yaw(400 + k, 0.0, source=camera)])
         self.assertLess(abs(f.publish(400 * MS)["state"]["yaw"]), math.radians(3))
 
     def test_disabled_the_yaw_stays_where_the_marker_left_it(self):
