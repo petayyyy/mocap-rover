@@ -293,7 +293,10 @@ class ImmRoverFilter:
                  coast_ms=300, identity_max_age_s=2.0, lost_ms=1500,
                  max_speed_mps=13.0, gate_chi2=9.21, marker_gate_chi2=16.3,
                  huber_delta=1.5, arena_bounds=(-0.3, 12.3),
-                 initial_speed_sigma=6.0, identity_aliases=None):
+                 initial_speed_sigma=6.0, identity_aliases=None,
+                 identity_hold_max_s=0.0, hold_sigma_m=0.10, hold_confirm_ms=250.0,
+                 hold_source="lidar", heading_after_ms=500.0, heading_min_speed_mps=1.0,
+                 heading_sigma_deg=6.0):
         self.models = list(models or (MotionModel(), CoordinatedTurnModel()))
         n = len(self.models)
         if transition is None:
@@ -315,6 +318,30 @@ class ImmRoverFilter:
         self.history_ns = int(history_s * 1e9)
         self.coast_ns = int(coast_ms * 1e6)
         self.identity_max_age_ns = int(identity_max_age_s * 1e9)
+        # Identity hold: past identity_max_age the track keeps its identity,
+        # up to identity_hold_max_s, only while (a) ``hold_source`` confirms
+        # it -- a measurement from it applied within hold_confirm_ms, (b) the
+        # track is known to hold_sigma_m, and (c) nothing could have taken its
+        # place: the caller revokes the hold at any encounter, and only the
+        # next identity confirmation re-arms it.  0 disables the hold.
+        self.identity_hold_max_ns = int(identity_hold_max_s * 1e9)
+        self.hold_sigma_m = float(hold_sigma_m)
+        self.hold_confirm_ns = int(hold_confirm_ms * 1e6)
+        self.hold_source = hold_source
+        # Heading without a heading sensor: a rover drives along its body
+        # axis, so once no measured yaw has come for heading_after_ms and the
+        # track moves faster than heading_min_speed_mps, the direction of its
+        # velocity (either way along the axis) stands in as a yaw measurement.
+        # On both datasets' truth the velocity direction differs from the yaw
+        # by P95 7-8 deg above 1 m/s (5-6 deg above 2 m/s), hence 6 deg plus
+        # the velocity's own uncertainty.  0 disables it.
+        self.heading_after_ns = int(heading_after_ms * 1e6)
+        self.heading_min_speed = float(heading_min_speed_mps)
+        self.heading_sigma = math.radians(heading_sigma_deg)
+        self.last_measured_yaw_ns = None
+        self.last_yaw_ns = None
+        self.last_hold_source_ns = None
+        self.hold_revoked = False
         self.lost_ns = int(lost_ms * 1e6)
         self.max_speed_mps = float(max_speed_mps)
         self.gate_chi2 = float(gate_chi2)
@@ -371,6 +398,9 @@ class ImmRoverFilter:
         self.last_measurement_ns = self.last_identity_ns = None
         self.identity = None
         self.sources = frozenset()
+        self.last_hold_source_ns = None
+        self.hold_revoked = False
+        self.last_measured_yaw_ns = self.last_yaw_ns = None
         self.history.clear()
         self.applied.clear()
         self.mu = np.full(len(self.models), 1.0 / len(self.models))
@@ -573,8 +603,14 @@ class ImmRoverFilter:
                 self.last_measurement_ns = max(self.last_measurement_ns or 0,
                                                measurement.stamp_ns)
             if measurement.confirms_identity and self._identity_matches(measurement):
-                self.last_identity_ns = measurement.stamp_ns
-                self.identity = measurement.identity or self.identity
+                self.confirm_identity(measurement.stamp_ns, measurement.identity)
+            if measurement.kind == YAW_ONLY:
+                self.last_measured_yaw_ns = max(self.last_measured_yaw_ns or 0,
+                                                measurement.stamp_ns)
+                self.last_yaw_ns = max(self.last_yaw_ns or 0, measurement.stamp_ns)
+            if measurement.kind == POSITION and measurement.source == self.hold_source:
+                self.last_hold_source_ns = max(self.last_hold_source_ns or 0,
+                                               measurement.stamp_ns)
             self.sources = self.sources | {measurement.source}
         if applied:
             if len(self.models) > 1:
@@ -582,9 +618,31 @@ class ImmRoverFilter:
                 total = posterior.sum()
                 self.mu = (posterior / total if total > 1e-300
                            else np.full(len(self.models), 1.0 / len(self.models)))
+            if any(m.kind == POSITION for m in applied_measurements):
+                self._heading_from_velocity()
             self.applied.append((min(m.stamp_ns for m in group), tuple(group)))
             self._push_history()
         return applied_measurements
+
+    def _heading_from_velocity(self):
+        if self.heading_after_ns <= 0 or self.stamp_ns is None:
+            return
+        if (self.last_measured_yaw_ns is not None
+                and self.stamp_ns - self.last_measured_yaw_ns < self.heading_after_ns):
+            return
+        state, P = self.x, self.P
+        speed = math.hypot(state[VX], state[VY])
+        if speed < self.heading_min_speed:
+            return
+        heading = math.atan2(state[VY], state[VX])
+        if abs(wrap(heading - state[YAW])) > math.pi / 2:
+            heading = wrap(heading + math.pi)
+        sigma_v = math.sqrt(max(P[VX, VX], P[VY, VY]))
+        sigma = math.hypot(self.heading_sigma, math.atan2(sigma_v, speed))
+        ok, _ = self._apply_one(Measurement(self.stamp_ns, YAW_ONLY, (heading,),
+                                            (sigma ** 2,), "velocity_heading"))
+        if ok:
+            self.last_yaw_ns = max(self.last_yaw_ns or 0, self.stamp_ns)
 
     def _huber_weight(self, measurement):
         residual, H, R, S = self._innovation(measurement)
@@ -665,6 +723,29 @@ class ImmRoverFilter:
 
     # ---------------------------------------------------------------- publish
 
+    def confirm_identity(self, stamp_ns, identity=None):
+        """Something that can tell the rovers apart vouched for this track."""
+        self.last_identity_ns = max(self.last_identity_ns or 0, int(stamp_ns))
+        self.identity = identity or self.identity
+        self.hold_revoked = False
+
+    def revoke_identity_hold(self):
+        """An encounter (or not knowing where the other rover is): no hold."""
+        self.hold_revoked = True
+
+    def identity_held(self, stamp_ns):
+        """Is an identity older than identity_max_age still held (see __init__)?"""
+        if (self.identity_hold_max_ns <= 0 or self.hold_revoked
+                or self.last_hold_source_ns is None or self.xs is None):
+            return False
+        stamp_ns = int(stamp_ns)
+        if stamp_ns - (self.last_identity_ns or 0) > self.identity_hold_max_ns:
+            return False
+        if stamp_ns - self.last_hold_source_ns > self.hold_confirm_ns:
+            return False
+        P = self.P
+        return math.sqrt(max(P[0, 0], P[1, 1])) <= self.hold_sigma_m
+
     def tracking_state(self, stamp_ns):
         if self.xs is None:
             return LOST
@@ -672,7 +753,8 @@ class ImmRoverFilter:
         identity_age = int(stamp_ns) - (self.last_identity_ns or 0)
         if age > self.lost_ns:
             return LOST
-        if age > self.coast_ns or identity_age > self.identity_max_age_ns:
+        if age > self.coast_ns or (identity_age > self.identity_max_age_ns
+                                   and not self.identity_held(stamp_ns)):
             return REACQUIRING
         if age > 0:
             return COASTING
@@ -727,4 +809,6 @@ class ImmRoverFilter:
             "sources": tuple(sorted(self.sources)),
             "identity": self.identity,
             "model_probabilities": [float(v) for v in self.mu],
+            "yaw_age_ms": (stamp_ns - self.last_yaw_ns) / 1e6
+            if self.last_yaw_ns is not None else None,
         }

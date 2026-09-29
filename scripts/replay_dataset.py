@@ -132,6 +132,10 @@ def parse_args(argv=None):
     p.add_argument("--coast-ms", type=float, default=300.0)
     p.add_argument("--identity-max-age-s", type=float, default=2.0)
     p.add_argument("--lost-ms", type=float, default=1500.0)
+    p.add_argument("--identity-hold-max-s", type=float, default=10.0,
+                   help="keep an identity older than --identity-max-age-s up to this long "
+                        "while the lidar confirms the track every scan and no encounter "
+                        "happened since the last confirmation; 0 = never")
     p.add_argument("--max-speed-mps", type=float, default=13.0)
     p.add_argument("--roi-min-px", type=int, default=160)
     p.add_argument("--roi-max-px", type=int, default=480)
@@ -357,7 +361,8 @@ class Replay:
         aliases = {f"{self.marker_family}:{int(i)}" for i in self.tags}
         self.filters = {"tag_rover": ImmRoverFilter(
             coast_ms=a.coast_ms, identity_max_age_s=a.identity_max_age_s,
-            lost_ms=a.lost_ms, max_speed_mps=a.max_speed_mps, identity_aliases=aliases)}
+            lost_ms=a.lost_ms, max_speed_mps=a.max_speed_mps, identity_aliases=aliases,
+            identity_hold_max_s=a.identity_hold_max_s)}
         self.opponent_enabled = a.camera_background is not None and not a.no_opponent
         self.guard = TwoRoverIdentity(close_m=a.identity_close_m)
         self.opponent_cameras = {}
@@ -368,12 +373,14 @@ class Replay:
         self.reacquire_candidate = None
         self.tag_seated = False
         if self.opponent_enabled:
-            # Same filter class.  Only the operator's rectangle confirms this
-            # identity; it never expires because nothing later can re-confirm
-            # it -- the marker guard below is what keeps the tracks apart.
+            # Same filter class and the same identity age limit.  The operator's
+            # rectangle confirms this identity once; afterwards tag_rover's
+            # marker seen well away from this track re-confirms it (enqueue),
+            # and the identity hold covers the gaps while the lidar confirms.
             self.filters["opponent"] = ImmRoverFilter(
-                coast_ms=a.coast_ms, identity_max_age_s=1e9, lost_ms=a.lost_ms,
-                max_speed_mps=a.max_speed_mps, identity_aliases={OPERATOR_IDENTITY})
+                coast_ms=a.coast_ms, identity_max_age_s=a.identity_max_age_s, lost_ms=a.lost_ms,
+                max_speed_mps=a.max_speed_mps, identity_aliases={OPERATOR_IDENTITY},
+                identity_hold_max_s=a.identity_hold_max_s)
             # Same planner class, aimed at the body instead of the marker.
             self.opponent_planner_kwargs = dict(
                 min_roi_px=a.opponent_roi_min_px, max_roi_px=a.opponent_roi_max_px,
@@ -470,6 +477,12 @@ class Replay:
                     observation_stamp_ns(obs), obs.position_m[:2], tag[:2], opp[:2]):
                 self.guard.swap(observation_stamp_ns(obs), self.filters["tag_rover"],
                                 self.filters["opponent"], obs.position_m[:2])
+            elif opp and math.hypot(obs.position_m[0] - opp[0], obs.position_m[1] - opp[1]) \
+                    >= self.a.identity_close_m:
+                # The marker names tag_rover; seen well away from the opponent
+                # track it also says that track is not on tag_rover -- the only
+                # identity evidence a rover without a marker ever gets.
+                self.filters["opponent"].confirm_identity(observation_stamp_ns(obs))
         for measurement in measurement_from_observation(obs):
             buffer.push(measurement)
         self.pending_observations[obs.object_id].append(obs)
@@ -514,7 +527,10 @@ class Replay:
             self.published_times[name].append(now_ns)
             row = {**item, "object_id": name, "capture_ns": f.last_measurement_ns,
                    "wall_ns": int(now_ns), "replay_wall_ns": time.monotonic_ns(),
-                   "yaw_valid": name == "tag_rover" and state is not None,
+                   # Yaw is published for tag_rover while a marker or the
+                   # heading of a moving track fixed it within the last second.
+                   "yaw_valid": (name == "tag_rover" and state is not None
+                                 and (item.get("yaw_age_ms") or 1e9) <= 1000.0),
                    "source_mask": list(item["sources"]),
                    "measurement_wall_hz": self.rate(self.accepted_times[name]),
                    "output_wall_hz": self.rate(self.published_times[name]),
@@ -532,6 +548,13 @@ class Replay:
             published[name] = (state["x"], state["y"]) if row["valid"] and state else None
         if "opponent" in self.filters:
             self.guard.observe_tracks(now_ns, published.get("tag_rover"), published.get("opponent"))
+            tag, opp = published.get("tag_rover"), published.get("opponent")
+            if tag and opp and math.hypot(tag[0] - opp[0], tag[1] - opp[1]) < self.a.identity_close_m:
+                # An encounter: continuation can no longer tell the rovers
+                # apart, so neither identity outlives its age limit until
+                # something that can confirm it does.
+                for f in self.filters.values():
+                    f.revoke_identity_hold()
 
     @staticmethod
     def rate(stamps):

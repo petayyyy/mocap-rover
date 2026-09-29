@@ -163,6 +163,67 @@ class Identity(unittest.TestCase):
         self.assertFalse(published["valid"])
 
 
+class IdentityHold(unittest.TestCase):
+    """Past identity_max_age the identity is held only while the lidar confirms."""
+
+    def run_lidar(self, until_ms, hold_s=10.0, revoke_at_ms=None, lidar_until_ms=None):
+        f = ImmRoverFilter(identity_max_age_s=2.0, identity_hold_max_s=hold_s)
+        f.apply_group([position(0, 3.0, 3.0)])
+        t = 0
+        while t < until_ms:
+            t += 100
+            if lidar_until_ms is None or t <= lidar_until_ms:
+                f.apply_group([position(t, 3.0, 3.0, source="lidar", identity=None,
+                                        confirms=False)])
+            if revoke_at_ms is not None and t == revoke_at_ms:
+                f.revoke_identity_hold()
+        return f, t
+
+    def test_a_lidar_confirmed_track_keeps_its_identity(self):
+        f, t = self.run_lidar(5000)
+        self.assertEqual(f.tracking_state(t * MS), TRACKING)
+
+    def test_without_the_hold_the_old_limit_stands(self):
+        f, t = self.run_lidar(5000, hold_s=0.0)
+        self.assertEqual(f.tracking_state(t * MS), REACQUIRING)
+
+    def test_an_encounter_ends_the_hold_until_the_next_marker(self):
+        f, t = self.run_lidar(5000, revoke_at_ms=3000)
+        self.assertEqual(f.tracking_state(t * MS), REACQUIRING)
+        f.apply_group([position(t + 10, 3.0, 3.0)])            # the marker again
+        self.assertTrue(f.publish((t + 10) * MS)["valid"])
+
+    def test_the_hold_needs_the_lidar_every_scan(self):
+        f, t = self.run_lidar(5000, lidar_until_ms=3000)
+        self.assertEqual(f.tracking_state(3200 * MS), COASTING)   # 200 ms < 250 ms
+        self.assertEqual(f.tracking_state(3300 * MS), REACQUIRING)
+
+    def test_the_hold_has_a_ceiling(self):
+        f, t = self.run_lidar(12500)
+        self.assertEqual(f.tracking_state(t * MS), REACQUIRING)
+
+
+class HeadingFromVelocity(unittest.TestCase):
+    def drive(self, **kwargs):
+        f = ImmRoverFilter(**kwargs)
+        f.apply_group([position(0, 2.0, 3.0), yaw(0, 0.6)])     # marker: yaw 0.6 rad off
+        for step in range(1, 120):
+            t = step * 12
+            f.apply_group([position(t, 2.0 + 2.0 * t / 1000.0, 3.0, source="lidar",
+                                    identity=None, confirms=False)])
+        return f.publish(119 * 12 * MS)
+
+    def test_a_moving_track_without_a_marker_turns_to_its_velocity(self):
+        published = self.drive()
+        self.assertLess(abs(published["state"]["yaw"]), math.radians(3))
+        self.assertLess(published["yaw_age_ms"], 20)
+
+    def test_disabled_the_yaw_stays_where_the_marker_left_it(self):
+        published = self.drive(heading_after_ms=0)
+        self.assertGreater(abs(published["state"]["yaw"]), 0.3)
+        self.assertGreater(published["yaw_age_ms"], 1000)
+
+
 class TrackingStates(unittest.TestCase):
     def setUp(self):
         self.filter = ImmRoverFilter(coast_ms=300, lost_ms=1500)
