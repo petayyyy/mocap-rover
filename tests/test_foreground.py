@@ -154,6 +154,18 @@ class Silhouette(unittest.TestCase):
         self.assertIsNone(observer.measure(mask, roi, xy))
         self.assertEqual(observer.last_reason, "blob_clipped_by_window")
 
+    def test_a_piece_smaller_than_the_body_is_refused(self):
+        # What is left of the opponent after tag_rover's hull is cut out, or
+        # its lit top alone on a dark floor: dataset 03, t = 99.0-99.2 s.
+        xy = np.array([4.5, 7.0])
+        observer = SilhouetteObserver(MODEL, NADIR, CAMERA, size_m=SIZE)
+        roi = window(xy)
+        piece = with_body(self.empty, xy, 0.3, size=(0.6, 0.12, 0.483))
+        self.assertIsNone(observer.measure(self.model.foreground(piece, roi), roi, xy))
+        self.assertEqual(observer.last_reason, "blob_smaller_than_body")
+        whole = with_body(self.empty, xy, 0.3)
+        self.assertIsNotNone(observer.measure(self.model.foreground(whole, roi), roi, xy))
+
     def test_nothing_near_the_prediction_is_nothing(self):
         observer = SilhouetteObserver(MODEL, NADIR, CAMERA, size_m=SIZE)
         roi = window((4.0, 7.0))

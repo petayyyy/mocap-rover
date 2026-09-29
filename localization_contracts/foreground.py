@@ -226,7 +226,7 @@ class SilhouetteObserver:
     def __init__(self, camera_model, R_world_camera, camera_position, *,
                  size_m=(0.9, 0.52, 0.483), estimator="extent", min_pixels=150,
                  reject_radius_m=0.6, pixel_step=3, zones=None, max_extent_m=1.8,
-                 extent_plane_z=None, trim_percentile=2.0):
+                 extent_plane_z=None, trim_percentile=2.0, min_extent_fraction=0.9):
         if estimator not in self.ESTIMATORS:
             raise ValueError(f"estimator must be one of {self.ESTIMATORS}")
         self.model = camera_model
@@ -245,6 +245,13 @@ class SilhouetteObserver:
         self.extent_plane_z = (self.top / 2.0 if extent_plane_z is None
                                else float(extent_plane_z))
         self.trim_percentile = float(trim_percentile)
+        # A whole body seen from any side covers at least its own footprint
+        # on the half-height plane, so a blob shorter or narrower than the
+        # body is a piece of it: the lit top alone, a wheel, what is left
+        # after the other rover's hull is cut out.  Such pieces were 1.4 % of
+        # the silhouettes on dataset 01 and 4.7 % on 03, all 0.2-0.7 m off
+        # (P50 0.47 m); none within 0.1 m.  0 disables the check.
+        self.min_extent_fraction = float(min_extent_fraction)
         self.last_reason = None
 
     # ---------------------------------------------------------------- model
@@ -369,6 +376,9 @@ class SilhouetteObserver:
         width = float(np.ptp(centred @ minor))
         if max(length, width) > self.max_extent_m:
             return self._reject("blob_too_large")
+        if (length < self.min_extent_fraction * self.length
+                or width < self.min_extent_fraction * self.width):
+            return self._reject("blob_smaller_than_body")
 
         along_sigma_scale = 0.10
         if self.estimator == "extent":
