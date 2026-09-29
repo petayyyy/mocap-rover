@@ -91,7 +91,8 @@ def parse_args(argv=None):
                    help="new directory; an existing one is never overwritten")
     p.add_argument("--seconds", type=float, default=0.0,
                    help="replay only this many simulated seconds (0 = all)")
-    p.add_argument("--cameras", nargs="+", help="subset of camera names")
+    p.add_argument("--cameras", nargs="+",
+                   help="subset of camera names, space or comma separated")
     p.add_argument("--no-lidar", action="store_true")
     p.add_argument("--transport-ms", type=float, default=15.0,
                    help="render stamp to arrival on the laptop, per frame")
@@ -187,6 +188,8 @@ def parse_args(argv=None):
         p.error("--seconds must be nonnegative")
     if a.transport_ms < 0 or a.processing_ms < 0:
         p.error("delays must be nonnegative")
+    if a.cameras:
+        a.cameras = [name for item in a.cameras for name in item.split(",") if name]
     if a.lidar_transport_ms is None:
         a.lidar_transport_ms = a.transport_ms
     return a

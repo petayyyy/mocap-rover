@@ -330,6 +330,63 @@ class RollingShutter(unittest.TestCase):
         self.assertEqual(results[0.0].position_m, results[9500.0].position_m)
 
 
+class RollingShutterOnAMovingRover(unittest.TestCase):
+    """The row correction pays off exactly when the shutter really rolls.
+
+    A rover drives at 4 m/s under a camera whose rows are read 9.5 us apart
+    (IMX219).  Each frame shows the marker where the rover was when the
+    marker's rows were exposed, about 6 ms after the frame stamp.  The same
+    corners are fed to two filters: one told the line time, one not.
+    Gazebo renders with a global shutter, where telling the observer a line
+    time it does not have moves every stamp the wrong way instead.
+    """
+
+    SPEED = 4.0
+    LINE_NS = 9500.0
+
+    def track_error(self, render_line_ns, observer_line_ns):
+        from localization_contracts.rover_filter import (
+            ImmRoverFilter, measurement_from_observation)
+        camera, R = (9.0, 9.0, 2.9), ar.camera_rotation()
+        obs = observer(camera, R, line_time_ns=observer_line_ns)
+        track = ImmRoverFilter()
+        start_ns = 1_000_000_000
+
+        def position(t_ns):
+            return (8.0 + self.SPEED * (t_ns - start_ns) / 1e9, 8.6)
+
+        errors = []
+        for k in range(50):
+            stamp = start_ns + k * 12_000_000
+            row = 0.0
+            for _ in range(3):   # the row fixes the time, the time moves the row
+                seen_at = position(stamp + row * render_line_ns)
+                frame = ar.render(camera, R, seen_at)
+                hits = ar.visible_corners(frame)
+                row = float(np.asarray(hits[0].corners)[:, 1].mean())
+            result = obs.observe(Detection("camera_1", k, hits[0].tag_id, hits[0].corners,
+                                           stamp, stamp, stamp))
+            self.assertIsNotNone(result, obs.last_diagnostic)
+            track.apply_group(measurement_from_observation(result))
+            if k >= 20:
+                now = stamp + 20_000_000
+                state = track.publish(now)["state"]
+                truth = position(now)
+                errors.append(math.hypot(state["x"] - truth[0], state["y"] - truth[1]))
+        return float(np.mean(errors))
+
+    def test_the_correction_helps_a_rolling_shutter(self):
+        corrected = self.track_error(self.LINE_NS, self.LINE_NS)
+        ignored = self.track_error(self.LINE_NS, 0.0)
+        self.assertLess(corrected, 0.5 * ignored)
+        self.assertGreater(ignored, 0.01)
+
+    def test_the_correction_hurts_a_global_shutter(self):
+        honest = self.track_error(0.0, 0.0)
+        wrong = self.track_error(0.0, self.LINE_NS)
+        self.assertGreater(wrong, 2 * honest)
+
+
 class TagTransforms(unittest.TestCase):
     """Marker id 1 is mounted with R_base_tag = diag(1,-1,-1), facing down.
 
