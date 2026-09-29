@@ -480,7 +480,9 @@ class Replay:
                 applied = self.filters[name].apply_group(group)
                 if applied:
                     self.accepted_times[name].append(now_ns)
-                taken = {(m.source, m.stamp_ns) for m in applied}
+                # An observation is accepted when its position was: a heading
+                # from the same camera and stamp says nothing about where.
+                taken = {(m.source, m.stamp_ns) for m in applied if m.kind == POSITION}
                 window = {m.stamp_ns for m in group}
                 remaining = []
                 for obs in self.pending_observations[name]:
