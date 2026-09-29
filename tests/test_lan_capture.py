@@ -483,6 +483,72 @@ class RollingShutterArithmetic(unittest.TestCase):
         self.assertLess(abs(result["recommended_config"]["stamp_correction_ns"]), 50_000)
 
 
+class ExposureSweep(unittest.TestCase):
+    """The probe that decided the timestamp reference without an LED."""
+
+    def test_fit_reads_a_flat_sweep_as_readout_start(self):
+        from pi_cam import exposure_sweep_probe as probe
+        # Measured on the CM5: the delay does not move with the exposure.
+        rows = [(0.5, 0.49, 14.18, 14.9), (1.0, 0.99, 14.18, 14.9),
+                (2.0, 1.99, 14.17, 14.4), (4.0, 4.00, 14.18, 14.2)]
+        fit = probe.fit(rows, frame_duration_ms=12.04)
+        self.assertEqual(fit["reference"], "readout_start_first_row")
+        self.assertLess(abs(fit["slope_ms_per_ms"]), 0.01)
+        self.assertTrue(fit["conclusive"])
+        self.assertAlmostEqual(fit["intercept_ms"], 14.18, delta=0.02)
+
+    def test_a_noisy_but_flat_sweep_is_still_conclusive(self):
+        from pi_cam import exposure_sweep_probe as probe
+        # The real CM5 sweep: a 0.7 ms step against a 3.5 ms exposure change.
+        rows = [(0.5, 0.49, 14.495, 14.86), (1.0, 0.99, 14.501, 14.87),
+                (2.0, 1.99, 13.804, 14.44), (4.0, 4.00, 13.803, 14.17)]
+        fit = probe.fit(rows, frame_duration_ms=12.04)
+        self.assertEqual(fit["reference"], "readout_start_first_row")
+        self.assertTrue(fit["conclusive"], fit)
+        self.assertLess(fit["delay_span_ms"], fit["exposure_span_ms"] / 4)
+        self.assertIn("not in the timestamp", fit["verdict"])
+
+    def test_a_slope_between_the_hypotheses_is_refused(self):
+        from pi_cam import exposure_sweep_probe as probe
+        rows = [(0.5, 0.5, 14.0, 14.0), (4.0, 4.0, 16.0, 16.0)]   # slope 0.57
+        fit = probe.fit(rows)
+        self.assertEqual(fit["reference"], "unknown")
+        self.assertFalse(fit["conclusive"])
+        with self.assertRaises(ValueError):
+            probe.fit(rows, tolerance=0.6)
+
+    def test_fit_reads_a_rising_sweep_as_exposure_start(self):
+        from pi_cam import exposure_sweep_probe as probe
+        rows = [(0.5, 0.5, 12.5, 12.6), (1.0, 1.0, 13.0, 13.1),
+                (2.0, 2.0, 14.0, 14.1), (4.0, 4.0, 16.0, 16.1)]
+        fit = probe.fit(rows, frame_duration_ms=12.04)
+        self.assertEqual(fit["reference"], "exposure_start_first_row")
+        self.assertAlmostEqual(fit["slope_ms_per_ms"], 1.0, delta=0.01)
+        self.assertTrue(fit["conclusive"])
+
+    def test_long_exposures_are_dropped_from_the_fit(self):
+        from pi_cam import exposure_sweep_probe as probe
+        # The 8 ms point of a 12.04 ms frame jumped 1.5 ms on hardware and must
+        # not drag the slope.
+        rows = [(0.5, 0.49, 14.18, 14.2), (1.0, 0.99, 14.18, 14.2),
+                (2.0, 1.99, 14.17, 14.2), (4.0, 4.00, 14.18, 14.2),
+                (8.0, 8.00, 15.67, 15.7)]
+        fit = probe.fit(rows, frame_duration_ms=12.04)
+        self.assertEqual(fit["points_dropped"], 1)
+        self.assertEqual(fit["reference"], "readout_start_first_row")
+        self.assertGreater(abs(probe.fit(rows)["slope_ms_per_ms"]), 0.1)   # unfiltered
+
+    def test_probe_runs_end_to_end_on_the_synthetic_sensor(self):
+        from pi_cam import exposure_sweep_probe as probe
+        result = probe.run(probe.parse_args(
+            ["--synthetic", "--exposures-us", "500,1000,2000", "--frames", "5"]))
+        self.assertEqual(len(result["rows"]), 3)
+        # The synthetic sensor stamps the exposure start and delivers one period
+        # later, so the delay must not follow the exposure.
+        self.assertEqual(result["fit"]["reference"], "readout_start_first_row")
+        self.assertIn("stamp_reference", result["config_line"])
+
+
 class NodeConfigFile(unittest.TestCase):
     def test_example_config_loads_and_rejects_unknown_keys(self):
         cfg = NodeConfig.load(ROOT / "pi_cam" / "node_config.example.json")
