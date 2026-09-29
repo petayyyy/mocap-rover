@@ -553,8 +553,14 @@ class ImmRoverFilter:
             self.accepted += 1
             if measurement.kind == POSITION:
                 likelihood = likelihood * model_likelihood
-            self.last_measurement_ns = max(self.last_measurement_ns or 0,
-                                           measurement.stamp_ns)
+                # Only a position fixes the position.  A heading alone kept
+                # this fresh on dataset 03 (t = 100-102.9 s): the track was
+                # published valid with a 20 ms age while no position had been
+                # applied for 2.9 s, and the speed test in _plausible, timed
+                # from that heading, turned away every correct position
+                # (0.5 m in 12 ms reads as 42 m/s).
+                self.last_measurement_ns = max(self.last_measurement_ns or 0,
+                                               measurement.stamp_ns)
             if measurement.confirms_identity and self._identity_matches(measurement):
                 self.last_identity_ns = measurement.stamp_ns
                 self.identity = measurement.identity or self.identity
@@ -669,7 +675,7 @@ class ImmRoverFilter:
         self.predict_to(stamp_ns)
         state = self.tracking_state(stamp_ns)
         combined = self.x
-        age = stamp_ns - (self.last_measurement_ns or stamp_ns)
+        age = stamp_ns - (stamp_ns if self.last_measurement_ns is None else self.last_measurement_ns)
         return {
             "valid": state in (TRACKING, COASTING),
             "tracking_state": state,

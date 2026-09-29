@@ -184,6 +184,26 @@ class TrackingStates(unittest.TestCase):
         loose = self.filter.publish(250 * MS)["covariance"][0][0]
         self.assertGreater(loose, tight)
 
+    def test_a_heading_alone_does_not_keep_the_track_valid(self):
+        # Dataset 03, t = 100 s: silhouettes kept sending the long axis while
+        # every position was gated, and the track stayed "valid" for 2.9 s.
+        t = 0
+        while t < 500:
+            t += 12
+            self.filter.apply_group([yaw(t, 0.0, source="camera_4")])
+        published = self.filter.publish(t * MS)
+        self.assertEqual(published["tracking_state"], REACQUIRING)
+        self.assertFalse(published["valid"])
+        self.assertGreaterEqual(published["measurement_age_ms"], 500)
+
+    def test_a_heading_does_not_shorten_the_speed_test_for_a_position(self):
+        # Position last fixed at t = 0; a heading at 190 ms must not make a
+        # 0.5 m correction at 200 ms read as 0.5 m in 10 ms.
+        self.filter.apply_group([yaw(190, 0.0, source="camera_4")])
+        taken = self.filter.apply_group([position(200, 3.5, 3.0, source="camera_4",
+                                                  identity=None, confirms=False)])
+        self.assertEqual([m.kind for m in taken], [POSITION])
+
     def test_an_uninitialised_filter_reports_lost_not_a_pose(self):
         published = ImmRoverFilter().publish(0)
         self.assertEqual(published["tracking_state"], LOST)
