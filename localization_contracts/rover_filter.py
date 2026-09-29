@@ -340,6 +340,7 @@ class ImmRoverFilter:
         self.heading_sigma = math.radians(heading_sigma_deg)
         self.last_measured_yaw_ns = None
         self.last_yaw_ns = None
+        self.last_marker_yaw_ns = None
         self.last_hold_source_ns = None
         self.hold_revoked = False
         self.lost_ns = int(lost_ms * 1e6)
@@ -400,7 +401,7 @@ class ImmRoverFilter:
         self.sources = frozenset()
         self.last_hold_source_ns = None
         self.hold_revoked = False
-        self.last_measured_yaw_ns = self.last_yaw_ns = None
+        self.last_measured_yaw_ns = self.last_yaw_ns = self.last_marker_yaw_ns = None
         self.history.clear()
         self.applied.clear()
         self.mu = np.full(len(self.models), 1.0 / len(self.models))
@@ -615,6 +616,9 @@ class ImmRoverFilter:
                 self.last_measured_yaw_ns = max(self.last_measured_yaw_ns or 0,
                                                 measurement.stamp_ns)
                 self.last_yaw_ns = max(self.last_yaw_ns or 0, measurement.stamp_ns)
+                if measurement.identity is not None:
+                    self.last_marker_yaw_ns = max(self.last_marker_yaw_ns or 0,
+                                                  measurement.stamp_ns)
             if measurement.kind == POSITION and measurement.source == self.hold_source:
                 self.last_hold_source_ns = max(self.last_hold_source_ns or 0,
                                                measurement.stamp_ns)
@@ -827,4 +831,6 @@ class ImmRoverFilter:
             "model_probabilities": [float(v) for v in self.mu],
             "yaw_age_ms": (stamp_ns - self.last_yaw_ns) / 1e6
             if self.last_yaw_ns is not None else None,
+            "marker_yaw_age_ms": (stamp_ns - self.last_marker_yaw_ns) / 1e6
+            if self.last_marker_yaw_ns is not None else None,
         }

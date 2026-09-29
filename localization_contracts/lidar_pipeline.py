@@ -53,6 +53,8 @@ class LidarCluster:
     sigma_m: float             # 1-sigma position uncertainty
     stamp_ns: int              # midpoint of the sector that saw it
     rejected_candidates: int   # other clusters inside the gate
+    axis_rad: float | None = None   # long axis of the top 0.14 m, modulo pi
+    elongation: float = 1.0         # its eigenvalue ratio; ~1 means no axis
 
 
 @dataclass(frozen=True)
@@ -438,11 +440,30 @@ class ArenaLidar:
             return self._reject("ambiguous_cluster")
         residual, cluster, centre, extent, top = accepted[0]
         self.detections += 1
+        axis, elongation = self.axis_of(cluster)
         return LidarCluster(
             float(centre[0]), float(centre[1]), float(np.max(cluster[:, 2])),
             len(cluster), float(extent[0]), float(extent[1]), residual,
             self._sigma(top, distance), int(stamp_ns), len(accepted) - 1,
+            axis, elongation,
         )
+
+    @staticmethod
+    def axis_of(cluster, slab_m=0.14, min_points=10):
+        """Long axis of the body's top 0.14 m (br_lidar's PCA extent), modulo pi.
+
+        Measured against truth on every scan of datasets 01 and 03 with the
+        other rover at least 1.3 m away: P50 5 deg, P95 14-17 deg for both
+        rovers; the whole cluster is worse (tag_rover P95 27 deg: its sides
+        and wheels are seen on the near side only).
+        """
+        top = cluster[cluster[:, 2] >= float(np.max(cluster[:, 2])) - slab_m]
+        if len(top) < min_points:
+            return None, 1.0
+        xy = top[:, :2] - top[:, :2].mean(axis=0)
+        values, vectors = np.linalg.eigh(np.cov(xy.T))
+        major = vectors[:, 1]
+        return math.atan2(major[1], major[0]), float(values[1] / max(values[0], 1e-12))
 
     def _reject(self, reason):
         self.rejections[reason] = self.rejections.get(reason, 0) + 1

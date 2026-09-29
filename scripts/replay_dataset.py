@@ -132,6 +132,16 @@ def parse_args(argv=None):
     p.add_argument("--coast-ms", type=float, default=300.0)
     p.add_argument("--identity-max-age-s", type=float, default=2.0)
     p.add_argument("--lost-ms", type=float, default=1500.0)
+    p.add_argument("--heading-after-ms", type=float, default=150.0,
+                   help="velocity direction becomes a yaw measurement after this long "
+                        "without a measured yaw; 0 = never")
+    p.add_argument("--heading-min-speed", type=float, default=0.5)
+    p.add_argument("--yaw-valid-s", type=float, default=1.0,
+                   help="yaw_valid while the last marker heading is at most this old")
+    p.add_argument("--lidar-axis-sigma-deg", type=float, default=8.0,
+                   help="the lidar cluster's long axis as a yaw measurement; 0 = off")
+    p.add_argument("--lidar-axis-min-elongation", type=float, default=1.5)
+    p.add_argument("--heading-sigma-deg", type=float, default=8.0)
     p.add_argument("--identity-hold-max-s", type=float, default=10.0,
                    help="keep an identity older than --identity-max-age-s up to this long "
                         "while the lidar confirms the track every scan and no encounter "
@@ -203,6 +213,11 @@ def parse_args(argv=None):
     if a.lidar_transport_ms is None:
         a.lidar_transport_ms = a.transport_ms
     return a
+
+
+def heading_kwargs(a):
+    return dict(heading_after_ms=a.heading_after_ms, heading_min_speed_mps=a.heading_min_speed,
+                heading_sigma_deg=a.heading_sigma_deg)
 
 
 def read_jsonl(path):
@@ -362,7 +377,7 @@ class Replay:
         self.filters = {"tag_rover": ImmRoverFilter(
             coast_ms=a.coast_ms, identity_max_age_s=a.identity_max_age_s,
             lost_ms=a.lost_ms, max_speed_mps=a.max_speed_mps, identity_aliases=aliases,
-            identity_hold_max_s=a.identity_hold_max_s)}
+            identity_hold_max_s=a.identity_hold_max_s, **heading_kwargs(a))}
         self.opponent_enabled = a.camera_background is not None and not a.no_opponent
         self.guard = TwoRoverIdentity(close_m=a.identity_close_m)
         self.opponent_cameras = {}
@@ -380,7 +395,7 @@ class Replay:
             self.filters["opponent"] = ImmRoverFilter(
                 coast_ms=a.coast_ms, identity_max_age_s=a.identity_max_age_s, lost_ms=a.lost_ms,
                 max_speed_mps=a.max_speed_mps, identity_aliases={OPERATOR_IDENTITY},
-                identity_hold_max_s=a.identity_hold_max_s)
+                identity_hold_max_s=a.identity_hold_max_s, **heading_kwargs(a))
             # Same planner class, aimed at the body instead of the marker.
             self.opponent_planner_kwargs = dict(
                 min_roi_px=a.opponent_roi_min_px, max_roi_px=a.opponent_roi_max_px,
@@ -527,10 +542,13 @@ class Replay:
             self.published_times[name].append(now_ns)
             row = {**item, "object_id": name, "capture_ns": f.last_measurement_ns,
                    "wall_ns": int(now_ns), "replay_wall_ns": time.monotonic_ns(),
-                   # Yaw is published for tag_rover while a marker or the
-                   # heading of a moving track fixed it within the last second.
+                   # tag_rover's yaw is vouched for while a marker fixed it
+                   # within --yaw-valid-s; lidar axis and velocity heading keep
+                   # it near (P95 13 deg on datasets 01/03 with cameras 1,3,5)
+                   # but not to the 5 deg a marker gives.
                    "yaw_valid": (name == "tag_rover" and state is not None
-                                 and (item.get("yaw_age_ms") or 1e9) <= 1000.0),
+                                 and (item.get("marker_yaw_age_ms") or 1e12)
+                                 <= self.a.yaw_valid_s * 1000.0),
                    "source_mask": list(item["sources"]),
                    "measurement_wall_hz": self.rate(self.accepted_times[name]),
                    "output_wall_hz": self.rate(self.published_times[name]),
@@ -805,6 +823,16 @@ class Replay:
                                sigma_m=cluster.sigma_m)
                     measurement = lidar_pipeline.measurement_from_cluster(cluster)
                     self.buffers[name].push(measurement)
+                    if (self.a.lidar_axis_sigma_deg > 0 and cluster.axis_rad is not None
+                            and cluster.elongation >= self.a.lidar_axis_min_elongation):
+                        # The axis says nothing about which end is the front:
+                        # take the end nearer the track's own heading.
+                        axis = cluster.axis_rad
+                        if abs(math.remainder(axis - float(state[YAW]), 2 * math.pi)) > math.pi / 2:
+                            axis = math.remainder(axis + math.pi, 2 * math.pi)
+                        self.buffers[name].push(Measurement(
+                            int(cluster.stamp_ns), YAW_ONLY, (axis,),
+                            (math.radians(self.a.lidar_axis_sigma_deg) ** 2,), "lidar"))
                     variance = cluster.sigma_m ** 2
                     self.pending_observations[name].append(Observation(
                         SCHEMA_VERSION, "lidar", int(row["file"].split("_")[-1].split(".")[0]),
