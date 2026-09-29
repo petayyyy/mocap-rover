@@ -74,6 +74,34 @@ class Crossing(unittest.TestCase):
         tag, opponent, guard, swaps = self.run_crossing(confuse=False)
         self.assertEqual((guard.encounters, guard.swaps, swaps), (1, 0, []))
 
+    def test_no_verdict_while_the_rovers_touch_and_one_marker_is_not_enough(self):
+        guard = TwoRoverIdentity()
+        guard.observe_tracks(0, (5.0, 5.0), (5.5, 5.0))            # touching
+        for t in range(1, 5):
+            self.assertFalse(guard.marker_says_swap(t, (5.5, 5.0), (5.0, 5.0), (5.5, 5.0)))
+        guard.observe_tracks(10, (4.0, 5.0), (6.0, 5.0))           # apart again
+        votes = [guard.marker_says_swap(11 + t, (6.0, 5.0), (4.0, 5.0), (6.0, 5.0))
+                 for t in range(3)]
+        self.assertEqual(votes, [False, False, True])
+        # A disagreeing marker resets the count.
+        guard._votes = 0
+        guard.marker_says_swap(20, (6.0, 5.0), (4.0, 5.0), (6.0, 5.0))
+        guard.marker_says_swap(21, (4.0, 5.0), (4.0, 5.0), (6.0, 5.0))
+        self.assertEqual(guard._votes, 0)
+
+    def test_a_second_swap_waits_for_the_hold_off(self):
+        guard = TwoRoverIdentity(votes_needed=1)
+        guard.observe_tracks(0, (5.0, 5.0), (5.5, 5.0))
+        guard.observe_tracks(1, (4.0, 5.0), (6.0, 5.0))
+        first = ImmRoverFilter()
+        second = ImmRoverFilter()
+        first.apply_group([fix(0, (4.0, 5.0), "m", "a", True)])
+        second.apply_group([fix(0, (6.0, 5.0), "o", "b", True)])
+        self.assertTrue(guard.marker_says_swap(2, (6.0, 5.0), (4.0, 5.0), (6.0, 5.0)))
+        guard.swap(2, first, second, (6.0, 5.0))
+        self.assertFalse(guard.marker_says_swap(3, (4.0, 5.0), (6.0, 5.0), (4.0, 5.0)))
+        self.assertEqual(guard.suppressed, 1)
+
     def test_no_encounter_means_no_swap(self):
         guard = TwoRoverIdentity()
         guard.observe_tracks(0, (1.0, 1.0), (5.0, 5.0))

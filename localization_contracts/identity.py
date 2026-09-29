@@ -35,6 +35,8 @@ class TwoRoverIdentity:
     close_m: float = 1.0          # an encounter: tracks nearer than this
     swap_gate_m: float = 0.5      # marker this near one track and not the other
     watch_s: float = 3.0          # how long after an encounter to keep checking
+    votes_needed: int = 3         # consecutive markers that must agree
+    hold_off_s: float = 1.0       # no second swap this soon after one
     events: list = field(default_factory=list)
     encounters: int = 0
     swaps: int = 0
@@ -42,6 +44,9 @@ class TwoRoverIdentity:
     _started_ns: int | None = None
     _closest_m: float = float("inf")
     _watch_until_ns: int | None = None
+    _votes: int = 0
+    _last_swap_ns: int | None = None
+    suppressed: int = 0
 
     def observe_tracks(self, stamp_ns, tag_xy, opponent_xy):
         """Feed both published positions (None while a track is absent)."""
@@ -63,25 +68,51 @@ class TwoRoverIdentity:
                                 "closest_m": round(self._closest_m, 3)})
 
     def watching(self, stamp_ns):
-        return self._inside or (self._watch_until_ns is not None
-                                and stamp_ns <= self._watch_until_ns)
+        """After an encounter has ended, for ``watch_s``.
+
+        Not during it: while the rovers touch, the two tracks are within a
+        body length of each other and a marker on a rover that is climbing the
+        other one is off by as much, so its verdict cannot be trusted.  The
+        question is only asked once they have separated.
+        """
+        return (not self._inside and self._watch_until_ns is not None
+                and stamp_ns <= self._watch_until_ns)
 
     def marker_says_swap(self, stamp_ns, marker_xy, tag_xy, opponent_xy):
-        """True when a fresh marker sits on the opponent track, not on its own."""
+        """True once enough consecutive markers sit on the opponent track.
+
+        One marker is not enough: it takes ``votes_needed`` in a row, each
+        within ``swap_gate_m`` of the opponent track and farther than that
+        from its own, and never within ``hold_off_s`` of the previous swap.
+        A disagreeing marker resets the count.
+        """
         if marker_xy is None or tag_xy is None or opponent_xy is None:
             return False
         if not self.watching(stamp_ns):
+            self._votes = 0
             return False
         to_tag = float(np.hypot(marker_xy[0] - tag_xy[0], marker_xy[1] - tag_xy[1]))
         to_opponent = float(np.hypot(marker_xy[0] - opponent_xy[0], marker_xy[1] - opponent_xy[1]))
-        return to_opponent < self.swap_gate_m and to_tag > self.swap_gate_m
+        if not (to_opponent < self.swap_gate_m and to_tag > self.swap_gate_m):
+            self._votes = 0
+            return False
+        self._votes += 1
+        if self._votes < self.votes_needed:
+            return False
+        if self._last_swap_ns is not None and stamp_ns - self._last_swap_ns < self.hold_off_s * 1e9:
+            self.suppressed += 1
+            return False
+        return True
 
     def swap(self, stamp_ns, tag_filter, opponent_filter, marker_xy):
         swap_tracks(tag_filter, opponent_filter)
         self.swaps += 1
+        self._votes = 0
+        self._last_swap_ns = int(stamp_ns)
         self.events.append({"event": "swap", "stamp_ns": int(stamp_ns),
                             "marker_xy": [float(marker_xy[0]), float(marker_xy[1])]})
 
     def summary(self):
         return {"encounters_closer_than_m": self.close_m, "encounters": self.encounters,
-                "swaps": self.swaps, "events": list(self.events)}
+                "swaps": self.swaps, "suppressed_by_hold_off": self.suppressed,
+                "events": list(self.events)}

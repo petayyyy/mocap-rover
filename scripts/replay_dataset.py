@@ -73,6 +73,10 @@ from localization_contracts.ray_plane import pixel_rays, ray_plane  # noqa: E402
 # Opponent cuboid as the operator sees it: 0.9 x 0.52 m, top at 0.483 m.
 OPPONENT_SIZE_M = (0.9, 0.52, 0.483)
 OPERATOR_IDENTITY = "operator:opponent"
+# A lost opponent is looked for over the whole frame at most this often per
+# camera, and only a blob this far from tag_rover may restart it.
+REACQUIRE_PERIOD_NS = 250_000_000
+REACQUIRE_CLEAR_M = 1.0
 TAG_BODY_M = (0.72, 0.52, 0.40)
 
 # Event order at one instant: a measurement that arrives at t is visible to
@@ -355,6 +359,12 @@ class Replay:
         self.guard = TwoRoverIdentity(close_m=a.identity_close_m)
         self.opponent_cameras = {}
         self.operator_box = None
+        self.operator_done = False
+        self.last_reacquire_ns = {}
+        self.reacquisitions = []
+        self.reacquired_at = None
+        self.reacquire_candidate = None
+        self.tag_seated = False
         if self.opponent_enabled:
             # Same filter class.  Only the operator's rectangle confirms this
             # identity; it never expires because nothing later can re-confirm
@@ -441,7 +451,20 @@ class Replay:
         buffer = self.buffers.get(obs.object_id)
         if buffer is None:
             return
-        if obs.object_id == "tag_rover" and "opponent" in self.filters:
+        features = obs.pixel_features or {}
+        level = float(features.get("planar_tilt_deg", 90.0)) < 10.0
+        # The ray assumes the marker is on its nominal plane, PnP does not; a
+        # marker lifted with its rover makes them disagree by lift * tan(incidence).
+        seated = (abs(float(features.get("pnp_base_z_m", 99.0))
+                      - (self.a.inverted_base_z if features.get("base_inverted")
+                         else self.a.base_z_nominal)) < 0.08
+                  and float(features.get("pnp_ray_disagreement_m", 99.0)) < 0.08)
+        if obs.object_id == "tag_rover":
+            self.tag_seated = level and seated
+        if obs.object_id == "tag_rover" and "opponent" in self.filters and level and seated:
+            # Only a marker on a rover standing level on the floor votes: one
+            # leaning on or lifted onto the other puts its marker off the plane
+            # the ray is intersected with, by up to 0.3 m on dataset 02.
             tag, opp = self.pose_of("tag_rover", now_ns), self.pose_of("opponent", now_ns)
             if tag and opp and self.guard.marker_says_swap(
                     observation_stamp_ns(obs), obs.position_m[:2], tag[:2], opp[:2]):
@@ -603,7 +626,7 @@ class Replay:
         tag = self.pose_of("tag_rover", now_ns)
         opp = self.pose_of("opponent", now_ns)
         stamp = int(items[0][1]["stamp_ns"])
-        operator = (self.operator_box is not None and not self.filters["opponent"].initialized
+        operator = (self.operator_box is not None and not self.operator_done
                     and stamp == self.operator_box["stamp_ns"])
         jobs = {}
         for cid, _ in items:
@@ -631,6 +654,16 @@ class Replay:
                 jobs[cid] = {"plan": plan, "prediction": opp[:2], "tag_pose": tag and tag[:3],
                              "exclude": exclude,
                              "gate_m": max(self.a.opponent_gate_m, 3.0 * opp[3])}
+            elif (tag is not None and self.operator_done
+                  and now_ns - self.last_reacquire_ns.get(cid, -10**18) >= REACQUIRE_PERIOD_NS):
+                # The opponent track is gone.  The marker can only ever name
+                # tag_rover, so the other rover is whatever blob is left well
+                # away from it -- looked for over the whole frame, sparingly.
+                self.last_reacquire_ns[cid] = now_ns
+                jobs[cid] = {"plan": roi_tracker.Plan(roi_tracker.ACQUIRE, None, None,
+                                                      "opponent_reacquire"),
+                             "prediction": None, "tag_pose": tag[:3], "exclude": exclude,
+                             "reacquire": True}
             elif exclude:
                 # No opponent track here: still learn the background.
                 jobs[cid] = {"plan": roi_tracker.Plan(roi_tracker.IDLE, None, None, "no_track"),
@@ -666,7 +699,7 @@ class Replay:
             timing["by_mode"][plan.mode].append(result["latency_ms"])
             if job is not None and job["plan"].mode != roi_tracker.IDLE:
                 timing["opponent_ms"].append(result["opponent_ms"])
-                if job["plan"].reason != "operator_box":
+                if job["plan"].reason not in ("operator_box", "opponent_reacquire"):
                     self.opponent_planners[cid].report(result.get("opponent_reading") is not None)
             if job is not None:
                 timing["background_update_ms"].append(result["background_update_ms"])
@@ -712,9 +745,40 @@ class Replay:
         """Main thread: one opponent reading -> Observation + filter measurements."""
         reading = result.get("opponent_reading")
         operator = job["plan"].reason == "operator_box"
+        if operator:
+            self.operator_done = True
+        reacquire = bool(job.get("reacquire"))
+        if reacquire:
+            tag = self.pose_of("tag_rover", now_ns)
+            f = self.filters["opponent"]
+            if (reading is None or tag is None or self.pose_of("opponent", now_ns) is not None
+                    or not self.tag_seated
+                    or math.hypot(reading.x - tag[0], reading.y - tag[1]) < REACQUIRE_CLEAR_M):
+                # A tag_rover lifted onto or leaning on something has a marker
+                # off its plane and a track that may be anywhere nearby, so
+                # "far from tag_rover" means nothing until it stands again.
+                return
+            # Two readings a reacquire period apart must agree before a lost
+            # identity is handed to a blob.
+            previous = self.reacquire_candidate
+            self.reacquire_candidate = (result["stamp"], reading.x, reading.y)
+            if (self.reacquired_at != result["stamp"] and (
+                    previous is None or result["stamp"] - previous[0] < REACQUIRE_PERIOD_NS
+                    or result["stamp"] - previous[0] > 3 * REACQUIRE_PERIOD_NS
+                    or math.hypot(reading.x - previous[1], reading.y - previous[2]) > 0.3)):
+                return
+            if self.reacquired_at != result["stamp"]:
+                f.reset()
+            self.reacquired_at = result["stamp"]
+            self.reacquisitions.append({"stamp_ns": int(result["stamp"]), "camera_id": cid,
+                                        "xy": [reading.x, reading.y],
+                                        "tag_distance_m": math.hypot(reading.x - tag[0],
+                                                                     reading.y - tag[1])})
+            operator = True
         if reading is not None:
             x, y, cov = reading.x, reading.y, reading.covariance_xy
-            method = "operator_box" if operator else reading.method
+            method = ("silhouette_reacquire" if reacquire
+                      else "operator_box" if operator else reading.method)
             features = {"incidence_deg": math.degrees(reading.incidence_rad),
                         "pixels": reading.pixels, "reading": reading.method, **reading.detail}
         else:
@@ -1056,7 +1120,9 @@ class Replay:
                        "rows": self.lidar_rows_written}
                       if self.lidar is not None else None),
             "clock": {"sim_start_ns": self.t0, "sim_end_ns": self.end_ns},
-            "identity": self.guard.summary() if self.opponent_enabled else None,
+            "identity": ({**self.guard.summary(),
+                          "opponent_reacquisitions": list(self.reacquisitions)}
+                         if self.opponent_enabled else None),
             "errors": list(self.errors),
         }
 
