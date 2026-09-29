@@ -110,7 +110,9 @@ class NodeConfig:
     # systemd service running as an unprivileged user.
     ptp_pmc: str = "/usr/sbin/pmc"
     ptp_uds: str = "/var/run/ptp4l"
-    ptp_period_s: float = 1.0
+    # The offset is a diagnostic, not part of the timestamp path, and every
+    # poll through sudo writes three lines to the journal, so poll slowly.
+    ptp_period_s: float = 5.0
     # pmc binds its own reply socket next to ptp4l's, under a root-owned
     # directory, so an unprivileged node cannot query it at all
     # ("uds: bind failed: Permission denied").  With this set, the node calls

@@ -23,8 +23,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from localization_contracts import lan_capture  # noqa: E402
 from pi_cam import flash_analysis, lan_protocol as proto  # noqa: E402
 from pi_cam.camera_node import (  # noqa: E402
-    CameraNode, NodeConfig, SyntheticSensor, realtime_minus_boottime_ns,
-    stamp_reference_correction_ns)
+    CameraNode, Frame, NodeConfig, PtpMonitor, SyntheticSensor,
+    realtime_minus_boottime_ns, stamp_reference_correction_ns)
 
 WIDTH, HEIGHT = 328, 246
 
@@ -216,6 +216,94 @@ class NodeAndSource(unittest.TestCase):
         answer = link.send_command({"cmd": "explode"})
         self.assertFalse(answer["ok"])
         self.assertTrue(self.source.request_status("cam_t")["ok"])
+
+
+class HardwareRegressions(unittest.TestCase):
+    """Defects found on a live CM5; each would pass silently in isolation."""
+
+    def test_wait_connected_waits_for_the_hello_not_the_first_frame(self):
+        # A node whose windows are still set from an earlier client starts
+        # sending frames the moment the next client connects.  A consumer that
+        # returned on the first frame found hello() empty and crashed
+        # (record_lan_dataset did, on hardware).
+        node = start_node(camera_id="cam_h")
+        first = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
+        try:
+            first.wait_connected(5.0)
+            first.request_windows("cam_h", [(0, 0, 32, 32)])
+            self.assertIsNotNone(first.take("cam_h", 1.0))
+            first.close()                      # windows stay set on the node
+            second = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
+            try:
+                self.assertEqual(second.wait_connected(5.0), ["cam_h"])
+                hello = second.hello("cam_h")
+                self.assertIsNotNone(hello, "wait_connected returned before the hello")
+                self.assertEqual(hello["camera_id"], "cam_h")
+                self.assertIn("cam_h", second.announced)
+            finally:
+                second.close()
+        finally:
+            node.stop()
+
+    def test_frame_release_drops_the_buffer_view_before_the_camera_stops(self):
+        # picamera2's DMA allocator refuses to close while a numpy array still
+        # exports the mapped buffer: "cannot close exported pointers exist".
+        closed = []
+        array = np.zeros((4, 4), dtype=np.uint8)
+        frame = Frame(array, 1, 2, 3, 1.0, 0, release=lambda: closed.append(True))
+        frame.release()
+        self.assertIsNone(frame.y, "the buffer view outlives release()")
+        self.assertEqual(closed, [True])
+        frame.release()                        # idempotent
+        self.assertEqual(closed, [True])
+
+    def test_payload_bytes_is_the_wire_size_not_the_decoded_size(self):
+        node = start_node(camera_id="cam_b")
+        source = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
+        try:
+            source.wait_connected(5.0)
+            source.request_windows("cam_b", [(0, 0, 64, 64), (0, 0, 64, 64, "jpeg")])
+            for _ in range(60):
+                group = source.take("cam_b", 0.5)
+                if group and len(group) == 2:
+                    break
+            else:
+                self.fail("no two-window group arrived")
+            y8 = [f for f in group if f.format == "y8"][0]
+            jpeg = [f for f in group if f.format == "jpeg"][0]
+            self.assertEqual(y8.payload_bytes, 64 * 64)
+            self.assertGreater(jpeg.payload_bytes, 0)
+            self.assertLess(jpeg.payload_bytes, jpeg.array.size,
+                            "a JPEG window must count its compressed size")
+        finally:
+            source.close()
+            node.stop()
+
+    def test_ptp_command_uses_an_absolute_pmc_and_optional_sudo(self):
+        # pmc lives in /usr/sbin, absent from a service PATH, and it cannot bind
+        # its reply socket as an unprivileged user.
+        cfg = NodeConfig()
+        self.assertTrue(cfg.ptp_pmc.startswith("/"), cfg.ptp_pmc)
+        self.assertEqual(PtpMonitor(cfg).command()[:2], ["sudo", "-n"])
+        plain = PtpMonitor(NodeConfig(ptp_pmc_sudo=False)).command()
+        self.assertEqual(plain[0], cfg.ptp_pmc)
+        self.assertIn("GET PORT_DATA_SET", plain)
+
+    def test_ptp_monitor_reports_unavailable_when_pmc_says_nothing(self):
+        monitor = PtpMonitor(NodeConfig(ptp_pmc="/bin/true", ptp_pmc_sudo=False))
+        monitor.poll_once()
+        snapshot = monitor.snapshot()
+        self.assertEqual(snapshot["state"], "unavailable")
+        self.assertIsNone(snapshot["offset_ns"])
+
+    def test_ptp_monitor_parses_a_pmc_answer(self):
+        monitor = PtpMonitor(NodeConfig(ptp_pmc="/bin/echo", ptp_pmc_sudo=False))
+        monitor.command = lambda: ["/bin/printf", "%s\n",
+                                   "offsetFromMaster -1234.0", "portState SLAVE"]
+        monitor.poll_once()
+        snapshot = monitor.snapshot()
+        self.assertEqual(snapshot["offset_ns"], -1234)
+        self.assertEqual(snapshot["state"], "SLAVE")
 
 
 class NodeSurvivesClients(unittest.TestCase):

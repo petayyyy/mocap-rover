@@ -25,5 +25,5 @@
   "ptp_pmc": "/usr/sbin/pmc",
   "ptp_pmc_sudo": true,
   "ptp_uds": "/var/run/ptp4l",
-  "ptp_period_s": 1.0
+  "ptp_period_s": 5.0
 }

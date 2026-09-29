@@ -312,6 +312,11 @@ class LanCameraSource:
         self.condition = threading.Condition()
         self.links = [NodeLink(self, *parse_node_address(n)) for n in nodes]
         self.by_camera: dict[str, NodeLink] = {}
+        # Cameras whose node said hello.  Frames alone also populate
+        # by_camera (so nothing is dropped when a hello is missed), but only a
+        # hello proves the identity came from the node's config, so that is
+        # what wait_connected and hello() wait for.
+        self.announced: set[str] = set()
         self.expected = list(camera_ids) if camera_ids else None
         self.pending: dict[str, list] = {}
         self.partial: dict[str, list] = {}
@@ -331,6 +336,7 @@ class LanCameraSource:
         with self.condition:
             cid = link.camera_id
             self.by_camera[cid] = link
+            self.announced.add(cid)
             self.received.setdefault(cid, 0)
             self.dropped.setdefault(cid, 0)
             self.windows_received.setdefault(cid, 0)
@@ -352,6 +358,8 @@ class LanCameraSource:
             if self.closed:
                 return
             if cid not in self.by_camera:
+                # Route it, but do not claim the identity is confirmed: that
+                # takes a hello.  See ``announced``.
                 self.by_camera[cid] = link
                 self.received.setdefault(cid, 0)
                 self.dropped.setdefault(cid, 0)
@@ -384,18 +392,23 @@ class LanCameraSource:
             return sorted(self.by_camera)
 
     def wait_connected(self, timeout=5.0, camera_ids=None):
-        """Block until every expected node has said hello; return the ids seen."""
+        """Block until every expected node has said hello; return the ids seen.
+
+        Waits for the hello, not for the first frame: a node whose windows are
+        still set from an earlier client starts sending frames immediately, and
+        a caller that returned on a frame would find ``hello()`` empty.
+        """
         expected = camera_ids or self.expected
         deadline = time.monotonic() + timeout
         with self.condition:
             while True:
                 if expected is None:
-                    ok = len(self.by_camera) >= len(self.links)
+                    ok = len(self.announced) >= len(self.links)
                 else:
-                    ok = set(expected) <= set(self.by_camera)
+                    ok = set(expected) <= self.announced
                 remaining = deadline - time.monotonic()
                 if ok or remaining <= 0:
-                    return sorted(self.by_camera)
+                    return sorted(self.announced or self.by_camera)
                 self.condition.wait(remaining)
 
     def take(self, camera_id, timeout=0.2):
@@ -417,9 +430,16 @@ class LanCameraSource:
         with self.condition:
             return self.statuses.get(camera_id)
 
-    def hello(self, camera_id):
-        link = self._link(camera_id)
-        return link.hello
+    def hello(self, camera_id, timeout=2.0):
+        """The node's hello for this camera, waiting briefly if it is in flight."""
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            while camera_id not in self.announced:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.condition.wait(remaining)
+        return self._link(camera_id).hello
 
     def stats(self):
         with self.condition:
