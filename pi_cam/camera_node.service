@@ -1,0 +1,25 @@
+[Unit]
+Description=mocap-rover IMX219 camera node (windows over LAN)
+Documentation=file:///opt/mocap-rover/pi_cam/README.md
+After=network-online.target ptp4l.service phc2sys.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=video
+WorkingDirectory=/opt/mocap-rover/pi_cam
+ExecStart=/usr/bin/python3 /opt/mocap-rover/pi_cam/camera_node.py --config /etc/mocap-rover/node_config.json
+Restart=always
+RestartSec=2
+# The capture thread must not wait behind other processes.
+Nice=-10
+# libcamera allocates its buffers at start; give it time before the watchdog.
+TimeoutStartSec=30
+Environment=PYTHONUNBUFFERED=1
+# Do not let the node sleep on a stalled log pipe.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

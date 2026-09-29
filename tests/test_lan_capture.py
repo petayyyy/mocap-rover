@@ -1,0 +1,416 @@
+"""The LAN camera node and the laptop receiver, end to end without hardware.
+
+A real ``CameraNode`` runs in a thread with the synthetic sensor, whose pixel
+(r, c) of frame ``seq`` is ``(7r + 3c + seq) & 0xFF``, so every window that
+arrives can be checked against the coordinates and frame its header claims.
+"""
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from localization_contracts import lan_capture  # noqa: E402
+from pi_cam import flash_analysis, lan_protocol as proto  # noqa: E402
+from pi_cam.camera_node import (  # noqa: E402
+    CameraNode, NodeConfig, SyntheticSensor, realtime_minus_boottime_ns,
+    stamp_reference_correction_ns)
+
+WIDTH, HEIGHT = 328, 246
+
+
+def start_node(**overrides):
+    cfg = NodeConfig(camera_id=overrides.pop("camera_id", "cam_t"), port=overrides.pop("port", 0),
+                     sensor="synthetic",
+                     synthetic_width=WIDTH, synthetic_height=HEIGHT, synthetic_fps=100.0,
+                     status_period_s=0.2, ptp_enabled=False, **overrides)
+    node = CameraNode(cfg)
+    node.start()
+    return node
+
+
+def expected_window(frame):
+    rows = np.arange(frame.row0, frame.row0 + frame.height)[:, None]
+    cols = np.arange(frame.col0, frame.col0 + frame.width)[None, :]
+    return ((7 * rows + 3 * cols + frame.frame_seq) & 0xFF).astype(np.uint8)
+
+
+class Protocol(unittest.TestCase):
+    def test_frame_header_roundtrip_and_size(self):
+        header = proto.FrameHeader("camera_3", 12345, 1_700_000_000_123_456_789, 800_000, 9452,
+                                   12_048_192, 100, 200, 480, 480, proto.FORMAT_JPEG, 1, 2,
+                                   1640, 1232, 7, 1_700_000_000_130_000_000, 555, -42, None)
+        raw = header.pack()
+        self.assertEqual(len(raw), proto.FRAME_HEADER_SIZE)
+        back = proto.FrameHeader.unpack(raw)
+        self.assertEqual(back, header)
+        self.assertIsNone(back.ptp_offset_ns)
+        with_ptp = proto.FrameHeader.unpack(
+            proto.FrameHeader(**{**header.__dict__, "ptp_offset_ns": -12345}).pack())
+        self.assertEqual(with_ptp.ptp_offset_ns, -12345)
+
+    def test_stream_parser_reassembles_split_messages(self):
+        header = proto.FrameHeader("c", 1, 2, 3, 4, 5, 0, 0, 4, 2, proto.FORMAT_Y8, 0, 1,
+                                   4, 2, 0, 0)
+        payload = bytes(range(8))
+        stream = b"".join(proto.encode_frame(header, payload)) + proto.encode_json(
+            proto.MSG_STATUS, {"sensor_fps": 83.0}) + b"".join(proto.encode_frame(header, payload))
+        parser = proto.StreamParser()
+        messages = []
+        for i in range(0, len(stream), 7):        # feed in awkward slices
+            messages.extend(parser.feed(stream[i:i + 7]))
+        self.assertEqual([m.msg_type for m in messages],
+                         [proto.MSG_FRAME, proto.MSG_STATUS, proto.MSG_FRAME])
+        self.assertEqual(messages[0].frame, header)
+        self.assertEqual(bytes(messages[0].data), payload)
+        self.assertEqual(messages[1].meta, {"sensor_fps": 83.0})
+
+    def test_frame_parse_costs_microseconds(self):
+        header = proto.FrameHeader("camera_1", 1, 2, 3, 4, 5, 0, 0, 480, 480, proto.FORMAT_Y8,
+                                   0, 2, 1640, 1232, 1, 2)
+        payload = bytes(480 * 480)
+        message = b"".join(proto.encode_frame(header, payload))
+        parser = proto.StreamParser()
+        begin = time.perf_counter()
+        n = 500
+        for _ in range(n):
+            (msg,) = parser.feed(message)
+            msg.frame
+        per_message_us = (time.perf_counter() - begin) / n * 1e6
+        # 500 messages per second must cost a negligible share of the second.
+        self.assertLess(per_message_us, 500.0)
+
+    def test_bad_magic_is_rejected(self):
+        with self.assertRaises(proto.ProtocolError):
+            proto.StreamParser().feed(b"\0" * 32)
+
+    def test_window_normalization_clamps_and_aligns(self):
+        w = proto.normalize_window((-5, 1500, 480, 480, "jpeg"), 1640, 1232)
+        self.assertEqual(w, {"row0": 0, "col0": 1160, "w": 480, "h": 480, "format": "jpeg"})
+        w = proto.normalize_window({"row0": 101, "col0": 7, "w": 2000, "h": 10}, 1640, 1232)
+        self.assertEqual((w["row0"], w["col0"], w["w"]), (100, 0, 1640))
+        w = proto.normalize_window({"row0": 101, "col0": 7, "w": 20, "h": 10}, 1640, 1232)
+        self.assertEqual((w["row0"], w["col0"], w["w"]), (100, 6, 20))
+        with self.assertRaises(proto.ProtocolError):
+            proto.normalize_window((0, 0, 10, 10, "png"), 1640, 1232)
+
+
+class NodeAndSource(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.node = start_node()
+        cls.source = lan_capture.LanCameraSource([("127.0.0.1", cls.node.port)])
+        assert cls.source.wait_connected(5.0) == ["cam_t"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.source.close()
+        cls.node.stop()
+
+    def take_group(self, predicate=lambda g: True, tries=60):
+        for _ in range(tries):
+            group = self.source.take("cam_t", 0.5)
+            if group is not None and predicate(group):
+                return group
+        self.fail("no matching frame group arrived")
+
+    def test_hello_carries_identity_from_config_not_address(self):
+        hello = self.source.hello("cam_t")
+        self.assertEqual(hello["camera_id"], "cam_t")
+        self.assertEqual((hello["sensor_width"], hello["sensor_height"]), (WIDTH, HEIGHT))
+        self.assertEqual(hello["line_time_ns"], 9452)
+
+    def test_windows_of_one_frame_share_the_stamp_and_match_pixels(self):
+        ack = self.source.request_windows("cam_t", [(10, 20, 64, 48), (100, 200, 64, 48, "jpeg")])
+        self.assertTrue(ack["ok"], ack)
+        group = self.take_group(lambda g: len(g) == 2 and g[0].request_id == ack["request_id"])
+        a, b = group
+        self.assertEqual(a.stamp_ns, b.stamp_ns)
+        self.assertEqual(a.frame_seq, b.frame_seq)
+        self.assertEqual((a.row0, a.col0, a.width, a.height, a.format), (10, 20, 64, 48, "y8"))
+        self.assertEqual((b.row0, b.col0, b.width, b.height, b.format), (100, 200, 64, 48, "jpeg"))
+        np.testing.assert_array_equal(a.array, expected_window(a))
+        # JPEG q90 of a smooth ramp: close, not exact.
+        self.assertLess(np.abs(b.array.astype(int) - expected_window(b).astype(int)).mean(), 6.0)
+        camera_id, array, stamp, row0, col0, line_time, exposure, receive = a
+        self.assertEqual((camera_id, row0, col0, line_time, exposure), ("cam_t", 10, 20, 9452, 800_000))
+        self.assertIs(array, a.array)
+        self.assertGreater(receive, stamp)
+        self.assertEqual(a.row_stamp_ns(5, exposure_centre=False), stamp + 15 * 9452)
+
+    def test_stamp_is_exposure_start_on_the_realtime_scale(self):
+        self.source.request_windows("cam_t", [(0, 0, 8, 8)])
+        group = self.take_group(lambda g: len(g) == 1 and g[0].width == 8)
+        frame = group[0]
+        # readout_start reference: stamp = SensorTimestamp - exposure, moved to REALTIME.
+        expected = frame.sensor_stamp_ns + frame.clock_offset_ns - frame.exposure_ns
+        self.assertEqual(frame.stamp_ns, expected)
+        self.assertLess(abs(frame.clock_offset_ns - realtime_minus_boottime_ns()), 5_000_000)
+        latency_ms = (frame.receive_ns - frame.stamp_ns) / 1e6
+        self.assertGreater(latency_ms, 0.0)
+        self.assertLess(latency_ms, 200.0)
+
+    def test_full_frame_on_request_has_sensor_size(self):
+        self.source.request_windows("cam_t", [(0, 0, 8, 8)])
+        ack = self.source.request_full("cam_t")
+        group = self.take_group(lambda g: any(f.is_full for f in g))
+        full = [f for f in group if f.is_full][0]
+        self.assertEqual(full.array.shape, (HEIGHT, WIDTH))
+        self.assertEqual(full.request_id, ack["request_id"])
+        # The full frame and the window are the same sensor frame.
+        window = [f for f in group if not f.is_full][0]
+        self.assertEqual(window.stamp_ns, full.stamp_ns)
+        np.testing.assert_array_equal(full.array, expected_window(full))
+        np.testing.assert_array_equal(window.array, full.array[:8, :8])
+
+    def test_slow_consumer_keeps_the_latest_and_counts_drops(self):
+        self.source.request_windows("cam_t", [(0, 0, 16, 16)])
+        self.take_group(lambda g: g[0].width == 16)
+        before = self.source.stats()
+        time.sleep(0.5)                       # ~50 frames arrive, nobody takes them
+        group = self.take_group(lambda g: g[0].width == 16)
+        after = self.source.stats()
+        self.assertGreater(after["dropped"]["cam_t"] - before["dropped"]["cam_t"], 20)
+        self.assertGreater(after["received"]["cam_t"] - before["received"]["cam_t"], 30)
+        # What we got is the newest frame, not a stale one.
+        newer = self.take_group(lambda g: g[0].width == 16)
+        self.assertLess(newer[0].frame_seq - group[0].frame_seq, 10)
+
+    def test_status_reports_sensor_rate_and_counters(self):
+        deadline = time.monotonic() + 3.0
+        status = None
+        while time.monotonic() < deadline:
+            status = self.source.status("cam_t")
+            if status and status["frames_captured"] > 10:
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(status)
+        self.assertAlmostEqual(status["sensor_fps"], 100.0, delta=1.0)
+        for key in ("frames_missed", "frames_dropped_queue", "capture_to_send_ms", "ptp",
+                    "clock_offset_ns", "line_time_ns", "exposure_ns", "throttled", "soc_temp_c"):
+            self.assertIn(key, status)
+        self.assertEqual(status["ptp"]["state"], "disabled")
+        ack = self.source.request_status("cam_t")
+        self.assertTrue(ack["ok"])
+
+    def test_configure_changes_exposure_in_the_headers(self):
+        ack = self.source.configure("cam_t", exposure_us=500)
+        self.assertTrue(ack["ok"], ack)
+        self.source.request_windows("cam_t", [(0, 0, 4, 4)])
+        group = self.take_group(lambda g: g[0].width == 4 and g[0].exposure_ns == 500_000)
+        self.assertEqual(group[0].exposure_ns, 500_000)
+        self.source.configure("cam_t", exposure_us=800)
+
+    def test_unknown_command_is_refused_not_fatal(self):
+        link = self.source._link("cam_t")
+        answer = link.send_command({"cmd": "explode"})
+        self.assertFalse(answer["ok"])
+        self.assertTrue(self.source.request_status("cam_t")["ok"])
+
+
+class NodeSurvivesClients(unittest.TestCase):
+    def test_capture_continues_without_a_client_and_after_reconnect(self):
+        node = start_node(camera_id="cam_r")
+        try:
+            time.sleep(0.3)
+            captured_alone = node.frames_captured
+            self.assertGreater(captured_alone, 10)
+            source = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
+            source.wait_connected(5.0)
+            source.request_windows("cam_r", [(0, 0, 8, 8)])
+            self.assertIsNotNone(source.take("cam_r", 1.0))
+            source.close()
+            time.sleep(0.3)
+            self.assertGreater(node.frames_captured, captured_alone + 20)
+            self.assertIsNone(node.client)
+            again = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
+            self.assertEqual(again.wait_connected(5.0), ["cam_r"])
+            again.request_windows("cam_r", [(0, 0, 8, 8)])
+            self.assertIsNotNone(again.take("cam_r", 1.0))
+            again.close()
+        finally:
+            node.stop()
+
+    def test_source_reconnects_when_the_node_comes_back(self):
+        node = start_node(camera_id="cam_q")
+        port = node.port
+        source = lan_capture.LanCameraSource([("127.0.0.1", port)])
+        try:
+            self.assertEqual(source.wait_connected(5.0), ["cam_q"])
+            source.request_windows("cam_q", [(0, 0, 8, 8)])
+            node.stop()
+            time.sleep(0.5)
+            while source.take("cam_q", 0.05) is not None:
+                pass                                   # drain what arrived before the stop
+            restarted = time.monotonic_ns()
+            node = start_node(camera_id="cam_q", port=port)
+            deadline = time.monotonic() + 8.0
+            group = None
+            while time.monotonic() < deadline:
+                group = source.take("cam_q", 0.5)
+                if group is not None and group[0].receive_mono_ns > restarted:
+                    break
+                group = None
+            self.assertIsNotNone(group, "no frames after the node restarted")
+            self.assertEqual(group[0].width, 8)       # the window list was restored
+            self.assertGreaterEqual(source.stats()["links"][f"127.0.0.1:{port}"]["reconnects"], 1)
+        finally:
+            source.close()
+            node.stop()
+
+
+@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is needed to write FFV1")
+class RecordLanDataset(unittest.TestCase):
+    def test_recording_has_the_gazebo_dataset_format(self):
+        import record_lan_dataset
+        from replay_dataset import FrameSource, read_jsonl
+        node = start_node(camera_id="camera_1")
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmp.name)
+            config = {"role": "image_calibrated", "calibration_version": "test",
+                      "cameras": [{"name": "camera_1", "image_size": [WIDTH, HEIGHT]},
+                                  {"name": "camera_2", "image_size": [WIDTH, HEIGHT]}]}
+            (root / "runtime_cameras.json").write_text(json.dumps(config))
+            out = root / "dataset"
+            meta = record_lan_dataset.main([
+                "--nodes", f"127.0.0.1:{node.port}", "--config", str(root / "runtime_cameras.json"),
+                "--output", str(out), "--seconds", "1.5", "--divisor", "5", "--allow-missing"])
+            self.assertEqual(set(meta["cameras"]), {"camera_1"})
+            for name in ("meta.json", "runtime_cameras.json", "camera_1.mkv", "camera_1.jsonl",
+                         "truth.jsonl", "clock.jsonl"):
+                self.assertTrue((out / name).exists(), name)
+            self.assertEqual((out / "truth.jsonl").read_text(), "")
+            rows = read_jsonl(out / "camera_1.jsonl")
+            self.assertGreater(len(rows), 10)
+            self.assertEqual([r["index"] for r in rows], list(range(len(rows))))
+            for key in ("camera_id", "stamp_ns", "wall_ns", "exposure_ns", "line_time_ns",
+                        "node_send_ns", "receive_ns"):
+                self.assertIn(key, rows[0])
+            self.assertEqual(meta["cameras"]["camera_1"]["frames"], len(rows))
+            self.assertEqual(meta["full_frame_divisor"], 5)
+            self.assertIn("fps", meta["achieved"]["camera_1"])
+            clock = read_jsonl(out / "clock.jsonl")
+            self.assertGreater(len(clock), 5)
+            self.assertLessEqual(clock[0]["sim_ns"], rows[0]["stamp_ns"] + 1_000_000_000)
+            # Frames are stored losslessly and in index order: pixel check per frame.
+            source = FrameSource(out / "camera_1.mkv")
+            for row in rows[:5]:
+                rgb = source.read(row["index"])
+                self.assertEqual(rgb.shape, (HEIGHT, WIDTH, 3))
+                np.testing.assert_array_equal(rgb[:, :, 0], rgb[:, :, 2])
+                self.assertEqual(int(rgb[3, 5, 0]), SyntheticSensor.expected_pixel(3, 5, row["frame_seq"]))
+            source.close()
+            probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v",
+                                    "-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0",
+                                    str(out / "camera_1.mkv")], capture_output=True, text=True)
+            self.assertEqual(probe.stdout.strip(), "ffv1,bgr0")
+        finally:
+            node.stop()
+            tmp.cleanup()
+
+
+class TimingTool(unittest.TestCase):
+    def test_timing_report_has_the_numbers_per_camera(self):
+        import lan_camera_timing
+        node = start_node(camera_id="camera_9")
+        try:
+            report = lan_camera_timing.main([
+                "--nodes", f"127.0.0.1:{node.port}", "--seconds", "1.0", "--full-period", "0.3",
+                "--windows", "0,0,32,32;40,40,32,32"])
+        finally:
+            node.stop()
+        cam = report["cameras"]["camera_9"]
+        self.assertGreater(cam["frames_received"], 50)
+        self.assertGreater(cam["window_latency"]["n"], 100)
+        self.assertGreaterEqual(cam["full_latency"]["n"], 2)
+        self.assertLess(cam["window_latency"]["p95"] / 1e6, 100.0)
+        self.assertAlmostEqual(cam["period_median_ns"] / 1e6, 10.0, delta=0.5)
+        self.assertEqual(cam["node_frames_missed"], 0)
+
+
+class RollingShutterArithmetic(unittest.TestCase):
+    LT, EXP, H = 9452, 800_000, 1232
+
+    def test_led_fit_recovers_line_time_and_reference(self):
+        rng = np.random.default_rng(3)
+        for reference, offset in (("readout_start_first_row", -self.EXP),
+                                  ("exposure_start_first_row", 0),
+                                  ("frame_end", -(self.EXP + self.H * self.LT))):
+            samples = []
+            for i in range(40):
+                t0 = 10 ** 15 + i * 12_048_192
+                flash = t0 + rng.uniform(self.EXP, (self.H - 1) * self.LT)
+                image = flash_analysis.render_flash(self.H, 40, t0, self.LT, self.EXP, flash, rng=rng)
+                band = flash_analysis.lit_band(image)
+                self.assertFalse(flash_analysis.band_is_truncated(band, self.H))
+                samples.append({"flash_ns": flash, "sensor_stamp_ns": t0 - offset,
+                                "first_row": band[0], "last_row": band[1], "exposure_ns": self.EXP})
+            fit = flash_analysis.fit_rolling_shutter(samples, self.H)
+            self.assertAlmostEqual(fit["line_time_ns"], self.LT, delta=self.LT * 0.01)
+            self.assertAlmostEqual(fit["stamp_offset_ns"], offset, delta=self.LT * 2)
+            self.assertEqual(fit["reference"], reference)
+            self.assertAlmostEqual(fit["line_time_from_band_ns"], self.LT, delta=self.LT * 0.03)
+
+    def test_flash_time_from_two_frames_agrees(self):
+        # The same flash seen by two synchronized cameras with different phases.
+        flash = 10 ** 15 + 5_000_000
+        estimates = []
+        for phase in (0, 3_000_000, 5_777_777):
+            t0 = 10 ** 15 - phase
+            image = flash_analysis.render_flash(self.H, 8, t0, self.LT, self.EXP, flash)
+            band = flash_analysis.lit_band(image)
+            estimates.append(flash_analysis.flash_time_ns(t0, self.LT, self.EXP, *band))
+        for estimate in estimates:
+            self.assertLess(abs(estimate - flash), self.LT)
+
+    def test_truncated_band_is_detected(self):
+        image = flash_analysis.render_flash(100, 8, 0, self.LT, self.EXP, 99 * self.LT + 10)
+        band = flash_analysis.lit_band(image)
+        self.assertTrue(flash_analysis.band_is_truncated(band, 100))
+        self.assertIsNone(flash_analysis.lit_band(np.full((50, 8), 20, np.uint8)))
+
+    def test_reference_correction_signs(self):
+        self.assertEqual(stamp_reference_correction_ns("exposure_start_first_row", 800, 9, 10), 0)
+        self.assertEqual(stamp_reference_correction_ns("readout_start_first_row", 800, 9, 10), -800)
+        self.assertEqual(stamp_reference_correction_ns("frame_end", 800, 9, 10), -890)
+
+    def test_probe_dry_run_matches_the_emulated_platform(self):
+        from pi_cam import led_timestamp_probe as probe
+        result = probe.run(probe.parse_args(["--synthetic", "--flashes", "12", "--period-s", "0.02"]))
+        fit = result["fit"]
+        self.assertEqual(fit["reference"], "readout_start_first_row")
+        self.assertAlmostEqual(fit["line_time_ns"], self.LT, delta=self.LT * 0.02)
+        self.assertEqual(result["recommended_config"]["stamp_reference"], "readout_start_first_row")
+        self.assertLess(abs(result["recommended_config"]["stamp_correction_ns"]), 50_000)
+
+
+class NodeConfigFile(unittest.TestCase):
+    def test_example_config_loads_and_rejects_unknown_keys(self):
+        cfg = NodeConfig.load(ROOT / "pi_cam" / "node_config.example.json")
+        self.assertEqual(cfg.computed_line_time_ns(), 9452)
+        self.assertEqual(cfg.line_time_source(), "register_model")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            json.dump({"camera_id": "x", "bogus": 1}, handle)
+        with self.assertRaises(ValueError):
+            NodeConfig.load(handle.name)
+        Path(handle.name).unlink()
+
+    def test_service_starts_the_node_with_the_config(self):
+        unit = (ROOT / "pi_cam" / "camera_node.service").read_text()
+        self.assertIn("camera_node.py --config", unit)
+        self.assertIn("Restart=always", unit)
+
+
+if __name__ == "__main__":
+    unittest.main()
