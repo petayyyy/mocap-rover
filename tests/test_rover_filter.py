@@ -60,6 +60,17 @@ class Buffer(unittest.TestCase):
         self.assertAlmostEqual(chosen.covariance[0], 0.01 ** 2)
         self.assertEqual(self.buffer.dropped_duplicate, 1)
 
+    def test_a_zero_window_groups_only_simultaneous_measurements(self):
+        # Used to loop forever: no measurement satisfied stamp < oldest + 0.
+        buffer = AsyncObservationBuffer(window_ns=0)
+        buffer.push(position(0, 1.0, 1.0, "camera_1"))
+        buffer.push(position(0, 1.0, 1.0, "camera_2"))
+        buffer.push(position(1, 1.0, 1.0, "camera_3"))
+        groups = buffer.drain(10 * MS)
+        self.assertEqual([[m.source for m in g] for g in groups],
+                         [["camera_1", "camera_2"], ["camera_3"]])
+        self.assertEqual(buffer.pending, [])
+
     def test_force_releases_everything(self):
         self.buffer.push(position(0, 1.0, 1.0))
         self.assertEqual(len(self.buffer.drain(0, force=True)), 1)

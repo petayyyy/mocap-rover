@@ -125,7 +125,10 @@ class AsyncObservationBuffer:
             oldest = self.pending[0].stamp_ns
             if not force and int(now_ns) - oldest < self.window_ns:
                 break
-            limit = oldest + self.window_ns
+            # At least the oldest instant itself: with a zero window the
+            # bound "stamp < oldest" took nothing, the queue never shrank,
+            # and this loop appended empty groups until memory ran out.
+            limit = oldest + max(self.window_ns, 1)
             group, rest = [], []
             for measurement in self.pending:
                 (group if measurement.stamp_ns < limit else rest).append(measurement)
