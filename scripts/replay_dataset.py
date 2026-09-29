@@ -174,6 +174,9 @@ def parse_args(argv=None):
     p.add_argument("--opponent-lidar-max-z", type=float, default=0.55)
     p.add_argument("--opponent-lidar-slab", type=float, default=0.14,
                    help="top slab for the opponent cluster centre (cabin sits aft)")
+    p.add_argument("--opponent-extent-plane", type=float, default=None,
+                   help="height of the plane the silhouette extent is read on; "
+                        "default half the body height")
     p.add_argument("--background-threshold", type=float, default=12.0)
     p.add_argument("--background-alpha", type=float, default=0.02)
     p.add_argument("--background-stride", type=int, default=3,
@@ -545,7 +548,8 @@ class Replay:
             opponent = {"background_dir": str(a.camera_background),
                         "stride": a.background_stride, "threshold": a.background_threshold,
                         "alpha": a.background_alpha, "size": tuple(a.opponent_size),
-                        "tag_size": TAG_BODY_M, "gate_m": a.opponent_gate_m}
+                        "tag_size": TAG_BODY_M, "gate_m": a.opponent_gate_m,
+                        "extent_plane_z": a.opponent_extent_plane}
         return {"camera_id": cid, "camera": self.cams[cid], "dataset": str(self.dataset),
                 "tags": self.tags, "calibration_version": self.version,
                 "pipeline": self.pipeline_kwargs, "transport_ns": self.transport_ns,
@@ -979,6 +983,9 @@ class Replay:
                           "lidar_max_z_m": a.opponent_lidar_max_z,
                           "lidar_top_slab_m": a.opponent_lidar_slab,
                           "identity_close_m": a.identity_close_m, "silhouette": "extent",
+                          "extent_plane_z_m": (a.opponent_extent_plane
+                                               if a.opponent_extent_plane is not None
+                                               else a.opponent_size[2] / 2),
                           "lidar_exclusion_margin_m": a.lidar_exclusion_margin,
                           "lidar_exclusion_max_sigma_m": a.lidar_exclusion_max_sigma}
                          if self.opponent_enabled else None),

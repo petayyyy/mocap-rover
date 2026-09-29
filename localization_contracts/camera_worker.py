@@ -96,7 +96,7 @@ class CameraWorker:
             self.opponent = OpponentCamera(
                 cid, self.model, cam["R_world_optical"], cam["position_world"], background,
                 size_m=opponent["size"], tag_size_m=opponent["tag_size"],
-                gate_m=opponent["gate_m"])
+                gate_m=opponent["gate_m"], extent_plane_z=opponent.get("extent_plane_z"))
             self.background_build_s = time.monotonic() - started
 
     def plan(self, context):

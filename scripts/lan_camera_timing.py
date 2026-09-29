@@ -90,6 +90,10 @@ def parse_args(argv=None):
     p.add_argument("--window-format", choices=("y8", "jpeg"), default="y8")
     p.add_argument("--full-period", type=float, default=2.0)
     p.add_argument("--full-format", choices=("y8", "jpeg"), default="y8")
+    p.add_argument("--stream-full", type=int, metavar="DIVISOR",
+                   help="measure a continuous stream of FULL frames instead of windows: "
+                        "every DIVISOR-th sensor frame (1 = every frame, the maximum the "
+                        "sensor and the link can carry)")
     p.add_argument("--json", help="write the raw measurements here")
     p.add_argument("--connect-timeout", type=float, default=10.0)
     return p.parse_args(argv)
@@ -103,10 +107,18 @@ def main(argv=None):
     if not cams:
         source.close()
         raise SystemExit("no camera node answered")
-    print(f"cameras: {cams}; windows {windows}; full frame every {a.full_period}s "
-          f"({a.full_format}); {a.seconds}s", flush=True)
-    for cid in cams:
-        source.request_windows(cid, windows)
+    if a.stream_full:
+        windows = []
+        print(f"cameras: {cams}; FULL frames every {a.stream_full} sensor frame(s) "
+              f"({a.full_format}), no windows; {a.seconds}s", flush=True)
+        for cid in cams:
+            source.request_windows(cid, [])
+            source.stream_full(cid, a.stream_full, a.full_format)
+    else:
+        print(f"cameras: {cams}; windows {windows}; full frame every {a.full_period}s "
+              f"({a.full_format}); {a.seconds}s", flush=True)
+        for cid in cams:
+            source.request_windows(cid, windows)
 
     per = {cid: {"window_latency_ns": [], "full_latency_ns": [], "node_latency_ns": [],
                  "net_latency_ns": [], "period_dev_ns": [], "stamps": [], "seqs": [],
@@ -118,7 +130,7 @@ def main(argv=None):
     next_cpu = start + 1.0
     while time.monotonic() - start < a.seconds:
         now = time.monotonic()
-        if now >= next_full:
+        if not a.stream_full and now >= next_full:
             next_full = now + a.full_period
             for cid in cams:
                 try:
@@ -158,10 +170,17 @@ def main(argv=None):
 
     final_status = {cid: source.status(cid) for cid in cams}
     stats = source.stats()
+    if a.stream_full:
+        for cid in cams:
+            try:
+                source.stream_full(cid, 0, a.full_format, timeout=1.0)
+            except (LanNotConnected, TimeoutError):
+                pass
     source.close()
     elapsed = time.monotonic() - start
 
     report = {"seconds": elapsed, "windows": windows, "full_period_s": a.full_period,
+              "stream_full_divisor": a.stream_full, "full_format": a.full_format,
               "laptop_cpu_percent": summary(cpu_samples), "cameras": {}}
     for cid in cams:
         d = per[cid]
@@ -204,7 +223,9 @@ def main(argv=None):
         }
 
     print()
-    print(f"=== lan_camera_timing: {elapsed:.1f}s, windows {windows}, full every {a.full_period}s ===")
+    mode = (f"FULL frames every {a.stream_full} sensor frame(s) ({a.full_format})"
+            if a.stream_full else f"windows {windows}, full every {a.full_period}s")
+    print(f"=== lan_camera_timing: {elapsed:.1f}s, {mode} ===")
     print(f"laptop CPU: {fmt(report['laptop_cpu_percent'], 1, '%')}")
     for cid, r in report["cameras"].items():
         print(f"\n[{cid}] frames {r['frames_received']} ({r['delivered_fps']:.1f}/s), "

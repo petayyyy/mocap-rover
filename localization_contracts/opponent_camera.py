@@ -55,7 +55,7 @@ class OpponentCamera:
     def __init__(self, camera_id, camera_model, R_world_camera, camera_position, background,
                  *, size_m=(0.9, 0.52, 0.483), tag_size_m=(0.72, 0.52, 0.40),
                  gate_m=0.8, exclusion_margin_m=0.12, klt_max_frames=8,
-                 estimator="extent", zones=None):
+                 estimator="extent", zones=None, extent_plane_z=None):
         self.camera_id = camera_id
         self.model = camera_model
         self.R = np.asarray(R_world_camera, dtype=float)
@@ -66,7 +66,8 @@ class OpponentCamera:
         self.gate_m = float(gate_m)
         self.exclusion_margin_m = float(exclusion_margin_m)
         self.observer = SilhouetteObserver(camera_model, self.R, self.C, size_m=size_m,
-                                           estimator=estimator, zones=zones)
+                                           estimator=estimator, zones=zones,
+                                           extent_plane_z=extent_plane_z)
         self.flow = KltFeatureTracker(max_frames=klt_max_frames)
         self.flow_plane_z = self.size[2] / 2.0
         self.last_xy = None
