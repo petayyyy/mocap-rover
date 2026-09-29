@@ -21,11 +21,17 @@ class OneCameraImagePipeline:
                  family="tag36h11", tag_size_m=.4, detector_scale=1.0,
                  quality_min=.07, max_reprojection_px=2.0,
                  max_planar_tilt_deg=40.0, min_side_px=20.0,
-                 detector_profile="coverage", marker_ids=(0, 1), **pose_gates):
+                 detector_profile="coverage", marker_ids=(0, 1),
+                 roi_detector_profile=None, **pose_gates):
         self.camera_id=camera_id
         self.family=family; self.marker_ids=tuple(marker_ids); self.tag_size_m=tag_size_m
         self.detector=AprilTagImageDetector(family,scale=detector_scale,
             profile=detector_profile,allowed_ids=self.marker_ids)
+        # A window already sits on the predicted marker, so it can afford a
+        # different trade-off than a whole-frame search; None shares one.
+        self.roi_detector=(self.detector if roi_detector_profile in (None, detector_profile)
+            else AprilTagImageDetector(family,scale=1.0,profile=roi_detector_profile,
+                allowed_ids=self.marker_ids))
         # base_z_nominal_m, max_incidence_deg and the rest of the physical
         # gates travel with the calibration, so they have to reach the
         # observer through every construction path, including reconfigure.

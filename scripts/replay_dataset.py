@@ -56,6 +56,7 @@ sys.path.insert(0, str(ROOT))
 from localization_contracts import lidar_pipeline, roi_tracker  # noqa: E402
 from localization_contracts.apriltag import Detection, marker_plane_z  # noqa: E402
 from localization_contracts.camera_model import CameraModel  # noqa: E402
+from localization_contracts.detector import PROFILES  # noqa: E402
 from localization_contracts.image_pipeline import OneCameraImagePipeline  # noqa: E402
 from localization_contracts.marker_families import normalize_marker_family  # noqa: E402
 from localization_contracts.rover_filter import (  # noqa: E402
@@ -92,8 +93,10 @@ def parse_args(argv=None):
                    help="camera worker threads; 0 = one per camera")
     # Everything below mirrors run_localization.py, same names and defaults.
     p.add_argument("--detector-scale", type=float, default=1.0)
-    p.add_argument("--detector-profile", choices=("coverage", "balanced", "fast"),
-                   default="coverage")
+    p.add_argument("--detector-profile", choices=PROFILES,
+                   default="coverage", help="full-frame detector (acquire, watchdog)")
+    p.add_argument("--roi-detector-profile", choices=PROFILES,
+                   default=None, help="detector inside a window; default = --detector-profile")
     p.add_argument("--tag-quality-min", type=float, default=0.07)
     p.add_argument("--tag-max-reprojection-px", type=float, default=2.0)
     p.add_argument("--tag-max-planar-tilt-deg", type=float, default=40.0)
@@ -285,6 +288,7 @@ class Replay:
                 self.tags, self.version, family=self.marker_family,
                 tag_size_m=self.tag_size_m, detector_scale=a.detector_scale,
                 detector_profile=a.detector_profile, marker_ids=tuple(self.tags),
+                roi_detector_profile=a.roi_detector_profile,
                 quality_min=a.tag_quality_min,
                 max_reprojection_px=a.tag_max_reprojection_px,
                 max_planar_tilt_deg=a.tag_max_planar_tilt_deg,
@@ -444,7 +448,10 @@ class Replay:
         processed = received + self.processing_ns
         pipe = self.pipes[cid]
         begin = time.perf_counter_ns()
-        hits = pipe.detector.detect(image, roi=plan.roi if plan.mode == roi_tracker.ROI else None)
+        if plan.mode == roi_tracker.ROI:
+            hits = pipe.roi_detector.detect(image, roi=plan.roi)
+        else:
+            hits = pipe.detector.detect(image)
         observations, diagnostics, qualities, reprojection = [], [], [], []
         rejections = collections.Counter()
         for hit in hits:
@@ -660,7 +667,9 @@ class Replay:
         (out / "runtime_parameters.json").write_text(json.dumps({
             "marker_family": self.marker_family, "marker_ids": sorted(self.tags),
             "tag_size_m": self.tag_size_m, "detector_scale": a.detector_scale,
-            "detector_profile": a.detector_profile, "tag_quality_min": a.tag_quality_min,
+            "detector_profile": a.detector_profile,
+            "roi_detector_profile": a.roi_detector_profile or a.detector_profile,
+            "tag_quality_min": a.tag_quality_min,
             "tag_max_reprojection_px": a.tag_max_reprojection_px,
             "tag_max_planar_tilt_deg": a.tag_max_planar_tilt_deg,
             "tag_min_side_px": a.tag_min_side_px, "base_z_nominal_m": a.base_z_nominal,

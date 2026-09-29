@@ -31,6 +31,24 @@ class RoiDetection(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(found[0].corners),
                                    np.asarray(self.full[0].corners), atol=1.0)
 
+    def test_the_window_and_sweep_profiles_find_the_same_corners(self):
+        window = AprilTagImageDetector(allowed_ids=(0, 1), profile="window")
+        sweep = AprilTagImageDetector(allowed_ids=(0, 1), profile="sweep")
+        for found in (window.detect(self.frame, roi=self.roi(200)), sweep.detect(self.frame)):
+            self.assertEqual(len(found), 1)
+            np.testing.assert_allclose(np.asarray(found[0].corners),
+                                       np.asarray(self.full[0].corners), atol=0.5)
+
+    def test_an_rgb_window_is_cropped_before_it_is_converted(self):
+        rgb = np.repeat(self.frame[:, :, None], 3, axis=2)
+        found = self.detector.detect(rgb, roi=self.roi(240))
+        np.testing.assert_allclose(np.asarray(found[0].corners),
+                                   np.asarray(self.full[0].corners), atol=1.0)
+
+    def test_an_unknown_profile_is_refused(self):
+        with self.assertRaises(ValueError):
+            AprilTagImageDetector(profile="turbo")
+
     def test_a_roi_that_misses_the_marker_finds_nothing(self):
         self.assertEqual(self.detector.detect(self.frame, roi=(0, 0, 160, 160)), ())
 

@@ -19,6 +19,17 @@ class PixelDetection:
     decision_margin: float | None = None
 
 
+# coverage / balanced / fast: the original trade-offs.  window and sweep were
+# measured single-threaded on the IMX219 dataset (1640x1232 fisheye frames):
+#   window  balanced with two threshold passes (5, 13 px) instead of three;
+#           inside a 180 px ROI 0.92 ms P50 against 1.58 ms, same detections.
+#   sweep   fast with one threshold pass (7 px); full frame 5.8 ms P50
+#           against 17 ms, 80 of 81 near-axis markers against 81.
+PROFILES = ("coverage", "balanced", "fast", "window", "sweep")
+_THRESHOLD_WINDOWS = {"coverage": (5, 29), "balanced": (5, 21), "fast": (5, 21),
+                      "window": (5, 13), "sweep": (7, 7)}
+
+
 class AprilTagImageDetector:
     """Compatibility name for a detector supporting both marker families."""
 
@@ -26,8 +37,8 @@ class AprilTagImageDetector:
                  profile="coverage", allowed_ids=None, min_perimeter_px=19.0):
         self.family = normalize_marker_family(family)
         self.border_bits = int(border_bits)
-        if profile not in {"coverage", "balanced", "fast"}:
-            raise ValueError("profile must be coverage, balanced or fast")
+        if profile not in PROFILES:
+            raise ValueError("profile must be one of " + ", ".join(PROFILES))
         self.profile = profile
         self.allowed_ids = None if allowed_ids is None else frozenset(map(int, allowed_ids))
         if not 0 < scale <= 1:
@@ -83,8 +94,8 @@ class AprilTagImageDetector:
             ("cornerRefinementMaxIterations", 25 if coverage else 15),
             ("cornerRefinementMinAccuracy", 0.02),
             # 3..61 step 4 is fifteen threshold passes over the whole frame.
-            ("adaptiveThreshWinSizeMin", 5),
-            ("adaptiveThreshWinSizeMax", 29 if coverage else 21),
+            ("adaptiveThreshWinSizeMin", _THRESHOLD_WINDOWS[profile][0]),
+            ("adaptiveThreshWinSizeMax", _THRESHOLD_WINDOWS[profile][1]),
             ("adaptiveThreshWinSizeStep", 8),
             ("aprilTagQuadDecimate", 1.0),
             ("aprilTagQuadSigma", 0.0),
@@ -123,7 +134,7 @@ class AprilTagImageDetector:
 
     def _variants(self, array):
         yield array
-        if self.profile == "fast":
+        if self.profile in ("fast", "sweep"):
             return
         smoothed = self._cv2.GaussianBlur(array, (3, 3), 0)
         if self.profile == "coverage":
@@ -143,17 +154,21 @@ class AprilTagImageDetector:
         array = np.asarray(image)
         if array.ndim not in (2, 3) or array.size == 0:
             raise ValueError("image must be a non-empty grayscale or BGR array")
-        if array.ndim == 3:
-            array = self._cv2.cvtColor(array, self._cv2.COLOR_RGB2GRAY)
         offset = (0.0, 0.0)
         if roi is not None:
+            # Crop before converting: a 200 px window of a 1640x1232 frame
+            # otherwise pays for converting the whole frame to grey first.
             x, y, w, h = (int(round(v)) for v in roi)
             x = max(0, min(x, array.shape[1] - 1))
             y = max(0, min(y, array.shape[0] - 1))
             w = max(1, min(w, array.shape[1] - x))
             h = max(1, min(h, array.shape[0] - y))
-            array = np.ascontiguousarray(array[y:y + h, x:x + w])
+            array = array[y:y + h, x:x + w]
             offset = (float(x), float(y))
+        if array.ndim == 3:
+            array = self._cv2.cvtColor(np.ascontiguousarray(array), self._cv2.COLOR_RGB2GRAY)
+        else:
+            array = np.ascontiguousarray(array)
         self._set_perimeter_rate(array.shape[1], array.shape[0])
         original = array
         if self.scale != 1.0:
