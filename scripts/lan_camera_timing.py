@@ -41,6 +41,42 @@ def summary(values):
             "p95": float(np.percentile(a, 95)), "max": float(a.max()), "mean": float(a.mean())}
 
 
+def estimate_clock_offset(source, camera_id, rounds=9):
+    """Node clock minus laptop clock, by the NTP estimator over the command path.
+
+    Every cross-machine latency here is ``receive_ns - stamp_ns`` with the two
+    ends read on different machines, so without PTP it carries the clock offset
+    whole.  Unsynchronised boards are tens of milliseconds apart -- a CM4
+    measured 25 ms off, which turned a real 27 ms latency into an apparent
+    2.6 ms.  A status request gives the node's own clock inside a round trip we
+    time locally, and the round with the smallest round trip bounds the offset
+    to half of it.
+    """
+    best = None
+    for _ in range(rounds):
+        before = time.clock_gettime_ns(time.CLOCK_REALTIME)
+        try:
+            source.request_status(camera_id, timeout=2.0)
+        except (LanNotConnected, TimeoutError):
+            continue
+        status = None
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            candidate = source.status(camera_id)
+            if candidate is not None and candidate.get("status_time_ns", 0) > before:
+                status = candidate
+                break
+            time.sleep(0.002)
+        after = time.clock_gettime_ns(time.CLOCK_REALTIME)
+        if status is None:
+            continue
+        rtt = after - before
+        offset = status["status_time_ns"] - (before + after) // 2
+        if best is None or rtt < best["rtt_ns"]:
+            best = {"offset_ns": offset, "rtt_ns": rtt, "uncertainty_ns": rtt // 2}
+    return best
+
+
 def _delta(end, start, key):
     """Counter difference over this run, or the raw value if no baseline exists."""
     if not end or end.get(key) is None:
@@ -129,9 +165,25 @@ def main(argv=None):
         for cid in cams:
             source.request_windows(cid, windows)
 
+    # Before anything is timed: without this every cross-machine latency below
+    # is off by the clock difference, and on an unsynchronised board that is
+    # bigger than the latency itself.
+    clock_offset = {cid: estimate_clock_offset(source, cid) for cid in cams}
+    for cid, off in clock_offset.items():
+        if off is None:
+            print(f"  {cid}: clock offset UNKNOWN", flush=True)
+        else:
+            print(f"  {cid}: node clock {off['offset_ns'] / 1e6:+.2f} ms vs this laptop "
+                  f"(+-{off['uncertainty_ns'] / 1e6:.2f} ms)", flush=True)
+
     per = {cid: {"window_latency_ns": [], "full_latency_ns": [], "node_latency_ns": [],
                  "net_latency_ns": [], "period_dev_ns": [], "stamps": [], "seqs": [],
-                 "statuses": [], "window_bytes": 0, "full_bytes": 0} for cid in cams}
+                 "statuses": [], "window_bytes": 0, "full_bytes": 0,
+                 # The node's clock reads OFFSET ahead of ours, so its stamp is
+                 # that much too large: add the offset back to compare with our
+                 # receive time.
+                 "offset_ns": ((clock_offset.get(cid) or {}).get("offset_ns") or 0)}
+           for cid in cams}
     # The node's counters run from ITS start, not from ours, so a run that
     # follows a saturating one would inherit its drops.  Take a baseline and
     # report differences; ask for a status so we do not wait for the next tick.
@@ -181,7 +233,8 @@ def main(argv=None):
         if d is None:
             continue
         for f in group:
-            latency = f.receive_ns - f.stamp_ns
+            # Correct for the node/laptop clock difference; zero under PTP.
+            latency = f.receive_ns - f.stamp_ns + d["offset_ns"]
             # Wire bytes, so a JPEG window counts its compressed size.
             if f.is_full:
                 d["full_latency_ns"].append(latency)
@@ -189,8 +242,9 @@ def main(argv=None):
             else:
                 d["window_latency_ns"].append(latency)
                 d["window_bytes"] += f.payload_bytes
+            # Both ends of this one are the node's own clock: never corrected.
             d["node_latency_ns"].append(f.node_send_ns - f.stamp_ns)
-            d["net_latency_ns"].append(f.receive_ns - f.node_send_ns)
+            d["net_latency_ns"].append(f.receive_ns - f.node_send_ns + d["offset_ns"])
         d["stamps"].append(group[0].stamp_ns)
         d["seqs"].append(group[0].frame_seq)
 
@@ -207,7 +261,8 @@ def main(argv=None):
 
     report = {"seconds": elapsed, "windows": windows, "full_period_s": a.full_period,
               "stream_full_divisor": a.stream_full, "full_format": a.full_format,
-              "laptop_cpu_percent": summary(cpu_samples), "cameras": {}}
+              "laptop_cpu_percent": summary(cpu_samples), "clock_offset": clock_offset,
+              "cameras": {}}
     for cid in cams:
         d = per[cid]
         stamps, seqs = np.asarray(d["stamps"], dtype=np.int64), np.asarray(d["seqs"], dtype=np.int64)
@@ -256,6 +311,13 @@ def main(argv=None):
             if a.stream_full else f"windows {windows}, full every {a.full_period}s")
     print(f"=== lan_camera_timing: {elapsed:.1f}s, {mode} ===")
     print(f"laptop CPU: {fmt(report['laptop_cpu_percent'], 1, '%')}")
+    for cid, off in report["clock_offset"].items():
+        if off is None:
+            print(f"  {cid}: clock offset UNKNOWN; cross-machine latencies are raw")
+        else:
+            print(f"  {cid}: node clock {off['offset_ns'] / 1e6:+.2f} ms vs this laptop "
+                  f"(+-{off['uncertainty_ns'] / 1e6:.2f} ms); cross-machine latencies "
+                  f"corrected for it, 'node exp->send' needs no correction")
     for cid, r in report["cameras"].items():
         print(f"\n[{cid}] frames {r['frames_received']} ({r['delivered_fps']:.1f}/s), "
               f"laptop drops {r['laptop_dropped']}, node missed {r['node_frames_missed']}, "

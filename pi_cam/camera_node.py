@@ -545,6 +545,9 @@ class CpuLoad:
 
 
 class CameraNode:
+    # Warn when the pipeline loses more than this share of frames.
+    MISS_WARN_FRACTION = 0.02
+
     def __init__(self, cfg: NodeConfig, sensor=None):
         self.cfg = cfg
         self.sensor = sensor or make_sensor(cfg)
@@ -892,6 +895,8 @@ class CameraNode:
         }
 
     def status_loop(self):
+        last = (0, 0)
+        warned_mono = 0.0
         while not self.stop_event.wait(self.cfg.status_period_s):
             with self.client_lock:
                 connected = self.client is not None
@@ -900,6 +905,24 @@ class CameraNode:
                 self.control_queue.put(proto.encode_json(proto.MSG_STATUS, status))
             log.debug("fps %.2f missed %d dropped %d client %s", status["sensor_fps"],
                       status["frames_missed"], status["frames_dropped_queue"], status["client"])
+            # A node that quietly delivers half the frames looks healthy in
+            # every other field: the sensor rate is read from FrameDuration and
+            # stays at 83 even when the pipeline hands over every second frame.
+            # On a CM4 through the ISP that is exactly what happens, so say so.
+            got, lost = status["frames_captured"], status["frames_missed"]
+            delivered, skipped = got - last[0], lost - last[1]
+            last = (got, lost)
+            total = delivered + skipped
+            if total > 20 and skipped > total * self.MISS_WARN_FRACTION:
+                now = time.monotonic()
+                if now - warned_mono > 60.0:
+                    warned_mono = now
+                    log.warning(
+                        "pipeline handed over %d of %d frames (%.0f%% lost) in the last %.1fs; "
+                        "sensor itself runs at %.2f fps. On a CM4 the ISP path caps at half the "
+                        "rate -- set \"stream\": \"raw\" in the config.",
+                        delivered, total, 100.0 * skipped / total,
+                        self.cfg.status_period_s, status["sensor_fps"])
 
     # ---------------------------------------------------------- lifecycle
 

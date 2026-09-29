@@ -539,6 +539,25 @@ class RawBayerPath(unittest.TestCase):
         with self.assertRaises(ValueError):
             NodeConfig.load(None, stream="bayer")
 
+    def test_the_node_warns_when_the_pipeline_loses_frames(self):
+        # The CM4 through the ISP delivers every second frame while sensor_fps
+        # still reads 83, so the loss has to be shouted about, not inferred.
+        import logging
+        node = start_node(camera_id="cam_w")
+        try:
+            with self.assertLogs("camera_node", level=logging.WARNING) as captured:
+                with node.stats_lock:
+                    node.frames_captured += 50
+                    node.frames_missed += 50
+                deadline = time.monotonic() + 4.0
+                while time.monotonic() < deadline and not captured.records:
+                    time.sleep(0.05)
+            text = "\n".join(captured.output)
+            self.assertIn("lost", text)
+            self.assertIn("raw", text, "the warning must name the fix")
+        finally:
+            node.stop()
+
     def test_hello_says_which_stream_the_node_reads(self):
         node = start_node(camera_id="cam_s")
         source = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
