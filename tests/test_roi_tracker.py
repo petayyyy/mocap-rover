@@ -145,6 +145,41 @@ class Planning(unittest.TestCase):
         self.assertGreater(sizes[-1], sizes[0])
         self.assertEqual(p.plan((9.0, 9.0, 0.05)).mode, ACQUIRE)
 
+    def test_an_exhausted_window_searches_the_full_frame_only_periodically(self):
+        p = planner(max_misses=2, exhausted_full_frame_period_s=0.25, max_roi_px=400)
+        for _ in range(2):
+            p.plan((9.0, 9.0, 0.05), now_ns=0)
+            p.report(False)
+        self.assertEqual(p.plan((9.0, 9.0, 0.05), now_ns=10_000_000).mode, ACQUIRE)
+        p.report(False)
+        between = p.plan((9.0, 9.0, 0.05), now_ns=100_000_000)
+        self.assertEqual((between.mode, between.reason), (ROI, "roi_exhausted_base"))
+        fresh = planner(max_roi_px=400).plan((9.0, 9.0, 0.05))
+        self.assertEqual(between.roi[2], fresh.roi[2])
+        p.report(False)
+        self.assertEqual(p.plan((9.0, 9.0, 0.05), now_ns=270_000_000).mode, ACQUIRE)
+
+    def test_a_marker_beyond_the_incidence_gate_is_not_looked_for(self):
+        # Only a fisheye sees this far: the IMX219-160 reaches 80 degrees in
+        # its frame corners.  6 m out along the diagonal is 67 degrees.
+        fisheye = CameraModel([[734.5, 0, 820], [0, 734.5, 616], [0, 0, 1]], [0.0] * 4,
+                              (1640, 1232))
+
+        def wide(**kwargs):
+            return CameraRoiPlanner(fisheye, NADIR, (6.0, 6.0, 2.9), **kwargs)
+        far = (6.0 + 4.25, 6.0 + 4.25, 0.05)
+        self.assertEqual(wide().plan(far).mode, ROI)
+        gated = wide(max_incidence_deg=65.0).plan(far, now_ns=0)
+        self.assertEqual((gated.mode, gated.reason), (WATCHDOG, "beyond_incidence_watchdog"))
+        # An uncertain track that may be nearer is still looked at.
+        self.assertEqual(wide(max_incidence_deg=65.0).plan(far[:2] + (0.5,)).mode, ROI)
+
+    def test_a_marker_too_small_to_decode_is_not_looked_for(self):
+        near = (9.0, 9.0, 0.05)
+        self.assertEqual(planner(min_marker_px=20).plan(near).mode, ROI)
+        gated = planner(min_marker_px=500).plan(near)
+        self.assertEqual((gated.mode, gated.reason), (IDLE, "marker_too_small"))
+
     def test_a_hit_resets_the_window(self):
         p = planner()
         for _ in range(3):

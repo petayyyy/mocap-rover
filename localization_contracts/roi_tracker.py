@@ -49,7 +49,8 @@ class CameraRoiPlanner:
                  min_roi_px=160, max_roi_px=480, sigma_multiplier=3.0,
                  marker_size_m=0.40, growth=1.5, max_misses=8,
                  valid_radius_margin=0.85, watchdog_period_s=2.0,
-                 tag_plane_z=0.3654):
+                 tag_plane_z=0.3654, max_incidence_deg=None, min_marker_px=None,
+                 exhausted_full_frame_period_s=None):
         self.camera_model = camera_model
         self.R = np.asarray(R_world_optical, dtype=float).reshape(3, 3)
         self.position = np.asarray(position_world, dtype=float).reshape(3)
@@ -61,6 +62,22 @@ class CameraRoiPlanner:
         self.max_misses = int(max_misses)
         self.valid_radius_margin = float(valid_radius_margin)
         self.watchdog_period_ns = int(watchdog_period_s * 1e9)
+        # A wide lens puts almost the whole arena "in view", including where
+        # the marker is too oblique or too small for the detector to read.
+        # There a window only collects misses, exhausts, and every later frame
+        # pays for a full-frame search that cannot succeed: on the IMX219
+        # corner cameras that was 50-70 % of all frames, nearly all with the
+        # rover beyond 55 degrees of incidence.  Both bounds are the
+        # observer's own acceptance gates, so nothing it could accept is
+        # skipped.  None keeps the old behaviour.
+        self.max_incidence_rad = (None if max_incidence_deg is None
+                                  else math.radians(float(max_incidence_deg)))
+        self.min_marker_px = None if min_marker_px is None else float(min_marker_px)
+        # After the window is exhausted, search the full frame at most this
+        # often and keep the widest window in between, instead of a full
+        # frame on every frame.  None: full frame every frame, as before.
+        self.exhausted_period_ns = (None if exhausted_full_frame_period_s is None
+                                    else int(exhausted_full_frame_period_s * 1e9))
         self.misses = 0
         self.last_full_frame_ns = None
         # Scalar, or (low, high) when the marker can sit on more than one
@@ -119,6 +136,18 @@ class CameraRoiPlanner:
         # marker may be on the other one.
         if not any(visible(uv) for _, uv in corners):
             return self._idle_or_watchdog(now_ns, "outside_frame")
+        if self.max_incidence_rad is not None:
+            # Incidence at the camera-nearest edge of the uncertainty disc,
+            # so a track that may be closer than predicted is still looked at.
+            reach = max(0.0, math.hypot(x - self.position[0], y - self.position[1])
+                        - 2.0 * float(sigma))
+            if all(math.atan2(reach, abs(self.position[2] - tag_z)) > self.max_incidence_rad
+                   for tag_z, _ in corners):
+                return self._idle_or_watchdog(now_ns, "beyond_incidence")
+        if self.min_marker_px is not None:
+            if max(self._projected_marker_px(x, y, tag_z) for tag_z, _ in corners) \
+                    < self.min_marker_px:
+                return self._idle_or_watchdog(now_ns, "marker_too_small")
 
         us = [uv[0] for _, uv in corners]
         vs = [uv[1] for _, uv in corners]
@@ -139,14 +168,38 @@ class CameraRoiPlanner:
             sigma_px = focal * float(sigma) / max(optical[2], 1e-6)
             # The nearer plane makes the marker larger, so it sets the window.
             half = max(half, self.sigma_multiplier * sigma_px + marker_px)
-        half = (half + spread) * self.growth ** min(self.misses, 6)
+        base = half + spread
+        half = base * self.growth ** min(self.misses, 6)
         size = int(min(max(2 * half, self.min_roi_px), self.max_roi_px))
         size += size % 2
         if self.misses >= self.max_misses:
-            self.last_full_frame_ns = now_ns
-            return Plan(ACQUIRE, None, uv, "roi_exhausted")
+            if (self.exhausted_period_ns is None or now_ns is None
+                    or self.last_full_frame_ns is None
+                    or now_ns - self.last_full_frame_ns >= self.exhausted_period_ns):
+                self.last_full_frame_ns = now_ns
+                return Plan(ACQUIRE, None, uv, "roi_exhausted")
+            # Growing further has already failed eight times; between the
+            # periodic full-frame searches keep the window the prediction
+            # alone implies, which costs a fraction of the widest one and
+            # still catches the marker once it becomes readable again.
+            size = int(min(max(2 * base, self.min_roi_px), self.max_roi_px))
+            size += size % 2
+            roi = (int(round(uv[0] - size / 2)), int(round(uv[1] - size / 2)), size, size)
+            return Plan(ROI, roi, uv, "roi_exhausted_base")
         roi = (int(round(uv[0] - size / 2)), int(round(uv[1] - size / 2)), size, size)
         return Plan(ROI, roi, uv, "prediction_in_view")
+
+    def _projected_marker_px(self, x, y, tag_z):
+        """Apparent marker side through the actual lens, mean of both axes."""
+        half = self.marker_size_m / 2.0
+        sides = []
+        for dx, dy in ((half, 0.0), (0.0, half)):
+            a = project_to_image((x - dx, y - dy, tag_z), self.camera_model, self.R, self.position)
+            b = project_to_image((x + dx, y + dy, tag_z), self.camera_model, self.R, self.position)
+            if a is None or b is None:
+                return 0.0
+            sides.append(math.hypot(b[0] - a[0], b[1] - a[1]))
+        return float(np.mean(sides))
 
     def _idle_or_watchdog(self, now_ns, reason):
         """A camera the prediction misses still checks in occasionally."""

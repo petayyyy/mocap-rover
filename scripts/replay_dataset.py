@@ -115,6 +115,12 @@ def parse_args(argv=None):
     p.add_argument("--roi-max-px", type=int, default=480)
     p.add_argument("--watchdog-period-s", type=float, default=2.0)
     p.add_argument("--no-roi-tracking", action="store_true")
+    p.add_argument("--roi-exhausted-period-s", type=float, default=0.25,
+                   help="after the window is exhausted, full frame at most this often; "
+                        "0 = every frame (run_localization.py behaviour)")
+    p.add_argument("--no-roi-visibility-gates", action="store_true",
+                   help="plan a window even where the marker is beyond --max-incidence-deg "
+                        "or smaller than --tag-min-side-px (run_localization.py behaviour)")
     p.add_argument("--lidar-z-band", type=float, nargs=2,
                    default=lidar_pipeline.DEFAULT_Z_BAND)
     p.add_argument("--lidar-max-radius", type=float,
@@ -290,7 +296,10 @@ class Replay:
             cid: roi_tracker.CameraRoiPlanner(
                 self.models[cid], c["R_world_optical"], c["position_world"],
                 min_roi_px=a.roi_min_px, max_roi_px=a.roi_max_px,
-                marker_size_m=self.tag_size_m, watchdog_period_s=a.watchdog_period_s)
+                marker_size_m=self.tag_size_m, watchdog_period_s=a.watchdog_period_s,
+                max_incidence_deg=None if a.no_roi_visibility_gates else a.max_incidence_deg,
+                min_marker_px=None if a.no_roi_visibility_gates else a.tag_min_side_px,
+                exhausted_full_frame_period_s=a.roi_exhausted_period_s or None)
             for cid, c in cams.items()
         }
         planes = [marker_plane_z(t.get("placement", "top"), float(t["T_base_tag_translation"][2]),
@@ -315,7 +324,8 @@ class Replay:
         self.accepted_times = {name: collections.deque(maxlen=300) for name in self.filters}
         self.published_times = {name: collections.deque(maxlen=300) for name in self.filters}
         self.timing = {cid: {"latency_ms": [], "decode_ms": [], "idle_decode_ms": [],
-                             "by_mode": collections.defaultdict(list)} for cid in cams}
+                             "by_mode": collections.defaultdict(list),
+                             "reasons": collections.Counter()} for cid in cams}
         self.batch_ms = []
         self.lidar_ms = []
         self.last_clock_ns = None
@@ -465,6 +475,7 @@ class Replay:
         self.batch_ms.append((time.perf_counter_ns() - begin) / 1e6)
         for cid, row, result in results:
             timing = self.timing[cid]
+            timing["reasons"][f"{plans[cid].mode}:{plans[cid].reason}"] += 1
             if result["idle"]:
                 self.metrics[cid]["idle_frames"] += 1
                 timing["idle_decode_ms"].append(result["decode_ms"])
@@ -488,7 +499,8 @@ class Replay:
                 "best_quality": max(result["qualities"]) if result["qualities"] else None,
                 "best_reprojection_px": min(result["reprojection"]) if result["reprojection"] else None,
                 "latency_ms": result["latency_ms"], "decode_ms": result["decode_ms"],
-                "mode": plan.mode, "roi": list(plan.roi) if plan.roi else None,
+                "mode": plan.mode, "plan_reason": plan.reason,
+                "roi": list(plan.roi) if plan.roi else None,
                 "pnp_rejections": result["rejections"],
                 "pnp_diagnostics": result["diagnostics"],
             }
@@ -660,6 +672,8 @@ class Replay:
             "coast_ms": a.coast_ms, "identity_max_age_s": a.identity_max_age_s,
             "lost_ms": a.lost_ms, "roi_min_px": a.roi_min_px, "roi_max_px": a.roi_max_px,
             "roi_tracking": not a.no_roi_tracking, "watchdog_period_s": a.watchdog_period_s,
+            "roi_exhausted_period_s": a.roi_exhausted_period_s,
+            "roi_visibility_gates": not a.no_roi_visibility_gates,
             "lidar_enabled": self.lidar is not None,
             "lidar_topic": (self.cfg.get("lidar") or {}).get("topic") if self.lidar else None,
             "lidar_max_radius_m": a.lidar_max_radius, "lidar_sweep_s": a.lidar_sweep_s,
@@ -689,8 +703,14 @@ class Replay:
             all_latency.extend(t["latency_ms"])
             processed += len(t["latency_ms"])
             idle += len(t["idle_decode_ms"])
+            frames = len(t["latency_ms"]) + len(t["idle_decode_ms"])
+            modes = collections.Counter({"idle": len(t["idle_decode_ms"])})
+            for mode, values in t["by_mode"].items():
+                modes[mode] += len(values)
             per_camera[cid] = {
                 "processed_frames": len(t["latency_ms"]), "idle_frames": len(t["idle_decode_ms"]),
+                "mode_share": {m: round(n / max(frames, 1), 4) for m, n in sorted(modes.items())},
+                "plan_reasons": dict(sorted(t["reasons"].items())),
                 "latency_ms": summary(t["latency_ms"]),
                 "latency_ms_by_mode": {k: summary(v) for k, v in sorted(t["by_mode"].items())},
                 "decode_ms": summary(t["decode_ms"] + t["idle_decode_ms"]),
