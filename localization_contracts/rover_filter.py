@@ -309,6 +309,8 @@ class ImmRoverFilter:
         self.identity = None
         self.sources = frozenset()
         self.history = deque(maxlen=max(8, int(history_s * 400)))
+        # (earliest stamp, batch), in non-decreasing stamp order: a batch is
+        # only appended at or after the filter's own time.
         self.applied = deque(maxlen=4096)
         self.history_ns = int(history_s * 1e9)
         self.coast_ns = int(coast_ms * 1e6)
@@ -571,7 +573,7 @@ class ImmRoverFilter:
                 total = posterior.sum()
                 self.mu = (posterior / total if total > 1e-300
                            else np.full(len(self.models), 1.0 / len(self.models)))
-            self.applied.append(tuple(group))
+            self.applied.append((min(m.stamp_ns for m in group), tuple(group)))
             self._push_history()
         return applied_measurements
 
@@ -631,13 +633,16 @@ class ImmRoverFilter:
         self._restore(self.history[index])
         while len(self.history) > index + 1:
             self.history.pop()
-        replay = [batch for batch in self.applied
-                  if min(m.stamp_ns for m in batch) > stamp]
-        self.applied = deque(
-            (batch for batch in self.applied if min(m.stamp_ns for m in batch) <= stamp),
-            maxlen=self.applied.maxlen)
+        # The batches after ``stamp`` are the tail of the ordered deque; taking
+        # them off the end replaces a scan of all 4096 kept batches, which was
+        # the main thread's largest cost with a late measurement every frame.
+        replay = []
+        while self.applied and self.applied[-1][0] > stamp:
+            replay.append(self.applied.pop())
+        replay.reverse()
         self.out_of_sequence += 1
-        ordered = sorted([tuple(group)] + replay, key=lambda b: min(m.stamp_ns for m in b))
+        ordered = [batch for _, batch in sorted([(stamp, tuple(group))] + replay,
+                                                key=lambda item: item[0])]
         late = set(id(m) for m in group)
         applied_measurements = []
         for batch in ordered:

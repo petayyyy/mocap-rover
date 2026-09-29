@@ -128,7 +128,10 @@ class ClipBackground(BackgroundModel):
         return keep
 
     def gain(self, image, exclude=()):
-        sample = np.asarray(image)[self.grid_y, self.grid_x].astype(np.float32).mean(axis=2)
+        # A strided view is the same grid as grid_y/grid_x without gathering
+        # 7900 pixels one index at a time.
+        step, half = self.gain_step_px, self.gain_step_px // 2
+        sample = np.asarray(image)[half::step, half::step].astype(np.float32).mean(axis=2)
         keep = self.grid_valid & self._outside(None, self.grid_y, self.grid_x, exclude)
         if keep.sum() < 50:
             return 1.0
