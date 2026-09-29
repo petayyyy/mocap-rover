@@ -5,6 +5,7 @@ import math
 import numpy as np
 from .contracts import Observation, SCHEMA_VERSION, FRAME_ARENA
 from .marker_families import normalize_marker_family, marker_method
+from .ray_plane import quad_centre_ray, ray_plane
 
 @dataclass(frozen=True)
 class TagConfig:
@@ -214,36 +215,12 @@ class PnpAprilTagObserver(AprilTagObserver):
         return self.sigma_px_corner[-1][1]
 
     def centre_ray(self, corners_px):
-        """Normalized bearing of the marker centre from its four corners.
-
-        The centre of a planar square is where its diagonals cross, and a
-        perspective projection keeps that true, so the crossing is taken on
-        the undistorted rays.  The pixel mean of the corners is not the
-        centre: perspective and, far more, a fisheye lens pull it towards the
-        image centre -- 1.2 cm of XY at 40 degrees on the IMX219 lens.
-        """
-        rays = self.camera_model.undistort(corners_px)
-        h = np.hstack([rays, np.ones((4, 1))])
-        crossing = np.cross(np.cross(h[0], h[2]), np.cross(h[1], h[3]))
-        if abs(crossing[2]) < 1e-12 or not np.isfinite(crossing).all():
-            return rays.mean(axis=0)
-        return crossing[:2] / crossing[2]
+        """Normalized bearing of the marker centre; see ray_plane.quad_centre_ray."""
+        return quad_centre_ray(self.camera_model, corners_px)
 
     def _ray_plane(self, ray, plane_z):
         """Intersect the normalized bearing ``ray`` with ``z = plane_z``."""
-        direction = self.R_arena_camera @ np.array([ray[0], ray[1], 1.0])
-        norm = np.linalg.norm(direction)
-        if norm < 1e-9:
-            return None, None
-        direction = direction / norm
-        drop = plane_z - self.t_arena_camera[2]
-        # A ray parallel to the plane never meets it, and a negative parameter
-        # means the plane is behind the camera.
-        if abs(direction[2]) < 1e-3 or drop / direction[2] <= 0:
-            return None, None
-        point = self.t_arena_camera + direction * (drop / direction[2])
-        incidence = math.acos(min(1.0, abs(direction[2])))
-        return point, incidence
+        return ray_plane(ray, self.R_arena_camera, self.t_arena_camera, plane_z)
 
     def _xy_covariance(self, point_xy, incidence, side_px, plane_z):
         """Anisotropic 2x2 block in arena axes.
