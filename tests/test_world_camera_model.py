@@ -53,12 +53,27 @@ class WorldCameraModels(unittest.TestCase):
         # length stops matching <intrinsics> and every PnP range is biased.
         for world in WORLDS:
             root = ET.parse(world).getroot()
-            for lens in root.iter("lens"):
+            for camera in root.iter("camera"):
+                lens = camera.find("lens")
+                if lens is None:
+                    continue
                 scale = lens.find("scale_to_hfov")
                 if scale is None or lens.find("intrinsics") is None:
                     continue
-                with self.subTest(world=world.name):
-                    self.assertEqual((scale.text or "").strip().lower(), "false")
+                kind = (lens.findtext("type") or "gnomonical").strip()
+                with self.subTest(world=world.name, lens=kind):
+                    if kind == "gnomonical":
+                        self.assertEqual((scale.text or "").strip().lower(), "false")
+                        continue
+                    # A wideanglecamera takes its focal length only from
+                    # scale_to_hfov, so for r = f * theta the declared
+                    # <intrinsics> are honest exactly when hfov = width / fx.
+                    self.assertEqual(kind, "equidistant")
+                    self.assertEqual((scale.text or "").strip().lower(), "true")
+                    fx = float(lens.findtext("intrinsics/fx"))
+                    width = float(camera.findtext("image/width"))
+                    hfov = float(camera.findtext("horizontal_fov"))
+                    self.assertAlmostEqual(hfov * fx, width, delta=0.5)
 
 
 if __name__ == "__main__":

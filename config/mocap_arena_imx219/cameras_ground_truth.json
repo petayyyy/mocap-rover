@@ -1,0 +1,514 @@
+{
+  "world": "mocap_arena",
+  "tag": {
+    "family": "tag36h11",
+    "id": 0,
+    "size": 0.4,
+    "placement": "top",
+    "T_base_tag_translation": [
+      0,
+      0,
+      0.2254
+    ],
+    "R_base_tag": [
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  },
+  "tags": [
+    {
+      "family": "tag36h11",
+      "id": 0,
+      "size": 0.4,
+      "placement": "top",
+      "T_base_tag_translation": [
+        0,
+        0,
+        0.2254
+      ],
+      "R_base_tag": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          1
+        ]
+      ]
+    },
+    {
+      "family": "tag36h11",
+      "id": 1,
+      "size": 0.4,
+      "placement": "bottom",
+      "T_base_tag_translation": [
+        0,
+        0,
+        0.0146
+      ],
+      "R_base_tag": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          -1,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ]
+      ]
+    }
+  ],
+  "tag_frame_convention": "x=image right, y=image up, z=outward normal; transforms map tag to base",
+  "cameras": [
+    {
+      "name": "camera_1",
+      "position_world": [
+        3.0,
+        2.0,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1.0,
+          2.7907704968183198e-18,
+          3.1898652743636566e-17
+        ],
+        [
+          -2.7907704968183198e-18,
+          -0.984807753012208,
+          0.17364817766693033
+        ],
+        [
+          3.1898652743636566e-17,
+          -0.17364817766693033,
+          -0.984807753012208
+        ]
+      ],
+      "K": [
+        734.53211682016,
+        0,
+        820.0,
+        0,
+        734.53211682016,
+        616.0,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distortion_model": "fisheye",
+      "image_size": [
+        1640,
+        1232
+      ],
+      "horizontal_fov": 2.23271380848488,
+      "layout": {
+        "pan_deg": 270.0,
+        "tilt_deg": 10.0,
+        "roll_deg": 0.0
+      },
+      "image_topic": "/cameras/camera_1/image",
+      "camera_info_topic": "/cameras/camera_1/camera_info",
+      "installation_offset_world_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "installation_rpy_world_deg": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "camera_2",
+      "position_world": [
+        9.0,
+        2.0,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1.0,
+          2.7907704968183198e-18,
+          3.1898652743636566e-17
+        ],
+        [
+          -2.7907704968183198e-18,
+          -0.984807753012208,
+          0.17364817766693033
+        ],
+        [
+          3.1898652743636566e-17,
+          -0.17364817766693033,
+          -0.984807753012208
+        ]
+      ],
+      "K": [
+        734.53211682016,
+        0,
+        820.0,
+        0,
+        734.53211682016,
+        616.0,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distortion_model": "fisheye",
+      "image_size": [
+        1640,
+        1232
+      ],
+      "horizontal_fov": 2.23271380848488,
+      "layout": {
+        "pan_deg": 270.0,
+        "tilt_deg": 10.0,
+        "roll_deg": 0.0
+      },
+      "image_topic": "/cameras/camera_2/image",
+      "camera_info_topic": "/cameras/camera_2/camera_info",
+      "installation_offset_world_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "installation_rpy_world_deg": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "camera_3",
+      "position_world": [
+        3.0,
+        6.0,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          6.123233995736766e-17,
+          -1.0,
+          0.0
+        ],
+        [
+          -1.0,
+          -6.123233995736766e-17,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          -1.0
+        ]
+      ],
+      "K": [
+        734.53211682016,
+        0,
+        820.0,
+        0,
+        734.53211682016,
+        616.0,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distortion_model": "fisheye",
+      "image_size": [
+        1640,
+        1232
+      ],
+      "horizontal_fov": 2.23271380848488,
+      "layout": {
+        "pan_deg": 0.0,
+        "tilt_deg": 0.0,
+        "roll_deg": 90.0
+      },
+      "image_topic": "/cameras/camera_3/image",
+      "camera_info_topic": "/cameras/camera_3/camera_info",
+      "installation_offset_world_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "installation_rpy_world_deg": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "camera_4",
+      "position_world": [
+        9.0,
+        6.0,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          6.123233995736766e-17,
+          -1.0,
+          0.0
+        ],
+        [
+          -1.0,
+          -6.123233995736766e-17,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          -1.0
+        ]
+      ],
+      "K": [
+        734.53211682016,
+        0,
+        820.0,
+        0,
+        734.53211682016,
+        616.0,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distortion_model": "fisheye",
+      "image_size": [
+        1640,
+        1232
+      ],
+      "horizontal_fov": 2.23271380848488,
+      "layout": {
+        "pan_deg": 0.0,
+        "tilt_deg": 0.0,
+        "roll_deg": 90.0
+      },
+      "image_topic": "/cameras/camera_4/image",
+      "camera_info_topic": "/cameras/camera_4/camera_info",
+      "installation_offset_world_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "installation_rpy_world_deg": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "camera_5",
+      "position_world": [
+        3.0,
+        10.0,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1.0,
+          9.302568322727733e-19,
+          -1.0632884247878856e-17
+        ],
+        [
+          -9.302568322727733e-19,
+          -0.984807753012208,
+          -0.17364817766693033
+        ],
+        [
+          -1.0632884247878856e-17,
+          0.17364817766693033,
+          -0.984807753012208
+        ]
+      ],
+      "K": [
+        734.53211682016,
+        0,
+        820.0,
+        0,
+        734.53211682016,
+        616.0,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distortion_model": "fisheye",
+      "image_size": [
+        1640,
+        1232
+      ],
+      "horizontal_fov": 2.23271380848488,
+      "layout": {
+        "pan_deg": 90.0,
+        "tilt_deg": 10.0,
+        "roll_deg": 0.0
+      },
+      "image_topic": "/cameras/camera_5/image",
+      "camera_info_topic": "/cameras/camera_5/camera_info",
+      "installation_offset_world_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "installation_rpy_world_deg": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "camera_6",
+      "position_world": [
+        9.0,
+        10.0,
+        2.9
+      ],
+      "R_world_optical": [
+        [
+          1.0,
+          9.302568322727733e-19,
+          -1.0632884247878856e-17
+        ],
+        [
+          -9.302568322727733e-19,
+          -0.984807753012208,
+          -0.17364817766693033
+        ],
+        [
+          -1.0632884247878856e-17,
+          0.17364817766693033,
+          -0.984807753012208
+        ]
+      ],
+      "K": [
+        734.53211682016,
+        0,
+        820.0,
+        0,
+        734.53211682016,
+        616.0,
+        0,
+        0,
+        1
+      ],
+      "D": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distortion_model": "fisheye",
+      "image_size": [
+        1640,
+        1232
+      ],
+      "horizontal_fov": 2.23271380848488,
+      "layout": {
+        "pan_deg": 90.0,
+        "tilt_deg": 10.0,
+        "roll_deg": 0.0
+      },
+      "image_topic": "/cameras/camera_6/image",
+      "camera_info_topic": "/cameras/camera_6/camera_info",
+      "installation_offset_world_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "installation_rpy_world_deg": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  ],
+  "role": "ground_truth_evaluation_only",
+  "lidar": {
+    "name": "arena_robosense_airy",
+    "position_world": [
+      6,
+      6,
+      2.75
+    ],
+    "R_world_sensor": [
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        -1.0,
+        -1.2246467991473532e-16
+      ],
+      [
+        -0.0,
+        1.2246467991473532e-16,
+        -1.0
+      ]
+    ],
+    "topic": "/robosense_airy/normal/scan",
+    "update_rate_hz": 10.0,
+    "horizontal_samples": 900,
+    "vertical_samples": 95,
+    "range_min": 0.1,
+    "range_max": 60.0
+  }
+}
