@@ -257,6 +257,56 @@ class AccuracySweep(unittest.TestCase):
         self.assertLess(float(np.percentile(yaw_errors, 95)), 5.0)
 
 
+class IdealFisheyeCamera(unittest.TestCase):
+    """The IMX219-160 world: r = f*theta, calibrated as D = [0, 0, 0, 0].
+
+    The runtime builds the observer from K and D alone, so the projection
+    model has to follow from the four-element vector.  Read as a pinhole, the
+    bearing was bent off-axis and the base-height gate refused most views.
+    """
+
+    K = [[734.53211682016, 0.0, 820.0], [0.0, 734.53211682016, 616.0], [0.0, 0.0, 1.0]]
+    SIZE = (1640, 1232)
+    CAMERA = (3.0, 6.0, 2.9)
+
+    def corners(self, base_xy, yaw):
+        """Exact marker corners through the fisheye, in detector order."""
+        s = 0.2
+        c, n = math.cos(yaw), math.sin(yaw)
+        R_world_tag = np.array([[c, -n, 0], [n, c, 0], [0, 0, 1.0]])
+        origin = np.array([base_xy[0], base_xy[1], ar.BASE_Z + ar.TAG_DZ])
+        tag = np.array([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]])
+        world = tag @ R_world_tag.T + origin
+        R = ar.camera_rotation()
+        optical = (world - np.asarray(self.CAMERA)) @ R
+        model = CameraModel(self.K, [0.0] * 4, self.SIZE, model="fisheye")
+        return tuple(map(tuple, model.project(optical)))
+
+    def test_off_axis_views_are_accepted_and_centimetre_accurate(self):
+        obs = PnpAprilTagObserver(
+            TagConfig(ids=(0,), calibration_version="test"), self.K, [0.0] * 4,
+            {"rotation": ar.camera_rotation(), "translation": list(self.CAMERA)},
+            {"rotation": np.eye(3), "translation": [0, 0, ar.TAG_DZ]},
+            image_size=list(self.SIZE))
+        self.assertEqual(obs.camera_model.model, "fisheye")
+        # World X runs along the short side of this frame, Y along the long
+        # one; the last view is 50 degrees off-axis.
+        offsets = ((0.0, 0.3), (0.8, 0.3), (1.6, 0.3), (2.2, 0.3),
+                   (0.3, 1.5), (0.3, 2.3), (1.5, 2.0), (0.3, 3.0))
+        for dx, dy in offsets:
+            for yaw in (0.0, 0.7, 2.5):
+                base = (self.CAMERA[0] + dx, self.CAMERA[1] + dy)
+                with self.subTest(dx=dx, dy=dy, yaw=yaw):
+                    result = obs.observe(Detection(
+                        "c", 1, 0, self.corners(base, yaw), 1, 2, 3))
+                    self.assertIsNotNone(result, obs.last_diagnostic)
+                    self.assertLess(math.hypot(result.position_m[0] - base[0],
+                                               result.position_m[1] - base[1]), 0.005)
+                    self.assertLess(abs(obs.last_diagnostic["pnp_base_z_m"] - ar.BASE_Z), 0.02)
+                    self.assertLess(abs(math.remainder(
+                        result.pixel_features["yaw_rad"] - yaw, 2 * math.pi)), math.radians(1))
+
+
 class TagTransforms(unittest.TestCase):
     """Marker id 1 is mounted with R_base_tag = diag(1,-1,-1), facing down.
 

@@ -206,9 +206,24 @@ class PnpAprilTagObserver(AprilTagObserver):
                 return sigma
         return self.sigma_px_corner[-1][1]
 
-    def _ray_plane(self, centre_px, plane_z):
-        """Intersect the bearing through ``centre_px`` with ``z = plane_z``."""
-        ray = self.camera_model.undistort([centre_px])[0]
+    def centre_ray(self, corners_px):
+        """Normalized bearing of the marker centre from its four corners.
+
+        The centre of a planar square is where its diagonals cross, and a
+        perspective projection keeps that true, so the crossing is taken on
+        the undistorted rays.  The pixel mean of the corners is not the
+        centre: perspective and, far more, a fisheye lens pull it towards the
+        image centre -- 1.2 cm of XY at 40 degrees on the IMX219 lens.
+        """
+        rays = self.camera_model.undistort(corners_px)
+        h = np.hstack([rays, np.ones((4, 1))])
+        crossing = np.cross(np.cross(h[0], h[2]), np.cross(h[1], h[3]))
+        if abs(crossing[2]) < 1e-12 or not np.isfinite(crossing).all():
+            return rays.mean(axis=0)
+        return crossing[:2] / crossing[2]
+
+    def _ray_plane(self, ray, plane_z):
+        """Intersect the normalized bearing ``ray`` with ``z = plane_z``."""
         direction = self.R_arena_camera @ np.array([ray[0], ray[1], 1.0])
         norm = np.linalg.norm(direction)
         if norm < 1e-9:
@@ -289,8 +304,7 @@ class PnpAprilTagObserver(AprilTagObserver):
         plane_z = self.tag_plane_z(d.tag_id)
         sign = self.base_orientation(d.tag_id)
         nominal_base_z = self.nominal_base_z(d.tag_id)
-        centre = image.mean(axis=0)
-        ray_point, incidence = self._ray_plane(centre, plane_z)
+        ray_point, incidence = self._ray_plane(self.centre_ray(image), plane_z)
         if ray_point is None:
             return self._reject("ray_misses_plane", side_px=side)
         if incidence > self.max_incidence_rad:
@@ -393,6 +407,17 @@ class PnpAprilTagObserver(AprilTagObserver):
         s = self.config.size_m / 2.0
         # tag frame: x right, y up, z outward; image order is top-left first.
         object_points = np.asarray([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], dtype=np.float64)
+        # Solve in the tag frame turned half a turn about its x axis.  A level
+        # marker seen from the ceiling faces the camera, so camera-from-tag is
+        # a rotation by pi -- exactly where the Rodrigues vector is singular.
+        # There IPPE returned NaN or a branch 2-4 px off on noise-free
+        # corners, and LM refinement settled in the mirrored minimum, so the
+        # reprojection gate refused 140 of 252 exact views of a level marker.
+        # In the turned frame the same pose is near the identity.  Turning the
+        # frame reverses the corner order IPPE_SQUARE expects; the pose is
+        # turned back below, so nothing downstream sees the change.
+        turn = np.diag([1.0, -1.0, -1.0, 1.0])
+        order = [3, 2, 1, 0]
         distortion = self.camera_model.solve_pnp_distortion()
         if self.camera_model.model == "fisheye":
             # solvePnP has no fisheye path: undistort to ideal pinhole rays and
@@ -401,39 +426,57 @@ class PnpAprilTagObserver(AprilTagObserver):
             image_pnp = rays * [self.K[0, 0], self.K[1, 1]] + [self.K[0, 2], self.K[1, 2]]
         else:
             image_pnp = image
+        image_pnp = np.ascontiguousarray(image_pnp[order])
         try:
             ok, rvecs, tvecs, _ = cv2.solvePnPGeneric(
                 object_points, image_pnp, self.K, distortion,
                 flags=cv2.SOLVEPNP_IPPE_SQUARE,
             )
+            starts = [(r, t) for r, t in zip(rvecs, tvecs) if ok
+                      and np.isfinite(r).all() and np.isfinite(t).all()]
+            if not starts:
+                # IPPE's closed form degenerates on a few exactly symmetric
+                # views; SQPnP has no such case and gives the global minimum.
+                ok, rvecs, tvecs, _ = cv2.solvePnPGeneric(
+                    object_points, image_pnp, self.K, distortion,
+                    flags=cv2.SOLVEPNP_SQPNP,
+                )
+                starts = [(r, t) for r, t in zip(rvecs, tvecs) if ok
+                          and np.isfinite(r).all() and np.isfinite(t).all()]
         except cv2.error:
             return self._reject("opencv_error", side_px=side)
-        if not ok:
+        if not starts:
             return self._reject("pnp_failed", side_px=side)
         T_arena_camera = np.eye(4)
         T_arena_camera[:3, :3] = self.R_arena_camera
         T_arena_camera[:3, 3] = self.t_arena_camera
+        tag_points = np.asarray([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], dtype=np.float64)
         candidates = []
-        for rvec, tvec in zip(rvecs, tvecs):
+        for rvec, tvec in starts:
             rvec, tvec = cv2.solvePnPRefineLM(
                 object_points, image_pnp, self.K, distortion, rvec.copy(), tvec.copy()
             )
             if not np.isfinite(tvec).all() or float(tvec[2, 0]) <= 0:
                 continue
-            projected, _ = cv2.projectPoints(object_points, rvec, tvec, self.K, distortion)
-            reproj = float(np.sqrt(np.mean(np.sum(
-                (projected.reshape(4, 2) - image_pnp) ** 2, axis=1
-            ))))
+            R_camera_turned, _ = cv2.Rodrigues(rvec)
+            T_camera_tag = np.eye(4)
+            T_camera_tag[:3, :3] = R_camera_turned
+            T_camera_tag[:3, 3] = tvec.reshape(3)
+            T_camera_tag = T_camera_tag @ turn
+            # Residual in the camera's own pixels, through its own model, so
+            # the 2 px gate means the same thing at the centre of a fisheye
+            # frame and at its edge, where undistorted pixels are stretched.
+            points_camera = tag_points @ T_camera_tag[:3, :3].T + T_camera_tag[:3, 3]
+            if (points_camera[:, 2] <= 1e-9).any():
+                continue
+            projected = self.camera_model.project(points_camera)
+            reproj = float(np.sqrt(np.mean(np.sum((projected - image) ** 2, axis=1))))
             # Refinement started from the ill-conditioned IPPE branch can walk
             # away entirely and land at a near-zero tilt with a huge residual.
             # Ordering by tilt first let those win and then killed the frame on
             # reprojection, which is what removed 4116 otherwise good frames.
             if reproj > self.max_reprojection_px:
                 continue
-            R_camera_tag, _ = cv2.Rodrigues(rvec)
-            T_camera_tag = np.eye(4)
-            T_camera_tag[:3, :3] = R_camera_tag
-            T_camera_tag[:3, 3] = tvec.reshape(3)
             T_arena_base = (T_arena_camera @ T_camera_tag
                             @ np.linalg.inv(self.tag_transforms[tag_id]))
             alignment = float(np.clip(

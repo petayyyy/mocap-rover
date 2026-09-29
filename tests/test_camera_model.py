@@ -38,6 +38,15 @@ class InferModel(unittest.TestCase):
         self.assertEqual(infer_model([0.1, 0, 0, 0, 0]), "plumb_bob")
         self.assertEqual(infer_model([0.1, 0, 0, 0]), "fisheye")
         self.assertEqual(infer_model([0.1] * 8), "rational")
+
+    def test_an_ideal_fisheye_is_not_a_pinhole(self):
+        # The IMX219 world calibration is r = f*theta with D = [0, 0, 0, 0].
+        self.assertEqual(infer_model([0.0, 0.0, 0.0, 0.0]), "fisheye")
+        model = CameraModel(np.eye(3) * [734.5, 734.5, 1] + [[0, 0, 820], [0, 0, 616], [0, 0, 0]],
+                            [0.0] * 4, (1640, 1232))
+        theta = math.radians(50.0)
+        ray = model.undistort([[820 + 734.5 * theta, 616.0]])[0]
+        self.assertAlmostEqual(ray[0], math.tan(theta), places=6)
         with self.assertRaises(CameraModelError):
             infer_model([0.1] * 7)
 

@@ -38,10 +38,16 @@ def _cv2():
 def infer_model(distortion) -> str:
     """Name the model implied by a raw distortion vector."""
     d = np.asarray(distortion, dtype=float).reshape(-1)
+    # Four coefficients are the equidistant fisheye model even when all of
+    # them are zero: an ideal fisheye lens is r = f*theta, not a pinhole.
+    # Reading [0, 0, 0, 0] as pinhole bent every ray off-axis -- 0.9 m of
+    # ray-plane error at 50 degrees -- and the base-height gate threw most
+    # fisheye detections away.  Length 4 already meant fisheye here for any
+    # non-zero vector, and the world generator writes plumb_bob as five.
+    if d.size == 4:
+        return FISHEYE
     if d.size == 0 or not np.any(d):
         return PINHOLE
-    if d.size in (4,):
-        return FISHEYE
     if d.size in (5,):
         return PLUMB_BOB
     if d.size in (8, 12, 14):
