@@ -1,22 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1400 820" font-family="DejaVu Sans, Arial, sans-serif" font-size="13">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1400 840" font-family="DejaVu Sans, Arial, sans-serif" font-size="13">
   <defs>
     <marker id="ah" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#1f3a5f"/></marker>
-    <!-- corner camera: long side of frame along X, ribbon (bottom of frame) toward -Y (down on the plan) -->
-    <g id="cornercam">
+    <!-- camera with the long side of the frame along X; ribbon (bottom of frame) toward -Y (down on the plan) -->
+    <g id="camx">
       <rect x="-30" y="-16" width="60" height="32" fill="#ffffff" stroke="#1f3a5f" stroke-width="2"/>
       <rect x="-9" y="16" width="18" height="10" fill="#c8102e"/>
       <text x="0" y="4" text-anchor="middle" font-size="10" fill="#1f3a5f">1640 px</text>
+      <circle cx="0" cy="-6" r="2.5" fill="#1f3a5f"/>
     </g>
-    <!-- middle camera: long side of frame along Y, ribbon (bottom of frame) toward -X (left on the plan) -->
-    <g id="midcam">
+    <!-- camera with the long side along Y; ribbon (bottom of frame) toward -X (left on the plan) -->
+    <g id="camy">
       <rect x="-16" y="-30" width="32" height="60" fill="#ffffff" stroke="#1f3a5f" stroke-width="2"/>
       <rect x="-26" y="-9" width="10" height="18" fill="#c8102e"/>
       <text x="0" y="0" text-anchor="middle" font-size="10" fill="#1f3a5f" transform="rotate(-90) translate(0,4)">1640 px</text>
+      <circle cx="6" cy="0" r="2.5" fill="#1f3a5f"/>
     </g>
   </defs>
-  <rect width="1400" height="820" fill="#ffffff"/>
-  <text x="20" y="30" font-size="18" font-weight="bold" fill="#111">Монтаж 6 камер IMX219-160 на потолке Z = 2.9 м, арена 12×12 м</text>
-  <text x="20" y="52" font-size="13" fill="#333">Вид сверху (план): ось X вправо, ось Y вверх, начало координат в углу пола. Красный язычок на плате = сторона разъёма шлейфа = НИЗ кадра.</text>
+  <rect width="1400" height="840" fill="#ffffff"/>
+  <text x="20" y="30" font-size="18" font-weight="bold" fill="#111">Монтаж 6 камер IMX219-160 на пяти точках потолка, Z = 2.9 м, арена 12×12 м</text>
+  <text x="20" y="52" font-size="13" fill="#333">Вид сверху (план): ось X вправо, ось Y вверх, начало координат в углу пола. Все камеры объективом строго вниз, без наклона. Красный язычок = разъём шлейфа = НИЗ кадра.</text>
 
   <g transform="translate(70,90)">
     <rect x="0" y="0" width="600" height="600" fill="#f3f5f7" stroke="#111" stroke-width="2"/>
@@ -24,122 +26,85 @@
       <line x1="100" y1="0" x2="100" y2="600"/><line x1="200" y1="0" x2="200" y2="600"/><line x1="300" y1="0" x2="300" y2="600"/><line x1="400" y1="0" x2="400" y2="600"/><line x1="500" y1="0" x2="500" y2="600"/>
       <line x1="0" y1="100" x2="600" y2="100"/><line x1="0" y1="200" x2="600" y2="200"/><line x1="0" y1="300" x2="600" y2="300"/><line x1="0" y1="400" x2="600" y2="400"/><line x1="0" y1="500" x2="600" y2="500"/>
     </g>
-    <line x1="0" y1="300" x2="600" y2="300" stroke="#8a94a0" stroke-width="1.5" stroke-dasharray="8 6"/>
-    <text x="470" y="292" fill="#8a94a0" font-size="12">осевая линия Y = 6 м</text>
     <g fill="#333" font-size="12">
       <text x="-4" y="616">0</text><text x="290" y="616">6 м</text><text x="580" y="616">12 м</text>
       <text x="-26" y="304">6 м</text><text x="-30" y="10">12 м</text>
       <text x="612" y="606" font-weight="bold" font-size="14">X</text><text x="-6" y="-8" font-weight="bold" font-size="14">Y</text>
     </g>
-    <g transform="translate(300,300)">
-      <rect x="-9" y="-9" width="18" height="18" transform="rotate(45)" fill="none" stroke="#6b21a8" stroke-width="2"/>
-      <text x="0" y="52" text-anchor="middle" fill="#6b21a8" font-size="12">лидар Airy (6, 6, 2.75), вниз</text>
+    <!-- mounting points -->
+    <g fill="none" stroke="#9aa3ad" stroke-width="1" stroke-dasharray="4 3">
+      <circle cx="150" cy="450" r="24"/><circle cx="450" cy="450" r="24"/><circle cx="150" cy="150" r="24"/><circle cx="450" cy="150" r="24"/><circle cx="300" cy="300" r="42"/>
     </g>
-
-    <!-- camera_1 (3,2): plan y = 600-100 = 500 -->
-    <g transform="translate(150,500)">
-      <use xlink:href="#cornercam"/>
-      <line x1="0" y1="-18" x2="0" y2="-64" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
-      <text x="6" y="-44" fill="#1f3a5f" font-size="12">наклон 10° к +Y</text>
-      <text x="-40" y="46" font-weight="bold">camera_1 (3, 2)</text>
-      <text x="-40" y="62" fill="#c8102e" font-size="12">низ кадра / шлейф → −Y</text>
-    </g>
-    <g transform="translate(450,500)">
-      <use xlink:href="#cornercam"/>
-      <line x1="0" y1="-18" x2="0" y2="-64" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
-      <text x="6" y="-44" fill="#1f3a5f" font-size="12">наклон 10° к +Y</text>
-      <text x="-40" y="46" font-weight="bold">camera_2 (9, 2)</text>
-      <text x="-40" y="62" fill="#c8102e" font-size="12">низ кадра / шлейф → −Y</text>
-    </g>
-    <!-- camera_5 (3,10): plan y = 100 -->
-    <g transform="translate(150,100)">
-      <use xlink:href="#cornercam"/>
-      <line x1="0" y1="28" x2="0" y2="74" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
-      <text x="6" y="58" fill="#1f3a5f" font-size="12">наклон 10° к −Y</text>
-      <text x="-40" y="-26" font-weight="bold">camera_5 (3, 10)</text>
-      <text x="-40" y="-42" fill="#c8102e" font-size="12">низ кадра / шлейф → −Y (к центру)</text>
-    </g>
-    <g transform="translate(450,100)">
-      <use xlink:href="#cornercam"/>
-      <line x1="0" y1="28" x2="0" y2="74" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
-      <text x="6" y="58" fill="#1f3a5f" font-size="12">наклон 10° к −Y</text>
-      <text x="-40" y="-26" font-weight="bold">camera_6 (9, 10)</text>
-      <text x="-40" y="-42" fill="#c8102e" font-size="12">низ кадра / шлейф → −Y (к центру)</text>
-    </g>
-    <!-- camera_3 (3,6), camera_4 (9,6): plan y = 300 -->
-    <g transform="translate(150,300)">
-      <use xlink:href="#midcam"/>
-      <circle cx="0" cy="0" r="3.5" fill="#1f3a5f"/>
-      <text x="22" y="-14" font-weight="bold">camera_3 (3, 6)</text>
-      <text x="22" y="2" fill="#1f3a5f" font-size="12">в надир, 0°</text>
-      <text x="22" y="18" fill="#c8102e" font-size="12">низ кадра / шлейф → −X</text>
-    </g>
-    <g transform="translate(450,300)">
-      <use xlink:href="#midcam"/>
-      <circle cx="0" cy="0" r="3.5" fill="#1f3a5f"/>
-      <text x="22" y="-14" font-weight="bold">camera_4 (9, 6)</text>
-      <text x="22" y="2" fill="#1f3a5f" font-size="12">в надир, 0°</text>
-      <text x="22" y="18" fill="#c8102e" font-size="12">низ кадра / шлейф → −X</text>
-    </g>
+    <!-- corner cameras, nadir, long side along X -->
+    <g transform="translate(150,450)"><use xlink:href="#camx"/><text x="-40" y="46" font-weight="bold">camera_1 (3, 3)</text><text x="-40" y="62" fill="#c8102e" font-size="12">низ кадра / шлейф → −Y</text></g>
+    <g transform="translate(450,450)"><use xlink:href="#camx"/><text x="-40" y="46" font-weight="bold">camera_2 (9, 3)</text><text x="-40" y="62" fill="#c8102e" font-size="12">низ кадра / шлейф → −Y</text></g>
+    <g transform="translate(150,150)"><use xlink:href="#camx"/><text x="-40" y="-26" font-weight="bold">camera_3 (3, 9)</text><text x="-40" y="-42" fill="#c8102e" font-size="12">низ кадра / шлейф → −Y</text></g>
+    <g transform="translate(450,150)"><use xlink:href="#camx"/><text x="-40" y="-26" font-weight="bold">camera_4 (9, 9)</text><text x="-40" y="-42" fill="#c8102e" font-size="12">низ кадра / шлейф → −Y</text></g>
+    <!-- centre pair on one mount: (5.7,6) long side X, (6.3,6) long side Y; lidar (6,6) between and 15 cm lower -->
+    <g transform="translate(285,300)"><use xlink:href="#camx"/></g>
+    <g transform="translate(315,300)"><use xlink:href="#camy"/></g>
+    <g transform="translate(300,300)"><rect x="-6" y="-6" width="12" height="12" transform="rotate(45)" fill="#ffffff" stroke="#6b21a8" stroke-width="2"/></g>
+    <text x="300" y="352" text-anchor="middle" font-weight="bold">центральное крепление (6, 6)</text>
+    <text x="300" y="368" text-anchor="middle" font-size="12">camera_5 (5.7, 6): длинная сторона вдоль X, шлейф → −Y</text>
+    <text x="300" y="384" text-anchor="middle" font-size="12">camera_6 (6.3, 6): длинная сторона вдоль Y, шлейф → −X</text>
+    <text x="300" y="400" text-anchor="middle" font-size="12" fill="#6b21a8">лидар Airy (6, 6) между ними, на 2.75 м</text>
+    <text x="300" y="416" text-anchor="middle" font-size="12">расстояние между центрами камер 0.60 м</text>
   </g>
 
   <g transform="translate(720,90)" fill="#111">
     <text x="0" y="0" font-size="15" font-weight="bold">Обозначения</text>
     <rect x="0" y="12" width="40" height="22" fill="#fff" stroke="#1f3a5f" stroke-width="2"/>
     <text x="50" y="22" font-size="12">плата камеры; длинная сторона прямоугольника =</text>
-    <text x="50" y="36" font-size="12">длинная сторона кадра (1640 px)</text>
+    <text x="50" y="36" font-size="12">длинная сторона кадра (1640 px), точка — объектив</text>
     <rect x="12" y="46" width="16" height="10" fill="#c8102e"/>
     <text x="50" y="56" font-size="12">сторона разъёма шлейфа = низ кадра (строка 1232)</text>
-    <line x1="0" y1="76" x2="40" y2="76" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
-    <text x="50" y="80" font-size="12">наклон оптической оси, 10° от вертикали</text>
-    <circle cx="20" cy="100" r="3.5" fill="#1f3a5f"/>
-    <text x="50" y="104" font-size="12">оптическая ось строго вниз</text>
+    <circle cx="20" cy="76" r="12" fill="none" stroke="#9aa3ad" stroke-dasharray="4 3"/>
+    <text x="50" y="80" font-size="12">точка крепления на потолке (крепёжные отверстия)</text>
+    <rect x="14" y="94" width="12" height="12" transform="rotate(45 20 100)" fill="#fff" stroke="#6b21a8" stroke-width="2"/>
+    <text x="50" y="104" font-size="12">лидар RoboSense Airy, объективом вниз</text>
 
-    <text x="0" y="140" font-size="15" font-weight="bold">Таблица монтажа (объектив вниз, Z = 2.9 м)</text>
+    <text x="0" y="140" font-size="15" font-weight="bold">Таблица монтажа (все объективом вниз, 0° наклона, Z = 2.9 м)</text>
     <g font-size="12">
-      <text x="0" y="162" font-weight="bold">камера</text><text x="80" y="162" font-weight="bold">X, м</text><text x="125" y="162" font-weight="bold">Y, м</text><text x="170" y="162" font-weight="bold">наклон оси</text><text x="280" y="162" font-weight="bold">длинная сторона</text><text x="400" y="162" font-weight="bold">низ кадра (шлейф)</text>
-      <line x1="0" y1="168" x2="540" y2="168" stroke="#999"/>
-      <text x="0" y="186">camera_1</text><text x="80" y="186">3</text><text x="125" y="186">2</text><text x="170" y="186">10° к +Y</text><text x="280" y="186">вдоль X</text><text x="400" y="186">−Y (к борту y = 0)</text>
-      <text x="0" y="204">camera_2</text><text x="80" y="204">9</text><text x="125" y="204">2</text><text x="170" y="204">10° к +Y</text><text x="280" y="204">вдоль X</text><text x="400" y="204">−Y (к борту y = 0)</text>
-      <text x="0" y="222">camera_3</text><text x="80" y="222">3</text><text x="125" y="222">6</text><text x="170" y="222">0°, надир</text><text x="280" y="222">вдоль Y</text><text x="400" y="222">−X (к борту x = 0)</text>
-      <text x="0" y="240">camera_4</text><text x="80" y="240">9</text><text x="125" y="240">6</text><text x="170" y="240">0°, надир</text><text x="280" y="240">вдоль Y</text><text x="400" y="240">−X (к борту x = 0)</text>
-      <text x="0" y="258">camera_5</text><text x="80" y="258">3</text><text x="125" y="258">10</text><text x="170" y="258">10° к −Y</text><text x="280" y="258">вдоль X</text><text x="400" y="258">−Y (к центру арены)</text>
-      <text x="0" y="276">camera_6</text><text x="80" y="276">9</text><text x="125" y="276">10</text><text x="170" y="276">10° к −Y</text><text x="280" y="276">вдоль X</text><text x="400" y="276">−Y (к центру арены)</text>
+      <text x="0" y="162" font-weight="bold">камера</text><text x="80" y="162" font-weight="bold">X, м</text><text x="130" y="162" font-weight="bold">Y, м</text><text x="180" y="162" font-weight="bold">крепление</text><text x="290" y="162" font-weight="bold">длинная сторона</text><text x="410" y="162" font-weight="bold">низ кадра (шлейф)</text>
+      <line x1="0" y1="168" x2="560" y2="168" stroke="#999"/>
+      <text x="0" y="186">camera_1</text><text x="80" y="186">3</text><text x="130" y="186">3</text><text x="180" y="186">угловое</text><text x="290" y="186">вдоль X</text><text x="410" y="186">−Y (к борту y = 0)</text>
+      <text x="0" y="204">camera_2</text><text x="80" y="204">9</text><text x="130" y="204">3</text><text x="180" y="204">угловое</text><text x="290" y="204">вдоль X</text><text x="410" y="204">−Y (к борту y = 0)</text>
+      <text x="0" y="222">camera_3</text><text x="80" y="222">3</text><text x="130" y="222">9</text><text x="180" y="222">угловое</text><text x="290" y="222">вдоль X</text><text x="410" y="222">−Y (к центру арены)</text>
+      <text x="0" y="240">camera_4</text><text x="80" y="240">9</text><text x="130" y="240">9</text><text x="180" y="240">угловое</text><text x="290" y="240">вдоль X</text><text x="410" y="240">−Y (к центру арены)</text>
+      <text x="0" y="258">camera_5</text><text x="80" y="258">5.7</text><text x="130" y="258">6</text><text x="180" y="258">центральное</text><text x="290" y="258">вдоль X</text><text x="410" y="258">−Y</text>
+      <text x="0" y="276">camera_6</text><text x="80" y="276">6.3</text><text x="130" y="276">6</text><text x="180" y="276">центральное</text><text x="290" y="276">вдоль Y</text><text x="410" y="276">−X</text>
+      <text x="0" y="294">лидар</text><text x="80" y="294">6</text><text x="130" y="294">6</text><text x="180" y="294">центральное</text><text x="290" y="294">Z = 2.75 м, вниз</text>
     </g>
 
-    <text x="0" y="316" font-size="15" font-weight="bold">Наклон угловых камер, вид сбоку (сечение X = 3 м или X = 9 м)</text>
-    <g transform="translate(0,340)">
-      <line x1="0" y1="0" x2="480" y2="0" stroke="#999" stroke-width="1" stroke-dasharray="6 4"/>
-      <text x="0" y="-6" fill="#666" font-size="12">потолок, Z = 2.9 м</text>
-      <text x="62" y="-6" fill="#666" font-size="12">y = 2</text><text x="222" y="-6" fill="#666" font-size="12">y = 6</text><text x="382" y="-6" fill="#666" font-size="12">y = 10</text>
-      <line x1="0" y1="130" x2="480" y2="130" stroke="#111" stroke-width="2"/>
-      <text x="0" y="148" font-size="12">пол, Z = 0</text>
-      <rect x="73" y="0" width="14" height="6" fill="#1f3a5f"/>
-      <line x1="80" y1="6" x2="80" y2="130" stroke="#bbb" stroke-dasharray="3 3"/>
-      <line x1="80" y1="6" x2="102" y2="130" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
-      <text x="86" y="70" fill="#1f3a5f" font-size="12">10°</text>
-      <rect x="237" y="0" width="6" height="14" fill="#1f3a5f"/>
-      <line x1="240" y1="14" x2="240" y2="130" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
-      <text x="246" y="70" fill="#1f3a5f" font-size="12">0°</text>
-      <rect x="393" y="0" width="14" height="6" fill="#1f3a5f"/>
-      <line x1="400" y1="6" x2="400" y2="130" stroke="#bbb" stroke-dasharray="3 3"/>
-      <line x1="400" y1="6" x2="378" y2="130" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
-      <text x="356" y="70" fill="#1f3a5f" font-size="12">10°</text>
-      <text x="0" y="172" font-size="12">Ось каждой угловой камеры повёрнута на 10° вокруг оси X к осевой линии Y = 6.</text>
-      <text x="0" y="188" font-size="12">Поворота вокруг Z нет, стороны кадра параллельны бортам. Все камеры на 2.9 м, объективом вниз.</text>
+    <text x="0" y="334" font-size="15" font-weight="bold">Центральное крепление, вид сбоку (сечение Y = 6)</text>
+    <g transform="translate(0,356)">
+      <line x1="0" y1="0" x2="520" y2="0" stroke="#999" stroke-width="1" stroke-dasharray="6 4"/>
+      <text x="0" y="-6" fill="#666" font-size="12">потолок</text>
+      <rect x="170" y="0" width="30" height="10" fill="#1f3a5f"/><text x="140" y="30" font-size="12">camera_5, x = 5.7</text>
+      <rect x="320" y="0" width="30" height="10" fill="#1f3a5f"/><text x="300" y="30" font-size="12">camera_6, x = 6.3</text>
+      <line x1="185" y1="10" x2="185" y2="110" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
+      <line x1="335" y1="10" x2="335" y2="110" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
+      <line x1="260" y1="0" x2="260" y2="40" stroke="#6b21a8" stroke-width="2"/>
+      <rect x="240" y="40" width="40" height="26" fill="#ffffff" stroke="#6b21a8" stroke-width="2"/>
+      <text x="230" y="84" font-size="12" fill="#6b21a8">лидар, x = 6, Z = 2.75</text>
+      <line x1="185" y1="128" x2="335" y2="128" stroke="#333" stroke-width="1"/><text x="228" y="144" font-size="12">0.60 м</text>
+      <line x1="380" y1="0" x2="380" y2="53" stroke="#333" stroke-width="1"/><text x="386" y="34" font-size="12">0.15 м</text>
+      <text x="0" y="172" font-size="12">Камеры на 2.9 м, лидар подвешен ниже на 2.75 м ровно между ними: его корпус попадает</text>
+      <text x="0" y="188" font-size="12">в край кадра обеих центральных камер (≈ 63° от оси) и закрывает от каждой узкий сектор дальнего</text>
+      <text x="0" y="204" font-size="12">пола, который видят угловые камеры. Заслонение проверяется в Gazebo (промпт 06).</text>
     </g>
 
-    <g transform="translate(0,560)" font-size="12" fill="#7a1f00">
+    <g transform="translate(0,590)" font-size="12" fill="#7a1f00">
       <text x="0" y="0" font-weight="bold" font-size="13">Проверить до изготовления крепежа</text>
-      <text x="0" y="20">1. «Сторона шлейфа = низ кадра» взято по компоновке Raspberry Pi Camera v2 (кадр прямой,</text>
-      <text x="0" y="36">   когда шлейф уходит вниз). Для Waveshare IMX219-160 подтвердить одним кадром: держать плату</text>
-      <text x="0" y="52">   шлейфом к себе, низ кадра должен быть у шлейфа. Если наоборот, все стрелки «низ кадра»</text>
-      <text x="0" y="68">   разворачиваются на 180°; координаты и наклоны не меняются.</text>
-      <text x="0" y="90">2. Допуск монтажа ±1 см по осям и ±0.5° по углам, остальное снимет калибровка.</text>
-      <text x="0" y="106">   Регулировка наклона угловых камер в пределах 10° ± 3° желательна.</text>
-      <text x="0" y="128">3. Объектив 160°: крепёж, шлейф и кабели не должны выступать ниже плоскости платы</text>
-      <text x="0" y="144">   в радиусе 5 см от объектива.</text>
-      <text x="0" y="166">4. Лидар в центре потолка на 2.75 м, объективом вниз; камеры выше него (2.9 м) и вне его конуса.</text>
+      <text x="0" y="20">1. «Сторона шлейфа = низ кадра» взято по компоновке Raspberry Pi Camera v2 (кадр прямой, когда шлейф</text>
+      <text x="0" y="36">   уходит вниз). Для Waveshare IMX219-160 подтвердить одним кадром: держать плату шлейфом к себе,</text>
+      <text x="0" y="52">   низ кадра у шлейфа. Если наоборот, стрелки «низ кадра» разворачиваются на 180°, координаты те же.</text>
+      <text x="0" y="74">2. Допуск монтажа ±1 см по осям и ±0.5° по углам, остальное снимет калибровка. Наклон 0° у всех:</text>
+      <text x="0" y="90">   на пяти точках наклон угловых камер к центру покрытие только ухудшает (99.4 % → 97 % при 10°).</text>
+      <text x="0" y="112">3. Объектив 160°: крепёж, шлейф и кабели не выступают ниже плоскости платы в радиусе 5 см от объектива.</text>
+      <text x="0" y="134">4. Центральное крепление: камеры на 0.60 м друг от друга, лидар между ними на 15 см ниже; корпус лидара</text>
+      <text x="0" y="150">   не должен подходить к объективам ближе 25 см по горизонтали.</text>
+      <text x="0" y="172">5. Раскладка подлежит проверке в Gazebo (промпт 06) до передачи в производство.</text>
     </g>
   </g>
 </svg>
