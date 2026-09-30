@@ -55,6 +55,30 @@ class Mounts5LayoutTest(unittest.TestCase):
         self.assertEqual([f["height_m"] for f in fractions], [0.3654, 0.483])
         self.assertGreaterEqual(fractions[0]["at_least_1"], fractions[0]["at_least_2"])
 
+    def test_final_layout_reproduces_the_shipped_imx219_world(self):
+        """final + set_world_rates gives worlds/mocap_arena_imx219.sdf except the two mesh URIs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            subprocess.run([sys.executable, str(ROOT / "scripts/generate_world.py"), "--profile", "imx219_160",
+                            "--layout", "final", "--lidar", "airy", "--ideal-cameras",
+                            "--world-name", "mocap_arena_imx219", "--output-dir", str(out)],
+                           check=True, capture_output=True)
+            world = out / "worlds/mocap_arena_imx219.sdf"
+            subprocess.run([sys.executable, str(ROOT / "scripts/set_world_rates.py"), str(world), "--camera-hz", "80",
+                            "--truth-hz", "200", "--lidar-hz", "10", "--max-linear", "12"],
+                           check=True, capture_output=True)
+            new = world.read_text().splitlines()
+            runtime = json.loads((out / "config/mocap_arena_imx219/runtime_cameras.json").read_text())
+        old = (ROOT / "worlds/mocap_arena_imx219.sdf").read_text().splitlines()
+        self.assertEqual(len(new), len(old))
+        differing = [(a.strip(), b.strip()) for a, b in zip(new, old) if a != b]
+        self.assertEqual([a for a, _ in differing],
+                         ["<uri>model://unitree_l2/meshes/unitree_l2_base.obj</uri>",
+                          "<uri>model://unitree_l2/meshes/unitree_l2_rotor.obj</uri>"])
+        self.assertTrue(all(b.endswith(a.replace("<uri>model://", "/models/")) for a, b in differing))
+        shipped = json.loads((ROOT / "config/mocap_arena_imx219/runtime_cameras.json").read_text())
+        self.assertEqual(runtime, shipped)
+
     def test_variant_needs_mounts5(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(subprocess.CalledProcessError):
