@@ -1,0 +1,71 @@
+{
+  "profile": "imx219_160",
+  "layout": "mounts5",
+  "lidar": "airy",
+  "world": "/home/petayyyy/Drones/mocap-rover/worlds/mocap_arena_mounts5.sdf",
+  "image_size": [
+    1640,
+    1232
+  ],
+  "camera_fps": 80,
+  "lens": "equidistant",
+  "focal_px": 734.53211682016,
+  "tag_rover_inverted": false,
+  "style": "steel",
+  "lighting": "colored",
+  "light_intensity": 1.0,
+  "seed": 42,
+  "ideal_cameras": true,
+  "position_bound_cm": 3,
+  "rpy_bounds_deg": [
+    0.5,
+    5,
+    0.5
+  ],
+  "rotation_convention": "R_world_actual_optical = Rz(yaw) Ry(pitch) Rx(roll) R_world_nominal_optical",
+  "coverage_sample_step_m": 0.1,
+  "geometric_coverage": [
+    {
+      "height_m": 0,
+      "sampled_points": 14641,
+      "uncovered_count": 0,
+      "uncovered_examples": []
+    },
+    {
+      "height_m": 0.3654,
+      "sampled_points": 14641,
+      "uncovered_count": 0,
+      "uncovered_examples": []
+    },
+    {
+      "height_m": 0.5,
+      "sampled_points": 14641,
+      "uncovered_count": 0,
+      "uncovered_examples": []
+    }
+  ],
+  "coverage_fractions": [
+    {
+      "height_m": 0.3654,
+      "incidence_gate_deg": 65.0,
+      "edge_margin_px": 8.0,
+      "at_least_1": 0.9827880609248002,
+      "at_least_2": 0.6659381189809439,
+      "at_least_3": 0.4009288982992965
+    },
+    {
+      "height_m": 0.483,
+      "incidence_gate_deg": 65.0,
+      "edge_margin_px": 8.0,
+      "at_least_1": 0.971176832183594,
+      "at_least_2": 0.6015982514855542,
+      "at_least_3": 0.3535277644969606
+    }
+  ],
+  "centre_spacing_m": 0.3,
+  "layout_variant": {
+    "corner_tilt_deg": 0.0,
+    "corner_roll_deg": 0.0,
+    "centre": "xy"
+  }
+}

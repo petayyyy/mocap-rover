@@ -24,11 +24,20 @@ parser.add_argument('--yaw-deg', type=float, default=0.5, help='World Z rotation
 parser.add_argument('--ideal-cameras', action='store_true')
 parser.add_argument('--tag-rover-inverted', action='store_true', help='Start tag rover upside down to test bottom ID 1')
 parser.add_argument('--profile', choices=['demo_baseline','imx296_narrow','imx296_global_30','imx219_160'], default='imx296_global_30')
-parser.add_argument('--layout', choices=['nadir','final'], default='nadir',
+parser.add_argument('--layout', choices=['nadir','final','mounts5'], default='nadir',
                     help='nadir: every camera looks straight down; final: the tilt/roll layout '
                          'optimised for the IMX219-160 (corner cameras lean 10 deg toward the '
                          'arena centre line with the long image side along X, middle cameras '
-                         'nadir with the long side along Y)')
+                         'nadir with the long side along Y); mounts5: the five ceiling mounts '
+                         '(3,3) (9,3) (3,9) (9,9) and a camera pair around (6,6), see '
+                         'docs/camera_mounting.md')
+parser.add_argument('--centre-spacing', type=float, default=0.30,
+                    help='mounts5 only: distance between the two centre cameras, 0..0.6 m')
+parser.add_argument('--layout-variant', default='',
+                    help='mounts5 only: comma-separated key=value, keys corner_tilt_deg (tilt of the '
+                         'corner cameras toward (6,6)), corner_roll_deg (0: long side along X), '
+                         'centre (xy: long sides perpendicular; xx: both along X; tilt_out_15: both '
+                         'along X, leaning 15 deg away from each other)')
 parser.add_argument('--lidar', choices=['none','airy'], default='none',
                     help='Add the ceiling RoboSense Airy at (6, 6, 2.75) looking down')
 parser.add_argument('--world-name', default='mocap_arena',
@@ -55,6 +64,17 @@ for value in (args.position_cm, args.roll_deg, args.pitch_deg, args.yaw_deg):
 if args.position_cm > 5: parser.error('position-cm must be <= 5 at this ceiling height')
 if max(args.roll_deg, args.pitch_deg, args.yaw_deg) > 15: parser.error('Angle bounds must be <= 15 degrees')
 if not math.isfinite(args.light_intensity) or not 0 <= args.light_intensity <= 4: parser.error('light-intensity must be 0..4')
+MOUNTS5_VARIANT=dict(corner_tilt_deg=0.0,corner_roll_deg=0.0,centre='xy')
+if args.layout!='mounts5' and (args.layout_variant or args.centre_spacing!=0.30):
+    parser.error('--layout-variant and --centre-spacing apply to --layout mounts5 only')
+for item in filter(None,args.layout_variant.split(',')):
+    key,_,value=item.partition('=')
+    if key not in MOUNTS5_VARIANT: parser.error(f'unknown layout variant key {key!r}')
+    if key=='centre':
+        if value not in ('xy','xx','tilt_out_15'): parser.error('centre must be xy, xx or tilt_out_15')
+        MOUNTS5_VARIANT[key]=value
+    else: MOUNTS5_VARIANT[key]=float(value)
+if not 0<=args.centre_spacing<=0.6: parser.error('centre-spacing must be 0..0.6 m')
 OUTPUT = args.output_dir.resolve()
 CONFIG_DIR = OUTPUT / 'config' if args.world_name == 'mocap_arena' else OUTPUT / 'config' / args.world_name
 for directory in (OUTPUT / 'worlds', CONFIG_DIR): directory.mkdir(parents=True, exist_ok=True)
@@ -93,6 +113,23 @@ def layout_angles(layout,x,y):
     if y<4: return (math.radians(270),math.radians(10),0.0)
     if y>8: return (math.radians(90),math.radians(10),0.0)
     return (0.0,0.0,math.radians(90))                            # nadir, long side along Y
+def lean_pan(direction_deg):
+    """pan for layout_rotation that swings the optical axis toward the world
+    direction ``direction_deg`` (angle from +X): pan 270 leans toward +Y."""
+    return math.radians((direction_deg+180)%360)
+def camera_mounts():
+    """[(x, y, (pan, tilt, roll))] in camera_1..6 order."""
+    if args.layout!='mounts5':
+        return [(x,y,layout_angles(args.layout,x,y)) for y in (2,6,10) for x in (3,9)]
+    v=MOUNTS5_VARIANT; mounts=[]
+    for x,y in ((3,3),(9,3),(3,9),(9,9)):
+        mounts.append((x,y,(lean_pan(math.degrees(math.atan2(6-y,6-x))),
+                            math.radians(v['corner_tilt_deg']),math.radians(v['corner_roll_deg']))))
+    half=args.centre_spacing/2
+    if v['centre']=='xy': centre=[(0.0,0.0,0.0),(0.0,0.0,math.radians(90))]
+    elif v['centre']=='xx': centre=[(0.0,0.0,0.0),(0.0,0.0,0.0)]
+    else: centre=[(lean_pan(180),math.radians(15),0.0),(lean_pan(0),math.radians(15),0.0)]
+    return mounts+[(6-half,6,centre[0]),(6+half,6,centre[1])]
 
 def el(p, tag, text=None, **attrs):
     e=E.SubElement(p,tag,attrs)
@@ -168,13 +205,12 @@ else:
     hfov=2*math.atan(8.2/(2*2.9)); fx=image_width/(2*math.tan(hfov/2))
     distortion=[0.0]*5; distortion_model='pinhole'
 cameras=[]
-for idx,(x,y) in enumerate(((x,y) for y in (2,6,10) for x in (3,9)),1):
+for idx,(x,y,(pan,tilt,spin)) in enumerate(camera_mounts(),1):
     name=f'camera_{idx}'
     offset=[rng.uniform(-args.position_cm,args.position_cm)/100 for _ in range(3)]
     angles=[math.radians(rng.uniform(-bound,bound)) for bound in (args.roll_deg,args.pitch_deg,args.yaw_deg)]
     if args.ideal_cameras: offset=[0.0]*3; angles=[0.0]*3
     position=[v+d for v,d in zip([x,y,2.9],offset)]
-    pan,tilt,spin=layout_angles(args.layout,x,y)
     R_nominal=layout_rotation(pan,tilt,spin)
     # The sensor keeps its (0, pi/2, pi/2) pose, which realises NADIR; the
     # layout goes onto the model pose so the installation error still
@@ -207,7 +243,9 @@ if args.lidar=='airy':
     ll=el(lm,'link',name='airy_lidar_link')
     for part in ('base','rotor'):
         v=el(ll,'visual',name=f'l2_{part}_visual'); mesh=el(el(v,'geometry'),'mesh'); el(mesh,'scale','0.001 0.001 0.001')
-        el(mesh,'uri',f'file://{ROOT}/models/unitree_l2/meshes/unitree_l2_{part}.obj')
+        # Resolved through GZ_SIM_RESOURCE_PATH (which holds models/), so the
+        # world runs from any clone location.
+        el(mesh,'uri',f'model://unitree_l2/meshes/unitree_l2_{part}.obj')
     ls=el(ll,'sensor',name='l2_normal',type='gpu_lidar'); el(ls,'topic',lidar['topic']); el(ls,'always_on','true'); el(ls,'update_rate',lidar['update_rate_hz']); el(ls,'visualize','true')
     ray=el(ls,'ray'); scan=el(ray,'scan'); hz=el(scan,'horizontal'); el(hz,'samples',900); el(hz,'resolution',1); el(hz,'min_angle',-math.pi); el(hz,'max_angle',math.pi)
     vt=el(scan,'vertical'); el(vt,'samples',95); el(vt,'resolution',1); el(vt,'min_angle',0.0); el(vt,'max_angle',math.pi/2)
@@ -297,10 +335,38 @@ for height in (0,0.3654,0.5):
                 if inside: seen=True; break
             if not seen: uncovered.append(point[:2])
     coverage.append(dict(height_m=height,sampled_points=14641,uncovered_count=len(uncovered),uncovered_examples=uncovered[:10]))
+def visible_count(point,incidence_deg=65.0,margin_px=8.0):
+    """Cameras that see ``point`` inside the image by ``margin_px`` and at an
+    angle from the vertical (a flat marker's normal) below ``incidence_deg``."""
+    count=0
+    for cam in cameras:
+        delta=[point[k]-cam['position_world'][k] for k in range(3)]
+        norm=math.sqrt(sum(v*v for v in delta))
+        if -delta[2]/norm<math.cos(math.radians(incidence_deg)): continue
+        r=cam['R_world_optical']; optical=[sum(r[k][j]*delta[k] for k in range(3)) for j in range(3)]
+        if optical[2]<=0: continue
+        if fisheye:
+            theta=math.acos(optical[2]/norm)
+            if theta>=math.radians(fisheye['cutoff_deg']): continue
+            rxy=math.hypot(optical[0],optical[1]); scale=fx*theta/rxy if rxy>1e-9 else 0.0
+        else: scale=fx/optical[2]
+        u=image_width/2+optical[0]*scale; v=image_height/2+optical[1]*scale
+        if margin_px<=u<image_width-margin_px and margin_px<=v<image_height-margin_px: count+=1
+    return count
+coverage_fractions=[]
+for height in (0.3654,0.483):
+    counts=[visible_count([ix/10,iy/10,height]) for ix in range(121) for iy in range(121)]
+    coverage_fractions.append(dict(height_m=height,incidence_gate_deg=65.0,edge_margin_px=8.0,
+        **{f'at_least_{n}':sum(c>=n for c in counts)/len(counts) for n in (1,2,3)}))
 settings=dict(profile=args.profile,layout=args.layout,lidar=args.lidar,world=str(WORLD_PATH),image_size=[image_width,image_height],camera_fps=camera_fps,lens=('equidistant' if fisheye else 'pinhole'),focal_px=fx,tag_rover_inverted=args.tag_rover_inverted,style=args.style,lighting=args.lighting,light_intensity=args.light_intensity,seed=args.seed,ideal_cameras=args.ideal_cameras,
               position_bound_cm=args.position_cm,rpy_bounds_deg=[args.roll_deg,args.pitch_deg,args.yaw_deg],
               rotation_convention='R_world_actual_optical = Rz(yaw) Ry(pitch) Rx(roll) R_world_nominal_optical',
-              coverage_sample_step_m=0.1,geometric_coverage=coverage)
+              coverage_sample_step_m=0.1,geometric_coverage=coverage,coverage_fractions=coverage_fractions,
+              **(dict(centre_spacing_m=args.centre_spacing,layout_variant=MOUNTS5_VARIANT) if args.layout=='mounts5' else {}))
 (CONFIG_DIR/'scenario.json').write_text(json.dumps(settings,indent=2)+'\n')
 print(f'Generated {WORLD_PATH}: {args.style}, {args.lighting}, seed={args.seed}, profile={args.profile}, layout={args.layout}, lidar={args.lidar}')
 for item in coverage: print(f"  Z={item['height_m']}: {item['uncovered_count']} uncovered samples (ignores occlusion)")
+for item in coverage_fractions:
+    print(f"  Z={item['height_m']}: seen by >=1/>=2/>=3 cameras "
+          f"{100*item['at_least_1']:.1f} / {100*item['at_least_2']:.1f} / {100*item['at_least_3']:.1f} % "
+          f"(incidence <= 65 deg, 8 px from the edge)")
