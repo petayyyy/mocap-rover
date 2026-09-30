@@ -32,7 +32,7 @@ parser.add_argument('--layout', choices=['nadir','final','mounts5'], default='na
                          '(3,3) (9,3) (3,9) (9,9) and a camera pair around (6,6), see '
                          'docs/camera_mounting.md')
 parser.add_argument('--centre-spacing', type=float, default=0.30,
-                    help='mounts5 only: distance between the two centre cameras, 0..0.6 m')
+                    help='mounts5 only: distance between the two centre cameras, 0..1.0 m (fixture 1.1 x 1.1 m)')
 parser.add_argument('--layout-variant', default='',
                     help='mounts5 only: comma-separated key=value, keys corner_tilt_deg (tilt of the '
                          'corner cameras toward (6,6)), corner_roll_deg (0: long side along X), '
@@ -74,7 +74,7 @@ for item in filter(None,args.layout_variant.split(',')):
         if value not in ('xy','xx','tilt_out_15'): parser.error('centre must be xy, xx or tilt_out_15')
         MOUNTS5_VARIANT[key]=value
     else: MOUNTS5_VARIANT[key]=float(value)
-if not 0<=args.centre_spacing<=0.6: parser.error('centre-spacing must be 0..0.6 m')
+if not 0<=args.centre_spacing<=1.0: parser.error('centre-spacing must be 0..1.0 m')
 OUTPUT = args.output_dir.resolve()
 CONFIG_DIR = OUTPUT / 'config' if args.world_name == 'mocap_arena' else OUTPUT / 'config' / args.world_name
 for directory in (OUTPUT / 'worlds', CONFIG_DIR): directory.mkdir(parents=True, exist_ok=True)

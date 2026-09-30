@@ -79,6 +79,13 @@ class Mounts5LayoutTest(unittest.TestCase):
         shipped = json.loads((ROOT / "config/mocap_arena_imx219/runtime_cameras.json").read_text())
         self.assertEqual(runtime, shipped)
 
+    def test_centre_spacing_reaches_the_fixture_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config, _, _ = generate(Path(tmp), "--layout", "mounts5", "--centre-spacing", "1.0")
+            self.assertEqual([c["position_world"][:2] for c in config["cameras"][4:]], [[5.5, 6], [6.5, 6]])
+            with self.assertRaises(subprocess.CalledProcessError):
+                generate(Path(tmp), "--layout", "mounts5", "--centre-spacing", "1.01")
+
     def test_variant_needs_mounts5(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(subprocess.CalledProcessError):
