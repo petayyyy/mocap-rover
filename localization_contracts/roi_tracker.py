@@ -30,6 +30,9 @@ class Plan:
     roi: tuple | None = None          # (x, y, w, h) in full-image pixels
     projected: tuple | None = None    # predicted marker centre, pixels
     reason: str = ""
+    # How the node sends the window: "raw" (bayer8/y8, lossless) or "jpeg".
+    # Full frames are always raw.
+    fmt: str = "raw"
 
 
 def project_to_image(point_world, camera_model, R_world_optical, position_world):
@@ -50,7 +53,8 @@ class CameraRoiPlanner:
                  marker_size_m=0.40, growth=1.5, max_misses=8,
                  valid_radius_margin=0.85, watchdog_period_s=2.0,
                  tag_plane_z=0.3654, max_incidence_deg=None, min_marker_px=None,
-                 exhausted_full_frame_period_s=None):
+                 exhausted_full_frame_period_s=None, jpeg_max_roi_px=None,
+                 acquire_period_s=None):
         self.camera_model = camera_model
         self.R = np.asarray(R_world_optical, dtype=float).reshape(3, 3)
         self.position = np.asarray(position_world, dtype=float).reshape(3)
@@ -78,6 +82,16 @@ class CameraRoiPlanner:
         # frame on every frame.  None: full frame every frame, as before.
         self.exhausted_period_ns = (None if exhausted_full_frame_period_s is None
                                     else int(exhausted_full_frame_period_s * 1e9))
+        # Above max_roi_px a window is only sent compressed: up to this size
+        # in JPEG, beyond it a full frame on the exhausted schedule instead.
+        # None: the window is clamped to max_roi_px, as before.
+        self.jpeg_max_roi_px = None if jpeg_max_roi_px is None else int(jpeg_max_roi_px)
+        if self.jpeg_max_roi_px is not None and self.exhausted_period_ns is None:
+            raise ValueError("jpeg_max_roi_px needs exhausted_full_frame_period_s")
+        # Without a track, a full frame at most this often instead of every
+        # frame.  None: every frame, as before.
+        self.acquire_period_ns = None if acquire_period_s is None else int(acquire_period_s * 1e9)
+        self.last_acquire_ns = None
         self.misses = 0
         self.last_full_frame_ns = None
         # Scalar, or (low, high) when the marker can sit on more than one
@@ -116,6 +130,11 @@ class CameraRoiPlanner:
     def plan(self, prediction, now_ns=None):
         """``prediction`` is (x, y, sigma_m) in arena metres, or None."""
         if prediction is None:
+            if (self.acquire_period_ns is not None and now_ns is not None
+                    and self.last_acquire_ns is not None
+                    and now_ns - self.last_acquire_ns < self.acquire_period_ns):
+                return Plan(IDLE, None, None, "no_track_rate")
+            self.last_acquire_ns = now_ns
             self.last_full_frame_ns = now_ns
             return Plan(ACQUIRE, None, None, "no_track")
         x, y, sigma = prediction
@@ -170,6 +189,22 @@ class CameraRoiPlanner:
             half = max(half, self.sigma_multiplier * sigma_px + marker_px)
         base = half + spread
         half = base * self.growth ** min(self.misses, 6)
+        if self.jpeg_max_roi_px is not None and self.misses < self.max_misses:
+            wanted = max(2 * half, self.min_roi_px)
+            if wanted > self.jpeg_max_roi_px:
+                # Too big even compressed: a full frame on the exhausted
+                # schedule, the widest JPEG window in between.
+                if (now_ns is None or self.last_full_frame_ns is None
+                        or now_ns - self.last_full_frame_ns >= self.exhausted_period_ns):
+                    self.last_full_frame_ns = now_ns
+                    return Plan(ACQUIRE, None, uv, "roi_over_jpeg_cap")
+                size = self.jpeg_max_roi_px + self.jpeg_max_roi_px % 2
+                roi = (int(round(uv[0] - size / 2)), int(round(uv[1] - size / 2)), size, size)
+                return Plan(ROI, roi, uv, "roi_over_jpeg_cap_window", "jpeg")
+            if wanted > self.max_roi_px:
+                size = int(wanted) + int(wanted) % 2
+                roi = (int(round(uv[0] - size / 2)), int(round(uv[1] - size / 2)), size, size)
+                return Plan(ROI, roi, uv, "prediction_in_view_jpeg", "jpeg")
         size = int(min(max(2 * half, self.min_roi_px), self.max_roi_px))
         size += size % 2
         if self.misses >= self.max_misses:

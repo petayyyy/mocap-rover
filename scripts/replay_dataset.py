@@ -69,6 +69,7 @@ from localization_contracts.identity import TwoRoverIdentity  # noqa: E402
 from localization_contracts.opponent_camera import OpponentCamera, SILHOUETTE  # noqa: E402
 from localization_contracts.camera_worker import POOLS, REACQUIRE_PERIOD_NS  # noqa: E402
 from localization_contracts.cuboid import localize_box  # noqa: E402
+from localization_contracts.link_emulation import LinkModel, MODES as LINK_MODES  # noqa: E402
 
 # Opponent cuboid as the operator sees it: 0.9 x 0.52 m, top at 0.483 m.
 OPPONENT_SIZE_M = (0.9, 0.52, 0.483)
@@ -80,7 +81,9 @@ TAG_BODY_M = (0.72, 0.52, 0.40)
 
 # Event order at one instant: a measurement that arrives at t is visible to
 # the tick at t, and the clock is advanced before anything reads it.
-CLOCK, ENQUEUE, LIDAR, CAMERA, TICK = range(5)
+# RESULT is one camera's processed frame reaching the laptop under link
+# emulation, where the arrival depends on what was sent.
+CLOCK, ENQUEUE, RESULT, LIDAR, CAMERA, TICK = range(6)
 
 
 def parse_args(argv=None):
@@ -100,7 +103,31 @@ def parse_args(argv=None):
                    help="start tag_rover only from its marker, without the operator's "
                         "rectangle (the second and last truth read)")
     p.add_argument("--transport-ms", type=float, default=15.0,
-                   help="render stamp to arrival on the laptop, per frame")
+                   help="render stamp to arrival on the laptop, per frame (--link-emulation ideal)")
+    p.add_argument("--link-emulation", choices=LINK_MODES, default="ideal",
+                   help="ideal: every frame arrives --transport-ms after its stamp, pixels as "
+                        "rendered.  cm5/cm4: what the camera node sends -- luminance (cm4: from "
+                        "a demosaiced Bayer mosaic), JPEG windows encoded and decoded, and each "
+                        "camera's windows arrive after the node's floor and work plus the "
+                        "shared gigabit port (localization_contracts/link_emulation.py)")
+    p.add_argument("--roi-jpeg-max-px", type=int, default=None,
+                   help="marker windows above --roi-max-px go as JPEG up to this; beyond it a "
+                        "full frame on the exhausted schedule.  Default 640 with cm4/cm5, "
+                        "none (clamp) with ideal")
+    p.add_argument("--opponent-jpeg-max-px", type=int, default=None,
+                   help="the same for the opponent's windows above --opponent-roi-max-px")
+    p.add_argument("--no-opponent-jpeg", action="store_true",
+                   help="opponent windows stay lossless, clamped to --opponent-roi-max-px")
+    p.add_argument("--opponent-max-cameras", type=int, default=0,
+                   help="at most this many cameras get an opponent window per instant, the "
+                        "nearest to the predicted opponent; 0 = no limit")
+    p.add_argument("--acquire-full-frame-hz", type=float, default=0.0,
+                   help="without a track, a full frame at most this often per camera; "
+                        "0 = every frame")
+    p.add_argument("--link-line-time-ns", type=float, default=9452.0,
+                   help="IMX219 row time; with cm4/cm5 only reported (how much younger a "
+                        "marker row is on hardware), never applied: Gazebo renders a "
+                        "global shutter")
     p.add_argument("--lidar-transport-ms", type=float, default=None,
                    help="scan stamp to arrival; defaults to --transport-ms")
     p.add_argument("--line-time-ns", type=float, default=0.0,
@@ -222,6 +249,23 @@ def parse_args(argv=None):
         a.cameras = [name for item in a.cameras for name in item.split(",") if name]
     if a.lidar_transport_ms is None:
         a.lidar_transport_ms = a.transport_ms
+    if a.link_emulation != "ideal":
+        if a.line_time_ns:
+            p.error("--line-time-ns with link emulation would move a global-shutter "
+                    "render in time; the row time is --link-line-time-ns, reported only")
+        if a.roi_jpeg_max_px is None:
+            a.roi_jpeg_max_px = 640
+        if a.opponent_jpeg_max_px is None and not a.no_opponent_jpeg:
+            a.opponent_jpeg_max_px = 640
+    if a.no_opponent_jpeg:
+        a.opponent_jpeg_max_px = None
+    for name in ("roi_jpeg_max_px", "opponent_jpeg_max_px"):
+        cap = getattr(a, name)
+        low = a.roi_max_px if name == "roi_jpeg_max_px" else a.opponent_roi_max_px
+        if cap is not None and cap <= low:
+            setattr(a, name, None)          # nothing above the lossless cap to compress
+        if cap is not None and not a.roi_exhausted_period_s:
+            p.error("a JPEG cap needs --roi-exhausted-period-s for the full frames above it")
     return a
 
 
@@ -383,7 +427,8 @@ class Replay:
             max_incidence_deg=None if a.no_roi_visibility_gates else a.max_incidence_deg,
             min_marker_px=None if a.no_roi_visibility_gates else a.tag_min_side_px,
             exhausted_full_frame_period_s=a.roi_exhausted_period_s or None,
-            tag_plane_z=(min(planes), max(planes)))
+            tag_plane_z=(min(planes), max(planes)), jpeg_max_roi_px=a.roi_jpeg_max_px,
+            acquire_period_s=1.0 / a.acquire_full_frame_hz if a.acquire_full_frame_hz else None)
         aliases = {f"{self.marker_family}:{int(i)}" for i in self.tags}
         if not a.no_tag_operator_box:
             aliases.add(OPERATOR_TAG_IDENTITY)
@@ -417,7 +462,8 @@ class Replay:
                 tag_plane_z=(0.0, a.opponent_size[2]),
                 max_incidence_deg=a.opponent_max_incidence_deg,
                 min_marker_px=a.opponent_min_size_px,
-                exhausted_full_frame_period_s=a.roi_exhausted_period_s or None)
+                exhausted_full_frame_period_s=a.roi_exhausted_period_s or None,
+                jpeg_max_roi_px=a.opponent_jpeg_max_px)
         self.buffers = {name: AsyncObservationBuffer(int(a.group_window_ms * 1e6))
                         for name in self.filters}
         self.pending_observations = {name: [] for name in self.filters}
@@ -441,6 +487,12 @@ class Replay:
         self.lidar_ms = []
         self.last_clock_ns = None
         self.errors = []
+        self.link = LinkModel(a.link_emulation) if a.link_emulation != "ideal" else None
+        self.link_latency_ms = collections.defaultdict(list)
+        self.link_counts = collections.Counter()
+        self.link_row_ms = []
+        self.full_frame_px = {cid: int(c["image_size"][0]) * int(c["image_size"][1])
+                              for cid, c in cams.items()}
 
     def _make_lidar(self):
         a, lidar_config = self.a, self.cfg.get("lidar")
@@ -612,7 +664,8 @@ class Replay:
                 "planner": self.planner_kwargs,
                 "opponent_planner": getattr(self, "opponent_planner_kwargs", None),
                 "no_roi_tracking": a.no_roi_tracking,
-                "processing_ns": self.processing_ns, "gain": a.gain, "opponent": opponent}
+                "processing_ns": self.processing_ns, "gain": a.gain, "opponent": opponent,
+                "link": {"mode": a.link_emulation}}
 
     def pose_of(self, name, now_ns):
         """(x, y, yaw, sigma) of a live track, or None."""
@@ -637,8 +690,16 @@ class Replay:
                   "prediction": None if self.a.no_roi_tracking else self.track_prediction(now_ns),
                   "opponent_enabled": self.opponent_enabled, "tag": tag, "opp": opp,
                   "operator_done": self.operator_done}
+        allowed = None
+        if opp is not None and self.a.opponent_max_cameras:
+            # The nearest cameras to the predicted opponent see it steepest.
+            ranked = sorted((math.hypot(self.cams[cid]["position_world"][0] - opp[0],
+                                        self.cams[cid]["position_world"][1] - opp[1]), cid)
+                            for cid, _ in items)
+            allowed = {cid for _, cid in ranked[:self.a.opponent_max_cameras]}
         return {cid: {**common, "operator_box": (self.operator_box["boxes_xyxy_px"].get(cid)
-                                                 if operator else None)}
+                                                 if operator else None),
+                      "opponent_allowed": allowed is None or cid in allowed}
                 for cid, _ in items}
 
     def camera_batch(self, now_ns, items):
@@ -650,11 +711,54 @@ class Replay:
         results = [(cid, row, out) for (cid, row), out in zip(items, outputs)]
         self.batch_ms.append((time.perf_counter_ns() - begin) / 1e6)
         begin = time.perf_counter_ns()
+        if self.link is not None:
+            self.send_over_link(results)
+            self.tag_operator_start(now_ns, items)
+            self.main_ms["apply"].append((time.perf_counter_ns() - begin) / 1e6)
+            return
         plans = {cid: result["plan"] for cid, _, result in results}
         jobs = {cid: result["job"] for cid, _, result in results if result["job"] is not None}
         self.apply_results(now_ns, plans, jobs, results)
         self.tag_operator_start(now_ns, items)
         self.main_ms["apply"].append((time.perf_counter_ns() - begin) / 1e6)
+
+    def send_over_link(self, results):
+        """Link emulation: each camera's result reaches the laptop when the model says.
+
+        The frame was planned and read at its stamp; the node then needs its
+        floor and its work on the windows, and the shared port serialises
+        what every camera sends.  The result is applied on arrival (RESULT),
+        with the arrival as its receive time.
+        """
+        jobs = [(cid, result["stamp"], result.get("link_windows") or [])
+                for cid, _, result in results if not result["idle"]]
+        served = self.link.serve(jobs)
+        for cid, row, result in results:
+            if result["idle"]:
+                self.apply_results(int(row["stamp_ns"]), {cid: result["plan"]},
+                                   {}, [(cid, row, result)])
+                continue
+            windows = result.get("link_windows") or []
+            if cid not in served:           # nothing to send: busy but empty window
+                arrival = result["stamp"] + self.link.floor_ns
+            else:
+                arrival = served[cid][1]
+                self.link_latency_ms[cid].append((arrival - result["stamp"]) / 1e6)
+                full = [w for w in windows if w[0] * w[1] >= self.full_frame_px[cid]]
+                self.link_counts["full_frames"] += len(full)
+                self.link_counts["jpeg_windows"] += sum(1 for w in windows if w[2] == "jpeg")
+                self.link_counts["raw_windows"] += sum(1 for w in windows
+                                                      if w[2] == "raw" and w not in full)
+            processed = arrival + self.processing_ns
+            result["received"], result["processed"] = arrival, processed
+            result["observations"] = [dataclasses.replace(obs, receive_time_ns=arrival,
+                                                          processed_time_ns=processed)
+                                      for obs in result["observations"]]
+            for obs in result["observations"]:
+                row_px = (obs.pixel_features or {}).get("exposure_row_px")
+                if row_px is not None:
+                    self.link_row_ms.append(float(row_px) * self.a.link_line_time_ns / 1e6)
+            self.push(arrival, RESULT, (cid, row, result))
 
     def tag_operator_start(self, now_ns, items):
         """Main thread: the operator's rectangle around tag_rover starts its track.
@@ -953,9 +1057,14 @@ class Replay:
                 if limit is not None and stamp >= limit:
                     break
                 self.stamps_by_camera[cid][stamp] = int(row["index"])
-                self.push(stamp + self.transport_ns, CAMERA, (cid, row))
+                # Under link emulation a frame is planned and read at its
+                # stamp (the node has the window request before exposure) and
+                # its result arrives later, by the link model.
+                self.push(stamp + (0 if self.link is not None else self.transport_ns),
+                          CAMERA, (cid, row))
                 self.frames_scheduled += 1
-                last = max(last, stamp + self.transport_ns)
+                last = max(last, stamp + (100_000_000 if self.link is not None
+                                          else self.transport_ns))
         self.scans_scheduled = 0
         if self.lidar is not None and (self.dataset / "lidar.jsonl").exists():
             for row in read_jsonl(self.dataset / "lidar.jsonl"):
@@ -1012,6 +1121,11 @@ class Replay:
                     self.last_clock_ns = max(self.last_clock_ns or payload, payload)
                 elif kind == ENQUEUE:
                     self.enqueue(payload[1], when)
+                elif kind == RESULT:
+                    cid, row, result = payload
+                    job = result["job"]
+                    self.apply_results(when, {cid: result["plan"]},
+                                       {cid: job} if job is not None else {}, [(cid, row, result)])
                 elif kind == LIDAR:
                     self.lidar_scan(when, payload)
                 elif kind == CAMERA:
@@ -1112,6 +1226,16 @@ class Replay:
             },
             "opponent_operator_box": operator_box,
             "tag_rover_operator_box": tag_operator_box,
+            "link_emulation": {
+                "mode": a.link_emulation, "roi_max_px": a.roi_max_px,
+                "roi_jpeg_max_px": a.roi_jpeg_max_px,
+                "opponent_roi_max_px": a.opponent_roi_max_px,
+                "opponent_jpeg_max_px": a.opponent_jpeg_max_px,
+                "opponent_max_cameras": a.opponent_max_cameras,
+                "acquire_full_frame_hz": a.acquire_full_frame_hz,
+                "transport_ms": a.transport_ms if a.link_emulation == "ideal" else None,
+                "link_line_time_ns_reported_only": a.link_line_time_ns,
+            },
         }, indent=2) + "\n")
 
     def timing_report(self, wall):
@@ -1175,8 +1299,36 @@ class Replay:
             "background_build_s": getattr(self, "background_build_s", None),
             "batch_wall_ms": summary(self.batch_ms),
             "lidar_processing_ms": summary(self.lidar_ms),
+            "jpeg_decode_ms": summary([v for t in self.timing.values()
+                                       for v in t["stages"].get("jpeg_decode_ms", [])]),
+            "link": self.link_report(),
             "cameras": per_camera,
         }
+
+    def link_report(self):
+        """Port load and arrival times under link emulation; None for ideal."""
+        if self.link is None:
+            return None
+        report = self.link.report(self.t0, self.end_ns)
+        all_latency = [v for values in self.link_latency_ms.values() for v in values]
+        report.update({
+            "note": "series_mbps: port load per 100 ms bin, lidar's constant share included. "
+                    "exposure_to_arrival_ms: first-row exposure to the last window of the "
+                    "frame on the laptop (node floor + work + port queue + wire). "
+                    "marker_row_ms: how much later than the frame stamp the marker's row "
+                    "is exposed on a rolling-shutter IMX219 -- reported only, not applied "
+                    "(Gazebo renders a global shutter)",
+            "exposure_to_arrival_ms": summary(all_latency),
+            "exposure_to_arrival_ms_by_camera": {cid: summary(v) for cid, v
+                                                 in sorted(self.link_latency_ms.items())},
+            "marker_row_ms": summary(self.link_row_ms),
+            "full_frames": self.link_counts["full_frames"],
+            "jpeg_windows": self.link_counts["jpeg_windows"],
+            "raw_windows": self.link_counts["raw_windows"],
+            "jpeg_window_share": self.link_counts["jpeg_windows"] / max(
+                1, self.link_counts["jpeg_windows"] + self.link_counts["raw_windows"]),
+        })
+        return report
 
     def status(self, wall):
         f = self.filters["tag_rover"]

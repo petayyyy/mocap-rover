@@ -153,15 +153,40 @@ def flatten_bayer(array, gains, row0=0, col0=0, out_dtype=np.uint8):
     return scaled
 
 
+# IMX219 in its raw 1640x1232 mode reads SBGGR8: the full frame starts on a
+# blue pixel.  Windows start on even rows and columns, so every window does.
+SENSOR_BAYER_PATTERN = "BG"
+
+
+def demosaic_bayer_gray(array, row0=0, col0=0, pattern=SENSOR_BAYER_PATTERN):
+    """Raw Bayer window -> luminance by demosaicing, not by a gain map.
+
+    A 2x2 gain map only flattens grey surfaces under white light; under the
+    arena's coloured lights and on coloured bodies it leaves a 2x2
+    checkerboard that the background model reads as foreground.  Demosaicing
+    interpolates each pixel from its neighbours, which removes the mosaic
+    whatever the colours.  An odd window offset shifts the phase; windows are
+    even, but the phase is honoured anyway.
+    """
+    import cv2
+    array = np.ascontiguousarray(array, dtype=np.uint8)
+    phases = {"BG": ("BG", "GB", "GR", "RG"), "GB": ("GB", "BG", "RG", "GR"),
+              "GR": ("GR", "RG", "BG", "GB"), "RG": ("RG", "GR", "GB", "BG")}
+    shifted = phases[pattern][(row0 % 2) * 2 + (col0 % 2)]
+    return cv2.cvtColor(array, getattr(cv2, f"COLOR_Bayer{shifted}2GRAY"))
+
+
 def decode_frame(header: proto.FrameHeader, data, receive_ns, receive_mono_ns,
-                 bayer_gains=None) -> LanFrame:
+                 bayer_gains=None, bayer_demosaic=False) -> LanFrame:
     if header.format in (proto.FORMAT_Y8, proto.FORMAT_BAYER8):
         expected = header.width * header.height
         if len(data) != expected:
             raise proto.ProtocolError(
                 f"{header.format_name} payload {len(data)} != {expected}")
         array = np.frombuffer(data, dtype=np.uint8).reshape(header.height, header.width)
-        if header.format == proto.FORMAT_BAYER8 and bayer_gains is not None:
+        if header.format == proto.FORMAT_BAYER8 and bayer_demosaic:
+            array = demosaic_bayer_gray(array, header.row0, header.col0)
+        elif header.format == proto.FORMAT_BAYER8 and bayer_gains is not None:
             array = flatten_bayer(array, bayer_gains, header.row0, header.col0)
     elif header.format == proto.FORMAT_JPEG:
         if JPEG_DECODE is None:
@@ -305,7 +330,7 @@ class NodeLink(threading.Thread):
             header = msg.frame
             try:
                 frame = decode_frame(header, msg.data, receive_ns, receive_mono_ns,
-                                     self.source.bayer_gains)
+                                     self.source.bayer_gains, self.source.bayer_demosaic)
             except (proto.ProtocolError, ValueError) as exc:
                 self.parse_errors += 1
                 self.source._link_error(self, f"frame: {exc}")
@@ -355,10 +380,14 @@ class LanCameraSource:
     which carries the ``camera_id`` of its config -- never from the address.
     """
 
-    def __init__(self, nodes, *, camera_ids=None, connect=True, bayer_gains=None):
+    def __init__(self, nodes, *, camera_ids=None, connect=True, bayer_gains=None,
+                 bayer_demosaic=False):
         # Nodes reading the sensor's raw stream (required on CM4) send a Bayer
-        # mosaic; these gains flatten it.  None leaves the pixels untouched.
+        # mosaic.  ``bayer_demosaic`` turns it into luminance by demosaicing
+        # (the path for coloured light, see demosaic_bayer_gray); otherwise
+        # ``bayer_gains`` flatten it; neither leaves the pixels untouched.
         self.bayer_gains = bayer_gains
+        self.bayer_demosaic = bool(bayer_demosaic)
         self.condition = threading.Condition()
         self.links = [NodeLink(self, *parse_node_address(n)) for n in nodes]
         self.by_camera: dict[str, NodeLink] = {}

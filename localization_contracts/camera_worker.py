@@ -35,6 +35,7 @@ from .cuboid import localize_box
 from .foreground import ClipBackground
 from .frame_source import CameraFrame, DatasetFrameSource
 from .image_pipeline import OneCameraImagePipeline
+from .link_emulation import SensorPath, clip_roi, jpeg_roundtrip
 from .opponent_camera import OpponentCamera
 from .ray_plane import pixel_rays, ray_plane
 
@@ -74,6 +75,11 @@ class CameraWorker:
             line_time_ns=spec["pipeline"].get("line_time_ns", 0.0), gain=spec["gain"])
         self.opponent = None
         self.prefetched = None          # (index, image, decode_ms)
+        # Link emulation (replay only): what the camera node would deliver.
+        link = spec.get("link") or {}
+        self.link_mode = link.get("mode", "ideal")
+        self.sensor = SensorPath(self.link_mode) if self.link_mode in ("cm4", "cm5") else None
+        self.jpeg_quality = int(link.get("jpeg_quality", 90))
         # This camera's windows are planned here, from the track poses the
         # main thread sends: the planners' state (misses, watchdog) is per
         # camera, and so is all the projecting.
@@ -89,8 +95,11 @@ class CameraWorker:
             started = time.monotonic()
             clip = DatasetFrameSource(Path(opponent["background_dir"]) / f"{cid}.mkv", cid)
             rows = _read_jsonl(Path(opponent["background_dir"]) / f"{cid}.jsonl")
+            # The empty-arena clip goes through the same sensor path as the
+            # live frames, or the model would compare grey with colour.
+            convert = self.sensor or (lambda image: image)
             background = ClipBackground.from_frames(
-                (clip.read_image(int(row["index"])) for row in rows[::opponent["stride"]]),
+                (convert(clip.read_image(int(row["index"]))) for row in rows[::opponent["stride"]]),
                 threshold=opponent["threshold"], alpha=opponent["alpha"])
             clip.close()
             self.opponent = OpponentCamera(
@@ -127,6 +136,11 @@ class CameraWorker:
                           "prediction": point[:2], "tag_pose": tag and tag[:3],
                           "exclude": exclude, "gate_m": 1.5,
                           "operator_box": (x0, y0, x1, y1)}
+        if opp is not None and not context.get("opponent_allowed", True):
+            # One of the cameras over the limit on opponent windows this
+            # instant: learn the background, look elsewhere.
+            return plan, {"plan": roi_tracker.Plan(roi_tracker.IDLE, None, None, "opponent_camera_limit"),
+                          "prediction": None, "tag_pose": None, "exclude": exclude}
         if opp is not None:
             opponent_plan = self.opponent_planner.plan(
                 None if self.spec["no_roi_tracking"] else (opp[0], opp[1], opp[3]), now_ns)
@@ -183,6 +197,10 @@ class CameraWorker:
         image = frame.image
         if [image.shape[1], image.shape[0]] != list(self.camera["image_size"]):
             raise ValueError(f"{cid}: image size differs from calibration")
+        link_windows, jpeg_decode_ms = [], 0.0
+        opponent_image = image
+        if self.sensor is not None:
+            image, opponent_image, link_windows, jpeg_decode_ms = self.emulate_link(image, plan, job)
         stamp = frame.stamp_ns
         received = frame.receive_ns
         processed = received + self.processing_ns
@@ -216,9 +234,51 @@ class CameraWorker:
                   "received": received, "processed": processed,
                   "opponent_ms": 0.0, "background_update_ms": 0.0}
         if job is not None:
-            result.update(self.process_opponent(image, job, result["stages"]))
-        result["latency_ms"] = tag_ms + result["opponent_ms"]
+            result.update(self.process_opponent(opponent_image, job, result["stages"]))
+        # The laptop decodes the JPEG windows; that is part of its frame time.
+        result["latency_ms"] = tag_ms + result["opponent_ms"] + jpeg_decode_ms
+        result["link_windows"] = link_windows
+        result["jpeg_decode_ms"] = jpeg_decode_ms
+        if self.sensor is not None:
+            result["stages"]["jpeg_decode_ms"] = jpeg_decode_ms
         return result
+
+    def emulate_link(self, rgb, plan, job):
+        """The frame as the node would deliver it for this plan.
+
+        Returns (marker image, opponent image, windows, JPEG decode ms);
+        windows are (width, height, fmt, bytes) as sent.  A full frame is
+        sent once, raw, whichever of the two plans asked for it.
+        """
+        base = self.sensor(rgb)
+        height, width = base.shape[:2]
+        windows, decode_ms = [], 0.0
+        images = []
+        full = False
+        for p in (plan, None if job is None else job["plan"]):
+            if p is None or p.mode == roi_tracker.IDLE:
+                images.append(base)
+                continue
+            if p.mode != roi_tracker.ROI or p.roi is None:
+                full = True
+                images.append(base)
+                continue
+            clipped = clip_roi(p.roi, width, height)
+            if clipped is None:
+                images.append(base)
+                continue
+            if p.fmt == "jpeg":
+                image = base.copy()
+                size, ms = jpeg_roundtrip(image, clipped, self.jpeg_quality)
+                decode_ms += ms
+                windows.append((clipped[2], clipped[3], "jpeg", size))
+                images.append(image)
+            else:
+                windows.append((clipped[2], clipped[3], "raw", clipped[2] * clipped[3]))
+                images.append(base)
+        if full:
+            windows.append((width, height, "raw", width * height))
+        return images[0], images[1], windows, decode_ms
 
     def prefetch(self):
         """Decode the next frame now, while the caller is busy elsewhere.

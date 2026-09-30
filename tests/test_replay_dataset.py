@@ -285,6 +285,27 @@ class ReplayDataset(unittest.TestCase):
         self.assertIsNone(params["tag_rover_operator_box"])
         self.assertNotIn("tag_operator", (out / "observations.jsonl").read_text())
 
+    def test_link_emulation_delays_each_camera_by_the_link_model(self):
+        out = self.run_replay("link_cm4", "--link-emulation", "cm4", "--roi-max-px", "320",
+                              "--opponent-roi-max-px", "480", "--acquire-full-frame-hz", "10")
+        observations = [json.loads(l)["observation"]
+                        for l in (out / "observations.jsonl").read_text().splitlines()]
+        delays = [o["receive_time_ns"] - o["capture_time_ns"] for o in observations
+                  if o["method"] != "operator_box"]
+        self.assertTrue(delays)
+        self.assertGreaterEqual(min(delays), 22_600_000)
+        timing = json.loads((out / "timing.json").read_text())
+        link = timing["link"]
+        self.assertEqual(link["mode"], "cm4")
+        self.assertTrue(link["series_mbps"])
+        self.assertGreaterEqual(min(link["series_mbps"]), 22.5)
+        self.assertGreater(link["raw_windows"] + link["jpeg_windows"] + link["full_frames"], 0)
+        params = json.loads((out / "runtime_parameters.json").read_text())
+        self.assertEqual(params["link_emulation"]["roi_jpeg_max_px"], 640)
+        valid = [json.loads(l) for l in (out / "odometry.jsonl").read_text().splitlines()]
+        self.assertTrue(any(r["valid"] and r["object_id"] == "tag_rover" for r in valid))
+        self.assertIsNone(json.loads((self.out / "timing.json").read_text())["link"])
+
     def test_an_existing_output_is_never_overwritten(self):
         with self.assertRaises(SystemExit):
             self.replay.main([str(self.dataset), "--output", str(self.out)])
