@@ -45,10 +45,10 @@
     <g transform="translate(315,300)"><use xlink:href="#camy"/></g>
     <g transform="translate(300,300)"><rect x="-6" y="-6" width="12" height="12" transform="rotate(45)" fill="#ffffff" stroke="#6b21a8" stroke-width="2"/></g>
     <text x="300" y="352" text-anchor="middle" font-weight="bold">центральное крепление (6, 6)</text>
-    <text x="300" y="368" text-anchor="middle" font-size="12">camera_5 (5.7, 6): длинная сторона вдоль X, шлейф → −Y</text>
-    <text x="300" y="384" text-anchor="middle" font-size="12">camera_6 (6.3, 6): длинная сторона вдоль Y, шлейф → −X</text>
+    <text x="300" y="368" text-anchor="middle" font-size="12">camera_5 (5.85, 6): длинная сторона вдоль X, шлейф → −Y</text>
+    <text x="300" y="384" text-anchor="middle" font-size="12">camera_6 (6.15, 6): длинная сторона вдоль Y, шлейф → −X</text>
     <text x="300" y="400" text-anchor="middle" font-size="12" fill="#6b21a8">лидар Airy (6, 6) между ними, на 2.75 м</text>
-    <text x="300" y="416" text-anchor="middle" font-size="12">расстояние между центрами камер 0.60 м</text>
+    <text x="300" y="416" text-anchor="middle" font-size="12">центры камер в 0.30 м (мин. по габариту лидара, макс. 0.60)</text>
   </g>
 
   <g transform="translate(720,90)" fill="#111">
@@ -71,8 +71,8 @@
       <text x="0" y="204">camera_2</text><text x="80" y="204">9</text><text x="130" y="204">3</text><text x="180" y="204">угловое</text><text x="290" y="204">вдоль X</text><text x="410" y="204">−Y (к борту y = 0)</text>
       <text x="0" y="222">camera_3</text><text x="80" y="222">3</text><text x="130" y="222">9</text><text x="180" y="222">угловое</text><text x="290" y="222">вдоль X</text><text x="410" y="222">−Y (к центру арены)</text>
       <text x="0" y="240">camera_4</text><text x="80" y="240">9</text><text x="130" y="240">9</text><text x="180" y="240">угловое</text><text x="290" y="240">вдоль X</text><text x="410" y="240">−Y (к центру арены)</text>
-      <text x="0" y="258">camera_5</text><text x="80" y="258">5.7</text><text x="130" y="258">6</text><text x="180" y="258">центральное</text><text x="290" y="258">вдоль X</text><text x="410" y="258">−Y</text>
-      <text x="0" y="276">camera_6</text><text x="80" y="276">6.3</text><text x="130" y="276">6</text><text x="180" y="276">центральное</text><text x="290" y="276">вдоль Y</text><text x="410" y="276">−X</text>
+      <text x="0" y="258">camera_5</text><text x="80" y="258">5.85</text><text x="130" y="258">6</text><text x="180" y="258">центральное</text><text x="290" y="258">вдоль X</text><text x="410" y="258">−Y</text>
+      <text x="0" y="276">camera_6</text><text x="80" y="276">6.15</text><text x="130" y="276">6</text><text x="180" y="276">центральное</text><text x="290" y="276">вдоль Y</text><text x="410" y="276">−X</text>
       <text x="0" y="294">лидар</text><text x="80" y="294">6</text><text x="130" y="294">6</text><text x="180" y="294">центральное</text><text x="290" y="294">Z = 2.75 м, вниз</text>
     </g>
 
@@ -80,14 +80,14 @@
     <g transform="translate(0,356)">
       <line x1="0" y1="0" x2="520" y2="0" stroke="#999" stroke-width="1" stroke-dasharray="6 4"/>
       <text x="0" y="-6" fill="#666" font-size="12">потолок</text>
-      <rect x="170" y="0" width="30" height="10" fill="#1f3a5f"/><text x="140" y="30" font-size="12">camera_5, x = 5.7</text>
-      <rect x="320" y="0" width="30" height="10" fill="#1f3a5f"/><text x="300" y="30" font-size="12">camera_6, x = 6.3</text>
+      <rect x="170" y="0" width="30" height="10" fill="#1f3a5f"/><text x="140" y="30" font-size="12">camera_5, x = 5.85</text>
+      <rect x="320" y="0" width="30" height="10" fill="#1f3a5f"/><text x="300" y="30" font-size="12">camera_6, x = 6.15</text>
       <line x1="185" y1="10" x2="185" y2="110" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
       <line x1="335" y1="10" x2="335" y2="110" stroke="#1f3a5f" stroke-width="2" marker-end="url(#ah)"/>
       <line x1="260" y1="0" x2="260" y2="40" stroke="#6b21a8" stroke-width="2"/>
       <rect x="240" y="40" width="40" height="26" fill="#ffffff" stroke="#6b21a8" stroke-width="2"/>
       <text x="230" y="84" font-size="12" fill="#6b21a8">лидар, x = 6, Z = 2.75</text>
-      <line x1="185" y1="128" x2="335" y2="128" stroke="#333" stroke-width="1"/><text x="228" y="144" font-size="12">0.60 м</text>
+      <line x1="185" y1="128" x2="335" y2="128" stroke="#333" stroke-width="1"/><text x="228" y="144" font-size="12">0.30 м</text>
       <line x1="380" y1="0" x2="380" y2="53" stroke="#333" stroke-width="1"/><text x="386" y="34" font-size="12">0.15 м</text>
       <text x="0" y="172" font-size="12">Камеры на 2.9 м, лидар подвешен ниже на 2.75 м ровно между ними: его корпус попадает</text>
       <text x="0" y="188" font-size="12">в край кадра обеих центральных камер (≈ 63° от оси) и закрывает от каждой узкий сектор дальнего</text>
@@ -102,8 +102,8 @@
       <text x="0" y="74">2. Допуск монтажа ±1 см по осям и ±0.5° по углам, остальное снимет калибровка. Наклон 0° у всех:</text>
       <text x="0" y="90">   на пяти точках наклон угловых камер к центру покрытие только ухудшает (99.4 % → 97 % при 10°).</text>
       <text x="0" y="112">3. Объектив 160°: крепёж, шлейф и кабели не выступают ниже плоскости платы в радиусе 5 см от объектива.</text>
-      <text x="0" y="134">4. Центральное крепление: камеры на 0.60 м друг от друга, лидар между ними на 15 см ниже; корпус лидара</text>
-      <text x="0" y="150">   не должен подходить к объективам ближе 25 см по горизонтали.</text>
+      <text x="0" y="134">4. Центральное крепление: камеры как можно ближе (ограничение только максимум 0.60 м), лидар между ними на 15 см ниже;</text>
+      <text x="0" y="150">   корпус лидара не ближе 25 см по горизонтали к объективам — отсюда разнос ≈ 0.30 м.</text>
       <text x="0" y="172">5. Раскладка подлежит проверке в Gazebo (промпт 06) до передачи в производство.</text>
     </g>
   </g>
