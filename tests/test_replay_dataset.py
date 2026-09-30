@@ -268,6 +268,23 @@ class ReplayDataset(unittest.TestCase):
                 self.assertEqual(status["identity"]["swaps"], 0)
                 self.assertTrue(status["opponent_enabled"])
 
+    def test_the_operator_box_starts_tag_rover_once(self):
+        params = json.loads((self.out / "runtime_parameters.json").read_text())
+        box = params["tag_rover_operator_box"]
+        self.assertIsNotNone(box)
+        self.assertEqual(box["cuboid_m"], list(self.replay.TAG_BODY_M))
+        starts = [json.loads(l)["observation"] for l in (self.out / "observations.jsonl").read_text().splitlines()
+                  if '"tag_rover"' in l and '"operator_box"' in l]
+        self.assertTrue(starts)
+        self.assertEqual({o["capture_time_ns"] for o in starts}, {box["stamp_ns"]})
+        for obs in starts:
+            x, y = rover_xy(0)
+            self.assertLess(np.hypot(obs["position_m"][0] - x, obs["position_m"][1] - y), 0.15)
+        out = self.run_replay("no_tag_box", "--no-tag-operator-box")
+        params = json.loads((out / "runtime_parameters.json").read_text())
+        self.assertIsNone(params["tag_rover_operator_box"])
+        self.assertNotIn("tag_operator", (out / "observations.jsonl").read_text())
+
     def test_an_existing_output_is_never_overwritten(self):
         with self.assertRaises(SystemExit):
             self.replay.main([str(self.dataset), "--output", str(self.out)])
