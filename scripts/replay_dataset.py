@@ -30,10 +30,13 @@ the filter in camera order afterwards, so the output does not depend on thread
 scheduling: two runs of the same command give identical odometry.
 
 Truth.  The runtime never reads truth.  The one exception is the operator's
-rectangle around the opponent: the replay projects the recorded opponent
-cuboid into the first frame that shows it and records the box, standing in for
-a person drawing it before the match.  That is ``operator_box_from_truth`` and
-nothing else opens ``truth.jsonl``.
+rectangle around each rover: the replay projects the recorded cuboid of the
+opponent, and of tag_rover, into the first frame that shows it and records
+the box, standing in for a person drawing it before the match.  That is
+``operator_box_from_truth`` and nothing else opens ``truth.jsonl``.  The
+tag_rover box starts its track before the first marker and confirms the
+identity for that one measurement only; the marker stays the only source that
+confirms tag_rover afterwards, and yaw stays invalid until a marker gives it.
 """
 from __future__ import annotations
 
@@ -65,10 +68,12 @@ from localization_contracts.contracts import Observation, SCHEMA_VERSION, FRAME_
 from localization_contracts.identity import TwoRoverIdentity  # noqa: E402
 from localization_contracts.opponent_camera import OpponentCamera, SILHOUETTE  # noqa: E402
 from localization_contracts.camera_worker import POOLS, REACQUIRE_PERIOD_NS  # noqa: E402
+from localization_contracts.cuboid import localize_box  # noqa: E402
 
 # Opponent cuboid as the operator sees it: 0.9 x 0.52 m, top at 0.483 m.
 OPPONENT_SIZE_M = (0.9, 0.52, 0.483)
 OPERATOR_IDENTITY = "operator:opponent"
+OPERATOR_TAG_IDENTITY = "operator:tag_rover"
 # Only a blob this far from tag_rover may restart a lost opponent track.
 REACQUIRE_CLEAR_M = 1.0
 TAG_BODY_M = (0.72, 0.52, 0.40)
@@ -91,6 +96,9 @@ def parse_args(argv=None):
     p.add_argument("--cameras", nargs="+",
                    help="subset of camera names, space or comma separated")
     p.add_argument("--no-lidar", action="store_true")
+    p.add_argument("--no-tag-operator-box", action="store_true",
+                   help="start tag_rover only from its marker, without the operator's "
+                        "rectangle (the second and last truth read)")
     p.add_argument("--transport-ms", type=float, default=15.0,
                    help="render stamp to arrival on the laptop, per frame")
     p.add_argument("--lidar-transport-ms", type=float, default=None,
@@ -268,19 +276,20 @@ class FrameSource:
         self.capture.release()
 
 
-def operator_box_from_truth(dataset, cams, models, stamps_by_camera):
-    """The operator's rectangle around the opponent, from the recorded cuboid.
+def operator_box_from_truth(dataset, cams, models, stamps_by_camera, object_id="opponent",
+                            size_m=OPPONENT_SIZE_M):
+    """The operator's rectangle around one rover, from the recorded cuboid.
 
     The only truth read in the replay.  Returns the first render stamp at
     which the whole cuboid projects inside at least one camera's frame, with
     the box for every camera that shows it whole at that stamp.
     """
-    rows = [r for r in read_jsonl(dataset / "truth.jsonl") if r["object_id"] == "opponent"]
+    rows = [r for r in read_jsonl(dataset / "truth.jsonl") if r["object_id"] == object_id]
     if not rows:
         return None
     rows.sort(key=lambda r: r["stamp_ns"])
     ts = np.array([r["stamp_ns"] for r in rows], dtype=np.int64)
-    length, width, height = OPPONENT_SIZE_M
+    length, width, height = size_m
     body = np.array([[sx * length / 2, sy * width / 2, z]
                      for sx in (-1, 1) for sy in (-1, 1) for z in (0.0, height)])
     stamps = sorted({s for values in stamps_by_camera.values() for s in values})
@@ -316,7 +325,7 @@ def operator_box_from_truth(dataset, cams, models, stamps_by_camera):
             return {"stamp_ns": int(stamp),
                     "frame_index": {cid: stamps_by_camera[cid][stamp] for cid in boxes},
                     "boxes_xyxy_px": boxes,
-                    "cuboid_m": list(OPPONENT_SIZE_M),
+                    "cuboid_m": list(size_m),
                     "source": "truth_cuboid_projection_operator_stand_in"}
     return None
 
@@ -376,6 +385,8 @@ class Replay:
             exhausted_full_frame_period_s=a.roi_exhausted_period_s or None,
             tag_plane_z=(min(planes), max(planes)))
         aliases = {f"{self.marker_family}:{int(i)}" for i in self.tags}
+        if not a.no_tag_operator_box:
+            aliases.add(OPERATOR_TAG_IDENTITY)
         self.filters = {"tag_rover": ImmRoverFilter(
             coast_ms=a.coast_ms, identity_max_age_s=a.identity_max_age_s,
             lost_ms=a.lost_ms, max_speed_mps=a.max_speed_mps, identity_aliases=aliases,
@@ -385,6 +396,7 @@ class Replay:
         self.opponent_cameras = {}
         self.operator_box = None
         self.operator_done = False
+        self.tag_operator_box = None
         self.reacquisitions = []
         self.reacquired_at = None
         self.reacquire_candidate = None
@@ -641,7 +653,46 @@ class Replay:
         plans = {cid: result["plan"] for cid, _, result in results}
         jobs = {cid: result["job"] for cid, _, result in results if result["job"] is not None}
         self.apply_results(now_ns, plans, jobs, results)
+        self.tag_operator_start(now_ns, items)
         self.main_ms["apply"].append((time.perf_counter_ns() - begin) / 1e6)
+
+    def tag_operator_start(self, now_ns, items):
+        """Main thread: the operator's rectangle around tag_rover starts its track.
+
+        Once, at the box's render stamp, before any marker: each camera's box
+        becomes a base-centre XY through ``localize_box`` and goes to the
+        tag_rover filter as the one measurement that confirms its identity
+        without a marker.  It carries no yaw, so yaw stays invalid until the
+        first marker.
+        """
+        box = self.tag_operator_box
+        if box is None or box.get("done") or int(items[0][1]["stamp_ns"]) != box["stamp_ns"]:
+            return
+        box["done"] = True
+        f = self.filters["tag_rover"]
+        if f.initialized:
+            return                      # a marker in this very batch got there first
+        stamp = box["stamp_ns"]
+        for cid, row in items:
+            xyxy = box["boxes_xyxy_px"].get(cid)
+            if xyxy is None:
+                continue
+            fit = localize_box(xyxy, self.cams[cid], dimensions=TAG_BODY_M,
+                               camera_model=self.models[cid])
+            x, y = fit["position_m"][:2]
+            cov = (0.1 ** 2, 0.0, 0.0, 0.1 ** 2)
+            obs = Observation(
+                SCHEMA_VERSION, cid, int(row["index"]), f"{cid}:{int(row['index'])}:tag_operator",
+                "tag_rover", stamp, "sim", 0, 0, int(now_ns), int(now_ns), self.version, FRAME_ARENA,
+                (float(x), float(y), self.a.base_z_nominal),
+                (cov[0], cov[1], 0.0, cov[2], cov[3], 0.0, 0.0, 0.0, 0.04),
+                0.5, "operator_box", None, None, pose_6d_valid=False, attitude_state="unknown",
+                pixel_features={"box_fit_rms_px": fit["box_fit_rms_px"], "reading": "box_fit"}
+            ).validate()
+            self.buffers["tag_rover"].push(Measurement(stamp, POSITION, (float(x), float(y)),
+                                                       cov, cid, OPERATOR_TAG_IDENTITY, True,
+                                                       obs.quality))
+            self.pending_observations["tag_rover"].append(obs)
 
     def apply_results(self, now_ns, plans, jobs, results):
         for cid, row, result in results:
@@ -932,8 +983,12 @@ class Replay:
         self.build_events()
         operator_box = operator_box_from_truth(self.dataset, self.cams, self.models,
                                                self.stamps_by_camera)
-        self.write_parameters(out, operator_box)
+        tag_operator_box = None if a.no_tag_operator_box else operator_box_from_truth(
+            self.dataset, self.cams, self.models, self.stamps_by_camera,
+            object_id="tag_rover", size_m=TAG_BODY_M)
+        self.write_parameters(out, operator_box, tag_operator_box)
         self.operator_box = operator_box
+        self.tag_operator_box = dict(tag_operator_box) if tag_operator_box else None
         if self.opponent_enabled:
             self.build_opponent_cameras()
         started = time.monotonic()
@@ -996,7 +1051,7 @@ class Replay:
 
     # ---------------------------------------------------------------- reports
 
-    def write_parameters(self, out, operator_box):
+    def write_parameters(self, out, operator_box, tag_operator_box=None):
         a = self.a
         (out / "runtime_parameters.json").write_text(json.dumps({
             "marker_family": self.marker_family, "marker_ids": sorted(self.tags),
@@ -1056,6 +1111,7 @@ class Replay:
                 "scans_scheduled": self.scans_scheduled,
             },
             "opponent_operator_box": operator_box,
+            "tag_rover_operator_box": tag_operator_box,
         }, indent=2) + "\n")
 
     def timing_report(self, wall):
