@@ -26,6 +26,7 @@ import multiprocessing
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from . import roi_tracker
@@ -90,6 +91,31 @@ class CameraWorker:
                                                               **spec["opponent_planner"]))
         self.last_reacquire_ns = -10**18
         self.background_build_s = 0.0
+        # Replay only: the opponent reads a second, smaller stream at a lower
+        # rate (``opponent_stream`` = (width, height, hz)); the marker keeps
+        # the full-resolution frames.  None: one stream for both.
+        stream = spec.get("opponent_stream")
+        self.opp_size = self.opp_period_ns = self.opp_next_ns = None
+        self.opp_phase_ns = 0
+        self.opp_camera, self.opp_model, self.opp_scale = cam, self.model, (1.0, 1.0)
+        if stream:
+            w, h, hz = int(stream[0]), int(stream[1]), float(stream[2])
+            w0, h0 = cam["image_size"]
+            sx, sy = w / w0, h / h0
+            K = list(cam["K"])
+            K[0] *= sx; K[4] *= sy
+            K[2] = (K[2] + 0.5) * sx - 0.5
+            K[5] = (K[5] + 0.5) * sy - 0.5
+            self.opp_camera = {**cam, "K": K, "image_size": [w, h]}
+            self.opp_model = CameraModel.from_config(self.opp_camera)
+            self.opp_size, self.opp_scale = (w, h), (sx, sy)
+            self.opp_period_ns = int(1e9 / hz)
+            if len(stream) > 3 and stream[3]:
+                index = int("".join(ch for ch in cid if ch.isdigit()) or 1) - 1
+                self.opp_phase_ns = index * self.opp_period_ns // int(stream[3])
+            self.opponent_planner = (None if spec.get("opponent_planner") is None else
+                                     roi_tracker.CameraRoiPlanner(self.opp_model, R, C,
+                                                                  **spec["opponent_planner"]))
         opponent = spec.get("opponent")
         if opponent is not None:
             started = time.monotonic()
@@ -98,12 +124,14 @@ class CameraWorker:
             # The empty-arena clip goes through the same sensor path as the
             # live frames, or the model would compare grey with colour.
             convert = self.sensor or (lambda image: image)
+            shrink = ((lambda image: cv2.resize(image, self.opp_size, interpolation=cv2.INTER_AREA))
+                      if self.opp_size else (lambda image: image))
             background = ClipBackground.from_frames(
-                (convert(clip.read_image(int(row["index"]))) for row in rows[::opponent["stride"]]),
+                (shrink(convert(clip.read_image(int(row["index"])))) for row in rows[::opponent["stride"]]),
                 threshold=opponent["threshold"], alpha=opponent["alpha"])
             clip.close()
             self.opponent = OpponentCamera(
-                cid, self.model, cam["R_world_optical"], cam["position_world"], background,
+                cid, self.opp_model, cam["R_world_optical"], cam["position_world"], background,
                 size_m=opponent["size"], tag_size_m=opponent["tag_size"],
                 gate_m=opponent["gate_m"], extent_plane_z=opponent.get("extent_plane_z"),
                 along_sigma_scale=opponent.get("along_sigma_scale", 0.10))
@@ -112,7 +140,10 @@ class CameraWorker:
     def plan(self, context):
         """(marker plan, opponent job or None) for one frame, from the track poses."""
         now_ns = context["now_ns"]
-        plan = self.planner.plan(context["prediction"], now_ns)
+        if context.get("tag_allowed", True):
+            plan = self.planner.plan(context["prediction"], now_ns)
+        else:
+            plan = roi_tracker.Plan(roi_tracker.IDLE, None, None, "tag_camera_limit")
         if not context["opponent_enabled"]:
             return plan, None
         spec = self.spec["opponent"]
@@ -124,10 +155,11 @@ class CameraWorker:
             if r is not None]
         box = context.get("operator_box")
         if box is not None:
-            x0, y0, x1, y1 = box
+            sx, sy = self.opp_scale
+            x0, y0, x1, y1 = box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy
             pad = max(40.0, 0.3 * max(x1 - x0, y1 - y0))
             roi = (int(x0 - pad), int(y0 - pad), int(x1 - x0 + 2 * pad), int(y1 - y0 + 2 * pad))
-            centre = pixel_rays(self.model, [((x0 + x1) / 2, (y0 + y1) / 2)])[0]
+            centre = pixel_rays(self.opp_model, [((x0 + x1) / 2, (y0 + y1) / 2)])[0]
             point, _ = ray_plane(centre, self.camera["R_world_optical"],
                                  self.camera["position_world"], spec["size"][2] / 2)
             if point is None:
@@ -166,6 +198,22 @@ class CameraWorker:
     def process(self, row, context):
         """Plan, read and report one frame; the plans come back in the result."""
         plan, job = self.plan(context)
+        self.opp_tick = False
+        if self.opp_period_ns:
+            # The opponent's stream has a frame only on its own, slower grid,
+            # and the node sends that frame whether or not anyone reads it.
+            stamp = int(row["stamp_ns"])
+            if self.opp_next_ns is None and self.opp_phase_ns:
+                # Staggered: each camera's small frame leaves at its own phase
+                # of the period, so the six never hit the port together.
+                self.opp_next_ns = stamp + self.opp_phase_ns
+            if self.opp_next_ns is None or stamp >= self.opp_next_ns:
+                self.opp_tick = True
+                self.opp_next_ns = (self.opp_next_ns or stamp) + self.opp_period_ns
+                while self.opp_next_ns <= stamp:
+                    self.opp_next_ns += self.opp_period_ns
+            if job is not None and not self.opp_tick and context.get("operator_box") is None:
+                job = None
         result = self.read(row, plan, job)
         result["plan"], result["job"] = plan, job
         if not result["idle"]:
@@ -180,7 +228,8 @@ class CameraWorker:
         """One frame.  ``job`` is the opponent's plan for it, or None."""
         cid = self.camera_id
         busy = plan.mode != roi_tracker.IDLE or (
-            job is not None and job["plan"].mode != roi_tracker.IDLE)
+            job is not None and job["plan"].mode != roi_tracker.IDLE) or (
+            self.sensor is not None and getattr(self, "opp_tick", False))
         begin = time.perf_counter_ns()
         index = int(row["index"])
         if self.prefetched is not None and self.prefetched[0] == index:
@@ -234,6 +283,8 @@ class CameraWorker:
                   "received": received, "processed": processed,
                   "opponent_ms": 0.0, "background_update_ms": 0.0}
         if job is not None:
+            if self.opp_size:
+                opponent_image = cv2.resize(opponent_image, self.opp_size, interpolation=cv2.INTER_AREA)
             result.update(self.process_opponent(opponent_image, job, result["stages"]))
         # The laptop decodes the JPEG windows; that is part of its frame time.
         result["latency_ms"] = tag_ms + result["opponent_ms"] + jpeg_decode_ms
@@ -255,7 +306,7 @@ class CameraWorker:
         windows, decode_ms = [], 0.0
         images = []
         full = False
-        for p in (plan, None if job is None else job["plan"]):
+        for p in (plan, None if (job is None or self.opp_size) else job["plan"]):
             if p is None or p.mode == roi_tracker.IDLE:
                 images.append(base)
                 continue
@@ -278,6 +329,9 @@ class CameraWorker:
                 images.append(base)
         if full:
             windows.append((width, height, "raw", width * height))
+        if self.opp_size and getattr(self, "opp_tick", False):
+            w, h = self.opp_size
+            windows.append((w, h, "raw", w * h))       # the small stream's frame
         return images[0], images[1], windows, decode_ms
 
     def prefetch(self):
@@ -315,8 +369,8 @@ class CameraWorker:
                 # it cannot be read: fall back to the box itself, through the
                 # camera's own lens.
                 out["opponent_box_fit"] = localize_box(
-                    job["operator_box"], self.camera, dimensions=self.spec["opponent"]["size"],
-                    camera_model=self.model)
+                    job["operator_box"], self.opp_camera, dimensions=self.spec["opponent"]["size"],
+                    camera_model=self.opp_model)
         out["opponent_ms"] = (time.perf_counter_ns() - begin) / 1e6
         begin = time.perf_counter_ns()
         camera.background.update(image, job["exclude"], gain)

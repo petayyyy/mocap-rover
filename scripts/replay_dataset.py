@@ -121,6 +121,14 @@ def parse_args(argv=None):
     p.add_argument("--opponent-max-cameras", type=int, default=0,
                    help="at most this many cameras get an opponent window per instant, the "
                         "nearest to the predicted opponent; 0 = no limit")
+    p.add_argument("--opponent-stream", default=None, metavar="WxH@HZ",
+                   help="the opponent reads a second stream, the frame resized to WxH at HZ "
+                        "(e.g. 640x480@30); the marker keeps the full frames")
+    p.add_argument("--opponent-stream-stagger", action="store_true",
+                   help="spread the cameras' small frames evenly over the stream period")
+    p.add_argument("--tag-max-cameras", type=int, default=0,
+                   help="at most this many cameras get a marker window per instant, the "
+                        "nearest to the predicted tag_rover; 0 = no limit")
     p.add_argument("--acquire-full-frame-hz", type=float, default=0.0,
                    help="without a track, a full frame at most this often per camera; "
                         "0 = every frame")
@@ -665,7 +673,11 @@ class Replay:
                 "opponent_planner": getattr(self, "opponent_planner_kwargs", None),
                 "no_roi_tracking": a.no_roi_tracking,
                 "processing_ns": self.processing_ns, "gain": a.gain, "opponent": opponent,
-                "link": {"mode": a.link_emulation}}
+                "link": {"mode": a.link_emulation},
+                "opponent_stream": (None if not a.opponent_stream else
+                                    [*map(int, a.opponent_stream.split("@")[0].split("x")),
+                                     float(a.opponent_stream.split("@")[1]),
+                                     len(self.cams) if a.opponent_stream_stagger else 0])}
 
     def pose_of(self, name, now_ns):
         """(x, y, yaw, sigma) of a live track, or None."""
@@ -697,7 +709,15 @@ class Replay:
                                         self.cams[cid]["position_world"][1] - opp[1]), cid)
                             for cid, _ in items)
             allowed = {cid for _, cid in ranked[:self.a.opponent_max_cameras]}
-        return {cid: {**common, "operator_box": (self.operator_box["boxes_xyxy_px"].get(cid)
+        tag_allowed = None
+        prediction = common["prediction"]
+        if prediction is not None and self.a.tag_max_cameras:
+            ranked = sorted((math.hypot(self.cams[cid]["position_world"][0] - prediction[0],
+                                        self.cams[cid]["position_world"][1] - prediction[1]), cid)
+                            for cid, _ in items)
+            tag_allowed = {cid for _, cid in ranked[:self.a.tag_max_cameras]}
+        return {cid: {**common, "tag_allowed": tag_allowed is None or cid in tag_allowed,
+                      "operator_box": (self.operator_box["boxes_xyxy_px"].get(cid)
                                                  if operator else None),
                       "opponent_allowed": allowed is None or cid in allowed}
                 for cid, _ in items}
@@ -1232,6 +1252,8 @@ class Replay:
                 "opponent_roi_max_px": a.opponent_roi_max_px,
                 "opponent_jpeg_max_px": a.opponent_jpeg_max_px,
                 "opponent_max_cameras": a.opponent_max_cameras,
+                "tag_max_cameras": a.tag_max_cameras,
+                "opponent_stream": a.opponent_stream,
                 "acquire_full_frame_hz": a.acquire_full_frame_hz,
                 "transport_ms": a.transport_ms if a.link_emulation == "ideal" else None,
                 "link_line_time_ns_reported_only": a.link_line_time_ns,

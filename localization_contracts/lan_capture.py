@@ -83,6 +83,10 @@ class LanFrame:
     # Payload bytes as they travelled: for JPEG this is the compressed size,
     # which is what the link actually carried, not the decoded pixel count.
     payload_bytes: int = 0
+    # The node's small stream: the whole frame reduced to this size, plain
+    # luminance, row0 = col0 = 0 in the REDUCED image (sensor_width/height
+    # give the scale).  Delivered by ``take_small``, never in a window group.
+    scaled: bool = False
 
     def __iter__(self):
         """The eight-field source contract, in order."""
@@ -99,7 +103,8 @@ class LanFrame:
 
     @property
     def is_full(self):
-        return self.width == self.sensor_width and self.height == self.sensor_height
+        return (not self.scaled and self.width == self.sensor_width
+                and self.height == self.sensor_height)
 
     def row_stamp_ns(self, row, exposure_centre=True):
         """Exposure time of window row ``row`` (0-based inside this window)."""
@@ -184,7 +189,9 @@ def decode_frame(header: proto.FrameHeader, data, receive_ns, receive_mono_ns,
             raise proto.ProtocolError(
                 f"{header.format_name} payload {len(data)} != {expected}")
         array = np.frombuffer(data, dtype=np.uint8).reshape(header.height, header.width)
-        if header.format == proto.FORMAT_BAYER8 and bayer_demosaic:
+        if header.scaled:
+            pass                    # already luminance, reduced on the node
+        elif header.format == proto.FORMAT_BAYER8 and bayer_demosaic:
             array = demosaic_bayer_gray(array, header.row0, header.col0)
         elif header.format == proto.FORMAT_BAYER8 and bayer_gains is not None:
             array = flatten_bayer(array, bayer_gains, header.row0, header.col0)
@@ -203,7 +210,7 @@ def decode_frame(header: proto.FrameHeader, data, receive_ns, receive_mono_ns,
                     header.window_index, header.window_count, header.sensor_width,
                     header.sensor_height, header.request_id, header.node_send_ns,
                     header.sensor_stamp_ns, header.clock_offset_ns, header.ptp_offset_ns,
-                    len(data))
+                    len(data), header.scaled)
 
 
 class LanNotConnected(ConnectionError):
@@ -246,6 +253,7 @@ class NodeLink(threading.Thread):
         self.ack_lock = threading.Lock()
         self.last_windows = None
         self.last_stream = None
+        self.last_small = None
 
     # ------------------------------------------------------------ sending
 
@@ -355,7 +363,7 @@ class NodeLink(threading.Thread):
 
     def _resend_state(self):
         """After a node restart its window list is gone: restore ours."""
-        for meta in (self.last_windows, self.last_stream):
+        for meta in (self.last_windows, self.last_stream, self.last_small):
             if meta:
                 try:
                     self.send_command(meta, wait=False)
@@ -398,6 +406,9 @@ class LanCameraSource:
         self.announced: set[str] = set()
         self.expected = list(camera_ids) if camera_ids else None
         self.pending: dict[str, list] = {}
+        self.small_pending: dict[str, LanFrame] = {}
+        self.small_received: dict[str, int] = {}
+        self.small_dropped: dict[str, int] = {}
         self.partial: dict[str, list] = {}
         self.received = {}
         self.dropped = {}
@@ -435,6 +446,13 @@ class LanCameraSource:
         cid = frame.camera_id
         with self.condition:
             if self.closed:
+                return
+            if frame.scaled:
+                self.small_received[cid] = self.small_received.get(cid, 0) + 1
+                if cid in self.small_pending:
+                    self.small_dropped[cid] = self.small_dropped.get(cid, 0) + 1
+                self.small_pending[cid] = frame
+                self.condition.notify_all()
                 return
             if cid not in self.by_camera:
                 # Route it, but do not claim the identity is confirmed: that
@@ -505,6 +523,14 @@ class LanCameraSource:
             cid = next(iter(self.pending))
             return cid, self.pending.pop(cid)
 
+    def take_small(self, camera_id, timeout=0.0):
+        """Newest frame of ``camera_id``'s small stream, or None."""
+        with self.condition:
+            if timeout:
+                self.condition.wait_for(lambda: camera_id in self.small_pending or self.closed,
+                                        timeout)
+            return self.small_pending.pop(camera_id, None)
+
     def status(self, camera_id):
         with self.condition:
             return self.statuses.get(camera_id)
@@ -525,6 +551,8 @@ class LanCameraSource:
             return {
                 "received": dict(self.received), "dropped": dict(self.dropped),
                 "windows": dict(self.windows_received),
+                "small_received": dict(self.small_received),
+                "small_dropped": dict(self.small_dropped),
                 "links": {f"{l.host}:{l.port}": {
                     "camera_id": l.camera_id, "connected": l.connected.is_set(),
                     "reconnects": l.reconnects, "parse_errors": l.parse_errors,
@@ -566,6 +594,19 @@ class LanCameraSource:
         link = self._link(camera_id)
         meta = {"cmd": "stream_full", "divisor": int(divisor), "format": fmt}
         link.last_stream = meta if divisor > 0 else None
+        return link.send_command(meta, wait=wait, timeout=timeout)
+
+    def stream_small(self, camera_id, width=640, height=480, hz=30.0, phase_ns=0, fmt="y8",
+                     wait=True, timeout=2.0):
+        """The whole frame reduced to ``width`` x ``height`` at ``hz``; 0 stops.
+
+        ``phase_ns`` places this node's frames on the common time scale: give
+        N nodes ``k * period / N`` and their frames reach the switch in turn.
+        """
+        link = self._link(camera_id)
+        meta = {"cmd": "stream_small", "width": int(width), "height": int(height),
+                "hz": float(hz), "phase_ns": int(phase_ns), "format": fmt}
+        link.last_small = meta if hz > 0 else None
         return link.send_command(meta, wait=wait, timeout=timeout)
 
     def configure(self, camera_id, exposure_us=None, gain=None, fps=None, wait=True, timeout=2.0):

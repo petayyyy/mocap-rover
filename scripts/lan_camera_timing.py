@@ -14,6 +14,13 @@ frame every ``--full-period`` seconds, for ``--seconds``.  Prints per camera
 * the node's own status: sensor fps, PTP offset and state, SoC temperature,
   throttling flags, CPU load; and the laptop's CPU load.
 
+Target profile (the hybrid): ``--small 640x480@30 --small-stagger`` adds every
+node's small stream, the whole frame reduced on the node, with the nodes'
+frames spread over the period; ``--window-nodes 3 --window-size 320
+--full-period 0`` keeps the marker windows on three nodes and drops the full
+frames.  The small stream gets its own latency, rate, drops and the node's
+reduction time.
+
 The whole output is the report; ``--json`` also saves everything raw.
 """
 from __future__ import annotations
@@ -133,7 +140,19 @@ def parse_args(argv=None):
     p.add_argument("--windows", help='"row0,col0,w,h;row0,col0,w,h" (default: two 480x480)')
     p.add_argument("--window-size", type=int, default=480)
     p.add_argument("--window-format", choices=("y8", "jpeg"), default="y8")
-    p.add_argument("--full-period", type=float, default=2.0)
+    p.add_argument("--full-period", type=float, default=2.0, help="0 = no full frames")
+    p.add_argument("--window-nodes", type=int, default=0,
+                   help="only the first N nodes get windows (0 = all)")
+    p.add_argument("--no-windows", action="store_true",
+                   help="no windows on any node (e.g. the small stream alone)")
+    p.add_argument("--small", metavar="WxH@HZ",
+                   help="every node's small stream, e.g. 640x480@30")
+    p.add_argument("--small-format", choices=("y8", "jpeg"), default="y8")
+    p.add_argument("--small-stagger", action="store_true",
+                   help="spread the nodes' small frames evenly over the period (needs PTP)")
+    p.add_argument("--clock-mode", choices=("estimate", "ptp"), default="estimate",
+                   help="ptp: node and laptop share the PTP time scale, no offset is applied; "
+                        "estimate: offset from the status round trip")
     p.add_argument("--full-format", choices=("y8", "jpeg"), default="y8")
     p.add_argument("--stream-full", type=int, metavar="DIVISOR",
                    help="measure a continuous stream of FULL frames instead of windows: "
@@ -162,13 +181,30 @@ def main(argv=None):
     else:
         print(f"cameras: {cams}; windows {windows}; full frame every {a.full_period}s "
               f"({a.full_format}); {a.seconds}s", flush=True)
-        for cid in cams:
-            source.request_windows(cid, windows)
+        for i, cid in enumerate(cams):
+            if a.no_windows or (a.window_nodes and i >= a.window_nodes):
+                source.request_windows(cid, [])
+            else:
+                source.request_windows(cid, windows)
+    small = None
+    if a.small:
+        size, hz = a.small.split("@")
+        sw, sh = (int(v) for v in size.split("x"))
+        small = (sw, sh, float(hz))
+        period_ns = int(round(1e9 / small[2]))
+        for i, cid in enumerate(cams):
+            phase = i * period_ns // len(cams) if a.small_stagger else 0
+            source.stream_small(cid, sw, sh, small[2], phase, a.small_format)
+        print(f"small stream {sw}x{sh} @ {small[2]:g} Hz ({a.small_format}), "
+              f"{'staggered' if a.small_stagger else 'all nodes in phase'}", flush=True)
 
     # Before anything is timed: without this every cross-machine latency below
     # is off by the clock difference, and on an unsynchronised board that is
     # bigger than the latency itself.
-    clock_offset = {cid: estimate_clock_offset(source, cid) for cid in cams}
+    if a.clock_mode == "ptp":
+        clock_offset = {cid: {"offset_ns": 0, "rtt_ns": 0, "uncertainty_ns": 0} for cid in cams}
+    else:
+        clock_offset = {cid: estimate_clock_offset(source, cid) for cid in cams}
     for cid, off in clock_offset.items():
         if off is None:
             print(f"  {cid}: clock offset UNKNOWN", flush=True)
@@ -179,6 +215,7 @@ def main(argv=None):
     per = {cid: {"window_latency_ns": [], "full_latency_ns": [], "node_latency_ns": [],
                  "net_latency_ns": [], "period_dev_ns": [], "stamps": [], "seqs": [],
                  "statuses": [], "window_bytes": 0, "full_bytes": 0,
+                 "small_latency_ns": [], "small_bytes": 0, "small_stamps": [],
                  # The node's clock reads OFFSET ahead of ours, so its stamp is
                  # that much too large: add the offset back to compare with our
                  # receive time.
@@ -208,7 +245,7 @@ def main(argv=None):
     next_cpu = start + 1.0
     while time.monotonic() - start < a.seconds:
         now = time.monotonic()
-        if not a.stream_full and now >= next_full:
+        if not a.stream_full and a.full_period > 0 and now >= next_full:
             next_full = now + a.full_period
             for cid in cams:
                 try:
@@ -225,7 +262,15 @@ def main(argv=None):
                 if status is not None and (not per[cid]["statuses"]
                                            or per[cid]["statuses"][-1] is not status):
                     per[cid]["statuses"].append(status)
-        item = source.take_any(0.05)
+        if small:
+            for cid in cams:
+                f = source.take_small(cid)
+                if f is not None and cid in per:
+                    d = per[cid]
+                    d["small_latency_ns"].append(f.receive_ns - f.stamp_ns + d["offset_ns"])
+                    d["small_bytes"] += f.payload_bytes
+                    d["small_stamps"].append(f.stamp_ns)
+        item = source.take_any(0.005 if small else 0.05)
         if item is None:
             continue
         cid, group = item
@@ -256,10 +301,18 @@ def main(argv=None):
                 source.stream_full(cid, 0, a.full_format, timeout=1.0)
             except (LanNotConnected, TimeoutError):
                 pass
+    if small:
+        for cid in cams:
+            try:
+                source.stream_small(cid, hz=0, timeout=1.0)
+            except (LanNotConnected, TimeoutError):
+                pass
     source.close()
     elapsed = time.monotonic() - start
 
     report = {"seconds": elapsed, "windows": windows, "full_period_s": a.full_period,
+              "window_nodes": a.window_nodes, "small": a.small, "small_stagger": a.small_stagger,
+              "clock_mode": a.clock_mode,
               "stream_full_divisor": a.stream_full, "full_format": a.full_format,
               "laptop_cpu_percent": summary(cpu_samples), "clock_offset": clock_offset,
               "cameras": {}}
@@ -305,6 +358,16 @@ def main(argv=None):
             "line_time_ns": s_end.get("line_time_ns"), "exposure_ns": s_end.get("exposure_ns"),
             "link": stats["links"],
         }
+        if small:
+            r = report["cameras"][cid]
+            r["small_received"] = len(d["small_stamps"])
+            r["small_fps"] = len(d["small_stamps"]) / elapsed if elapsed else None
+            r["small_latency"] = summary(d["small_latency_ns"])
+            r["small_mbit_s"] = d["small_bytes"] * 8 / elapsed / 1e6 if elapsed else None
+            r["small_laptop_dropped"] = stats.get("small_dropped", {}).get(cid, 0)
+            r["node_small_dropped"] = _delta(s_end, baseline.get(cid), "small_dropped")
+            r["node_small_scale_ms"] = s_end.get("small_scale_ms")
+            r["node_small_capture_to_send_ms"] = s_end.get("small_capture_to_send_ms")
 
     print()
     mode = (f"FULL frames every {a.stream_full} sensor frame(s) ({a.full_format})"
@@ -336,6 +399,15 @@ def main(argv=None):
         print(f"  ptp              state {r['ptp_state']}, |offset| {fmt(r['ptp_offset_abs_ns'], 1e3, 'us')}")
         print(f"  node             temp {fmt(r['soc_temp_c'], 1, 'C')}, cpu {fmt(r['node_cpu_percent'], 1, '%')}, "
               f"throttled {r['throttled_flags'] or 'none'}")
+        if small:
+            sc, st = r["node_small_scale_ms"] or {}, r["node_small_capture_to_send_ms"] or {}
+            print(f"  small stream     {r['small_received']} frames ({r['small_fps']:.1f}/s), "
+                  f"{r['small_mbit_s']:.1f} Mbit/s, node skipped {r['node_small_dropped']}, "
+                  f"laptop dropped {r['small_laptop_dropped']}")
+            print(f"  small latency    {fmt(r['small_latency'], 1e6, 'ms')}")
+            print(f"  node reduce      P50 {sc.get('p50') or float('nan'):.2f}ms P95 "
+                  f"{sc.get('p95') or float('nan'):.2f}ms; exp->send P50 "
+                  f"{st.get('p50') or float('nan'):.2f}ms P95 {st.get('p95') or float('nan'):.2f}ms")
         print(f"  line_time {r['line_time_ns']} ns, exposure {r['exposure_ns']} ns")
     if a.json:
         Path(a.json).write_text(json.dumps(report, indent=2) + "\n")

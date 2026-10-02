@@ -5,14 +5,18 @@ The sensor runs continuously at 1640x1232 / 8 bit / ~83 fps whether or not a
 laptop is connected.  A full frame at that rate does not fit 1 GbE, so the
 node sends what the laptop asks for: a list of windows cut from every frame
 (``set_windows``), an occasional full frame (``full_frame``), or a decimated
-stream of full frames for dataset recording (``stream_full``).  All windows of
-one sensor frame carry the same ``stamp_ns``.
+stream of full frames for dataset recording (``stream_full``), and a small
+stream: the whole frame reduced to e.g. 640x480 at e.g. 30 Hz (``stream_small``),
+for the opponent's silhouette while the marker windows keep full resolution
+and the full rate.  All windows of one sensor frame carry the same ``stamp_ns``.
 
 Threads (the capture thread never blocks on the network):
 
     capture  -- picamera2 request loop; reads metadata, cuts windows from the
                 mapped buffer, hands a job to the sender; drops the job when
                 the sender is behind and counts it
+    scaler   -- reduces the small stream's frames (2x2 bin, then area), off the
+                capture and the sender threads so the windows never wait for it
     sender   -- JPEG encoding and socket writes; the only writer of the socket
     server   -- accept loop; one client at a time, commands parsed here
     status   -- once a second: sensor fps, drops, latencies, PTP, temperature
@@ -489,6 +493,43 @@ class Window:
     h: int
     format: str
     request_id: int
+    scaled: bool = False     # the whole frame reduced to w x h (stream_small)
+
+
+try:
+    import cv2 as _cv2
+except ImportError:            # numpy fallback below; apt install python3-opencv
+    _cv2 = None
+SCALE_BACKEND = "opencv" if _cv2 is not None else "numpy"
+
+
+def scale_luma(y, width, height):
+    """The whole frame reduced to ``width`` x ``height`` luminance, uint8.
+
+    A 2x2 average first: on a raw-stream node it turns each BGGR cell into one
+    grey pixel ((R + 2G + B) / 4, about luminance under the arena's white
+    light), on an ISP node it is a plain average.  Then an area average to the
+    size asked for (OpenCV), or the nearest binned pixel without OpenCV.
+    ~2 ms for 1640x1232 -> 640x480 on a laptop.  ``width``/``height`` must be
+    at most half the sensor size.
+    """
+    rows, cols = (y.shape[0] // 2) * 2, (y.shape[1] // 2) * 2
+    if _cv2 is not None:
+        binned = _cv2.resize(y[:rows, :cols], (cols // 2, rows // 2),
+                             interpolation=_cv2.INTER_AREA)
+        if binned.shape[1] == width and binned.shape[0] == height:
+            return binned
+        return _cv2.resize(binned, (width, height), interpolation=_cv2.INTER_AREA)
+    binned = y[0:rows:2, 0:cols:2].astype(np.uint16)
+    binned += y[1:rows:2, 0:cols:2]
+    binned += y[0:rows:2, 1:cols:2]
+    binned += y[1:rows:2, 1:cols:2]
+    bh, bw = binned.shape
+    if (bw, bh) != (width, height):
+        rows_i = ((np.arange(height) + 0.5) * bh / height).astype(np.intp)
+        cols_i = ((np.arange(width) + 0.5) * bw / width).astype(np.intp)
+        binned = binned[rows_i][:, cols_i]
+    return ((binned + 2) >> 2).astype(np.uint8)
 
 
 @dataclass
@@ -561,11 +602,18 @@ class CameraNode:
         self.windows: list[Window] = []
         self.full_pending: Window | None = None
         self.full_stream: dict | None = None      # {"divisor", "format", "request_id"}
+        # {"width", "height", "period_ns", "phase_ns", "format", "request_id"}
+        self.small_stream: dict | None = None
+        self.small_last_tick = None
         self.request_counter = 0
         for w in cfg.default_windows:
             self._set_windows_locked([w], self._next_request_id())
 
         self.frame_queue: queue.Queue = queue.Queue(maxsize=max(1, cfg.send_queue))
+        # One raw frame waiting for the scaler and one scaled frame waiting for
+        # the sender: the small stream is late or skipped, never queued deep.
+        self.small_in: queue.Queue = queue.Queue(maxsize=1)
+        self.small_out: queue.Queue = queue.Queue(maxsize=1)
         self.control_queue: queue.Queue = queue.Queue()
         self.client_lock = threading.Lock()
         self.client: socket.socket | None = None
@@ -578,6 +626,10 @@ class CameraNode:
         self.frames_sent = 0
         self.frames_dropped_queue = 0
         self.frames_no_client = 0
+        self.small_sent = 0
+        self.small_dropped = 0          # skipped: scaler or sender still busy
+        self.small_scale_ns = collections.deque(maxlen=400)
+        self.small_capture_to_send_ns = collections.deque(maxlen=400)
         self.windows_sent = 0
         self.full_sent = 0
         self.bytes_sent = 0
@@ -608,6 +660,28 @@ class CameraNode:
                         for n in normalized]
         return [asdict(w) for w in self.windows]
 
+    def _set_small_stream_locked(self, meta, request_id):
+        hz = float(meta.get("hz", 0))
+        if hz <= 0:
+            self.small_stream = None
+            return {"hz": 0}
+        width, height = int(meta.get("width", 640)), int(meta.get("height", 480))
+        if not (0 < width <= self.sensor_width // 2 and 0 < height <= self.sensor_height // 2):
+            raise proto.ProtocolError(
+                f"small stream {width}x{height} must be at most half the sensor "
+                f"({self.sensor_width // 2}x{self.sensor_height // 2})")
+        fmt = meta.get("format", "y8")
+        if fmt not in ("y8", "jpeg"):
+            raise proto.ProtocolError(f"small stream format {fmt!r}: y8 or jpeg")
+        period_ns = int(round(NS / hz))
+        # The phase is on the common (PTP) time scale, so nodes given phases
+        # k * period / N send their small frames in turn, never together.
+        phase_ns = int(meta.get("phase_ns", 0)) % period_ns
+        self.small_stream = {"width": width, "height": height, "period_ns": period_ns,
+                             "phase_ns": phase_ns, "format": fmt, "request_id": request_id}
+        self.small_last_tick = None
+        return {"width": width, "height": height, "hz": hz, "phase_ns": phase_ns, "format": fmt}
+
     def handle_command(self, meta: dict) -> dict:
         cmd = meta.get("cmd")
         if cmd == "status":
@@ -635,6 +709,9 @@ class CameraNode:
                                         {"divisor": divisor, "format": fmt, "request_id": request_id})
                     return {"ok": True, "cmd": cmd, "request_id": request_id,
                             "divisor": divisor, "format": fmt}
+                if cmd == "stream_small":
+                    return {"ok": True, "cmd": cmd, "request_id": request_id,
+                            **self._set_small_stream_locked(meta, request_id)}
                 if cmd == "configure":
                     applied = self.sensor.set_controls(
                         exposure_us=meta.get("exposure_us"), gain=meta.get("gain"), fps=meta.get("fps"))
@@ -669,6 +746,19 @@ class CameraNode:
                     full = self.full_pending
                     self.full_pending = None
                     stream = self.full_stream
+                    small = self.small_stream
+                if small is not None:
+                    tick = (stamp_ns - small["phase_ns"]) // small["period_ns"]
+                    if tick != self.small_last_tick:
+                        self.small_last_tick = tick
+                        job_small = FrameJob(frame.sequence, frame.sensor_stamp_ns, stamp_ns,
+                                             frame.exposure_ns, frame.frame_duration_ns,
+                                             clock_offset, [(small, np.array(frame.y))])
+                        try:
+                            self.small_in.put_nowait(job_small)
+                        except queue.Full:
+                            with self.stats_lock:
+                                self.small_dropped += 1
                 if stream is not None and frame.sequence % stream["divisor"] == 0 and full is None:
                     full = Window(0, 0, self.sensor_width, self.sensor_height,
                                   stream["format"], stream["request_id"])
@@ -716,6 +806,41 @@ class CameraNode:
             if views and sent:
                 views[0] = views[0][sent:]
 
+    def scaler_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                job = self.small_in.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            small, full = job.windows[0]
+            begin = time.perf_counter_ns()
+            reduced = scale_luma(full, small["width"], small["height"])
+            with self.stats_lock:
+                self.small_scale_ns.append(time.perf_counter_ns() - begin)
+            window = Window(0, 0, small["width"], small["height"], small["format"],
+                            small["request_id"], scaled=True)
+            job.windows = [(window, reduced)]
+            try:
+                self.small_out.put_nowait(job)
+            except queue.Full:
+                with self.stats_lock:
+                    self.small_dropped += 1
+
+    def _next_job(self):
+        """The marker windows first: they carry the latency budget."""
+        try:
+            return self.frame_queue.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            return self.small_out.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            return self.frame_queue.get(timeout=0.005)
+        except queue.Empty:
+            return None
+
     def sender_loop(self):
         while not self.stop_event.is_set():
             # Control messages (status, acks) go first; they are tiny.
@@ -723,9 +848,8 @@ class CameraNode:
             try:
                 parts = [self.control_queue.get_nowait()]
             except queue.Empty:
-                try:
-                    job = self.frame_queue.get(timeout=0.2)
-                except queue.Empty:
+                job = self._next_job()
+                if job is None:
                     continue
                 parts = self._encode_job(job)
                 if parts is None:
@@ -760,7 +884,7 @@ class CameraNode:
             # "y8" means "whatever luminance this node produces": on a board
             # reading the raw stream those pixels are a Bayer mosaic, and the
             # receiver must be told so it can flatten it.
-            wire = self.wire_format if w.format == "y8" else w.format
+            wire = self.wire_format if (w.format == "y8" and not w.scaled) else w.format
             header = proto.FrameHeader(
                 camera_id=self.cfg.camera_id, frame_seq=job.frame_seq, stamp_ns=job.stamp_ns,
                 exposure_ns=job.exposure_ns, line_time_ns=self.line_time_ns,
@@ -769,9 +893,14 @@ class CameraNode:
                 window_index=index, window_count=count, sensor_width=self.sensor_width,
                 sensor_height=self.sensor_height, request_id=w.request_id,
                 node_send_ns=node_send_ns, sensor_stamp_ns=job.sensor_stamp_ns,
-                clock_offset_ns=job.clock_offset_ns, ptp_offset_ns=ptp)
+                clock_offset_ns=job.clock_offset_ns, ptp_offset_ns=ptp,
+                flags=proto.FLAG_SCALED if w.scaled else 0)
             parts.extend(proto.encode_frame(header, data))
             with self.stats_lock:
+                if w.scaled:
+                    self.small_sent += 1
+                    self.small_capture_to_send_ns.append(node_send_ns - job.stamp_ns)
+                    continue
                 if w.w == self.sensor_width and w.h == self.sensor_height:
                     self.full_sent += 1
                 else:
@@ -779,8 +908,9 @@ class CameraNode:
                 self.capture_to_send_ns.append(node_send_ns - job.stamp_ns)
         if not parts:
             return None
-        with self.stats_lock:
-            self.frames_sent += 1
+        if not job.windows[0][0].scaled:
+            with self.stats_lock:
+                self.frames_sent += 1
         return parts
 
     # ------------------------------------------------------------- server
@@ -860,12 +990,16 @@ class CameraNode:
                 "frames_dropped_queue": self.frames_dropped_queue,
                 "frames_no_client": self.frames_no_client, "windows_sent": self.windows_sent,
                 "full_sent": self.full_sent, "bytes_sent": self.bytes_sent,
-                "send_errors": self.send_errors}
+                "send_errors": self.send_errors,
+                "small_sent": self.small_sent, "small_dropped": self.small_dropped}
+            small_scale = sorted(self.small_scale_ns)
+            small_latency = sorted(self.small_capture_to_send_ns)
             exposure, gain = self.last_exposure_ns, self.last_gain
             error = self.last_error
         with self.state_lock:
             windows = [asdict(w) for w in self.windows]
             stream = dict(self.full_stream) if self.full_stream else None
+            small = dict(self.small_stream) if self.small_stream else None
         with self.client_lock:
             client = None if self.client is None else f"{self.client_addr[0]}:{self.client_addr[1]}"
 
@@ -887,10 +1021,17 @@ class CameraNode:
             "capture_cost_us": {"p50": None if not costs else pct(costs, 0.5) / 1e3,
                                 "p95": None if not costs else pct(costs, 0.95) / 1e3},
             "queue_depth": self.frame_queue.qsize(),
+            "small_stream": small,
+            "small_scale_ms": {"p50": None if not small_scale else pct(small_scale, 0.5) / 1e6,
+                               "p95": None if not small_scale else pct(small_scale, 0.95) / 1e6},
+            "small_capture_to_send_ms": {
+                "p50": None if not small_latency else pct(small_latency, 0.5) / 1e6,
+                "p95": None if not small_latency else pct(small_latency, 0.95) / 1e6},
             "ptp": self.ptp.snapshot(), "clock_offset_ns": realtime_minus_boottime_ns(),
             "soc_temp_c": read_soc_temperature_c(), "throttled": read_throttled(),
             "cpu_percent": self.cpu.percent(), "windows": windows, "full_stream": stream,
             "client": client, "error": error, "jpeg_backend": JPEG_BACKEND,
+            "scale_backend": SCALE_BACKEND,
             "status_time_ns": time.clock_gettime_ns(time.CLOCK_REALTIME),
         }
 
@@ -935,7 +1076,8 @@ class CameraNode:
         self.port = self.server_socket.getsockname()[1]
         self.sensor.start()
         self.ptp.start()
-        for target, name in ((self.capture_loop, "capture"), (self.sender_loop, "sender"),
+        for target, name in ((self.capture_loop, "capture"), (self.scaler_loop, "scaler"),
+                             (self.sender_loop, "sender"),
                              (self.server_loop, "server"), (self.status_loop, "status")):
             thread = threading.Thread(target=target, daemon=True, name=name)
             thread.start()

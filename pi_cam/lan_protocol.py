@@ -41,6 +41,11 @@ FORMAT_JPEG = 1
 # window keeps full resolution; a 2x2 gain map on the laptop flattens the
 # mosaic, and window offsets are always even so the Bayer phase is preserved.
 FORMAT_BAYER8 = 2
+# Frame flags (the header byte that used to be reserved; old receivers ignore it).
+# SCALED: the whole sensor frame reduced to width x height, plain luminance
+# even on a board that reads the raw stream; row0/col0 are 0.  It travels as a
+# message of its own (window_count 1), never inside a group of windows.
+FLAG_SCALED = 0x01
 FORMAT_NAMES = {FORMAT_Y8: "y8", FORMAT_JPEG: "jpeg", FORMAT_BAYER8: "bayer8"}
 FORMAT_CODES = {name: code for code, name in FORMAT_NAMES.items()}
 
@@ -64,7 +69,7 @@ FRAME_HEADER = struct.Struct(
     "B"     # format: FORMAT_Y8 or FORMAT_JPEG
     "B"     # window_index within the frame
     "B"     # window_count: how many messages this sensor frame produced
-    "B"     # reserved
+    "B"     # flags: FLAG_SCALED
     "H"     # sensor_width
     "H"     # sensor_height
     "I"     # request_id: the set_windows / full_frame request being served
@@ -106,6 +111,11 @@ class FrameHeader:
     sensor_stamp_ns: int = 0
     clock_offset_ns: int = 0
     ptp_offset_ns: int | None = None
+    flags: int = 0
+
+    @property
+    def scaled(self) -> bool:
+        return bool(self.flags & FLAG_SCALED)
 
     @property
     def format_name(self) -> str:
@@ -117,7 +127,7 @@ class FrameHeader:
             self.camera_id.encode("ascii")[:16], self.frame_seq, self.stamp_ns,
             self.exposure_ns, self.line_time_ns, self.frame_duration_ns,
             self.row0, self.col0, self.width, self.height, self.format,
-            self.window_index, self.window_count, 0,
+            self.window_index, self.window_count, int(self.flags) & 0xFF,
             self.sensor_width, self.sensor_height, self.request_id,
             self.node_send_ns, self.sensor_stamp_ns, self.clock_offset_ns, ptp)
 
@@ -126,12 +136,12 @@ class FrameHeader:
         if len(raw) < FRAME_HEADER_SIZE:
             raise ProtocolError("short frame header")
         (camera_id, seq, stamp, exposure, line_time, duration, row0, col0, width,
-         height, fmt, window_index, window_count, _reserved, sw, sh, request_id,
+         height, fmt, window_index, window_count, flags, sw, sh, request_id,
          send_ns, sensor_stamp, clock_offset, ptp) = FRAME_HEADER.unpack_from(raw)
         return cls(camera_id.rstrip(b"\0").decode("ascii"), seq, stamp, exposure,
                    line_time, duration, row0, col0, width, height, fmt,
                    window_index, window_count, sw, sh, request_id, send_ns,
-                   sensor_stamp, clock_offset, None if ptp == PTP_UNKNOWN else ptp)
+                   sensor_stamp, clock_offset, None if ptp == PTP_UNKNOWN else ptp, flags)
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
