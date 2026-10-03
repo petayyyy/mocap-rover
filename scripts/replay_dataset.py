@@ -67,7 +67,7 @@ from localization_contracts.rover_filter import (  # noqa: E402
 from localization_contracts.contracts import Observation, SCHEMA_VERSION, FRAME_ARENA  # noqa: E402
 from localization_contracts.identity import TwoRoverIdentity  # noqa: E402
 from localization_contracts.opponent_camera import OpponentCamera, SILHOUETTE  # noqa: E402
-from localization_contracts.camera_worker import POOLS, REACQUIRE_PERIOD_NS  # noqa: E402
+from localization_contracts.camera_worker import POOLS, REACQUIRE_PERIOD_NS, scaled_camera  # noqa: E402
 from localization_contracts.cuboid import localize_box  # noqa: E402
 from localization_contracts.link_emulation import LinkModel, MODES as LINK_MODES  # noqa: E402
 
@@ -78,12 +78,33 @@ OPERATOR_TAG_IDENTITY = "operator:tag_rover"
 # Only a blob this far from tag_rover may restart a lost opponent track.
 REACQUIRE_CLEAR_M = 1.0
 TAG_BODY_M = (0.72, 0.52, 0.40)
+# Measured with scripts/bench_sam2.py on the RTX 3070 Laptop: P95 of one SAM2
+# call, two cameras at 15 Hz each on their own phases, tiny, 512 px, bfloat16
+# (report 08; artifacts/bench_08).
+SAM2_DEFAULT_LATENCY_MS = 15.3
+# Chosen on dataset_mounts5b_01 (report 08): P95 of the SAM2 readings' squared
+# Mahalanobis error at scale 1 was 1.89 against 5.99 expected -> sqrt(1.89/5.99).
+# Not changed for the other datasets.
+SAM2_DEFAULT_SIGMA_SCALE = 0.55
+# Tests replace the GPU engine with a stand-in (a callable returning one).
+SAM2_ENGINE_FACTORY = None
 
 # Event order at one instant: a measurement that arrives at t is visible to
 # the tick at t, and the clock is advanced before anything reads it.
 # RESULT is one camera's processed frame reaching the laptop under link
 # emulation, where the arrival depends on what was sent.
-CLOCK, ENQUEUE, RESULT, LIDAR, CAMERA, TICK = range(6)
+# SAM2 is a SAM2 reading reaching the filter --sam2-latency-ms after its frame
+# was processed.
+CLOCK, ENQUEUE, RESULT, SAM2, LIDAR, CAMERA, TICK = range(7)
+SAM2_MODES = ("off", "backup", "always")
+# backup: the background path counts as unreliable when no silhouette was
+# accepted for this long.
+SAM2_SILHOUETTE_GAP_NS = 100_000_000
+# Two SAM2 readings this close in time and space restart a lost opponent.
+SAM2_REACQUIRE_NS = 300_000_000
+SAM2_REACQUIRE_M = 0.3
+SAM2_PROMPT_SILHOUETTE_NS = 50_000_000
+SILHOUETTE_METHODS = ("silhouette_extent", "silhouette_reacquire", "operator_box")
 
 
 def parse_args(argv=None):
@@ -248,7 +269,56 @@ def parse_args(argv=None):
                         "negative disables the cut")
     p.add_argument("--lidar-range-background", type=Path, default=None,
                    help="per-ray RangeBackground npz from scripts/build_lidar_background.py")
+    # SAM2 as a second opinion on the opponent (localization_contracts/sam2_opponent.py).
+    p.add_argument("--sam2-mode", choices=SAM2_MODES, default="off",
+                   help="off: no SAM2.  backup: SAM2 runs (keeps its memory) but its reading "
+                        "reaches the filter only while the background path is unreliable -- "
+                        "rovers closer than --identity-close-m, no accepted silhouette for "
+                        "100 ms, or the opponent track lost.  always: every reading")
+    p.add_argument("--sam2-max-cameras", type=int, default=2,
+                   help="SAM2 runs on this many cameras, the nearest to the predicted opponent")
+    p.add_argument("--sam2-hz", type=float, default=15.0, help="SAM2 frames per camera per second")
+    p.add_argument("--sam2-checkpoint", type=Path, default=ROOT / "models/sam2/sam2.1_hiera_tiny.pt")
+    p.add_argument("--sam2-config", default=None,
+                   help="sam2 config name; default by the checkpoint's file name")
+    p.add_argument("--sam2-image-size", type=int, default=512,
+                   help="square the small frame is resized to for SAM2 (published 1024)")
+    p.add_argument("--sam2-dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
+    p.add_argument("--sam2-latency-ms", type=float, default=None,
+                   help="simulated delay from the frame's arrival to its SAM2 reading in the "
+                        "filter, so the replay stays deterministic; default: the P95 measured "
+                        "on the RTX 3070 Laptop (docs/dataset_tz/reports/08_sam2_report.md).  "
+                        "Real GPU times go to timing.json")
+    p.add_argument("--sam2-score-threshold", type=float, default=0.5)
+    p.add_argument("--sam2-sigma-scale", type=float, default=None,
+                   help="SAM2 reading covariance = this^2 * the silhouette observer's; fixed on "
+                        "dataset_mounts5b_01")
+    p.add_argument("--sam2-gate-m", type=float, default=None,
+                   help="SAM2 reading farther than this from the opponent's prediction is "
+                        "refused; default --opponent-gate-m (or 3 sigma, the larger)")
+    p.add_argument("--opponent-blackout", default=None, metavar="S:E[,S:E]",
+                   help="seconds from the start of the replay: the opponent's frames (background "
+                        "path and SAM2) are replaced by the empty arena and the lidar gives no "
+                        "opponent; afterwards no operator helps")
     a = p.parse_args(argv)
+    if a.sam2_latency_ms is None:
+        a.sam2_latency_ms = SAM2_DEFAULT_LATENCY_MS
+    if a.sam2_sigma_scale is None:
+        a.sam2_sigma_scale = SAM2_DEFAULT_SIGMA_SCALE
+    a.blackouts = []
+    if a.opponent_blackout:
+        for item in a.opponent_blackout.split(","):
+            start, end = (float(v) for v in item.split(":"))
+            if end <= start or start < 0:
+                p.error(f"bad blackout interval {item}")
+            a.blackouts.append((start, end))
+    if a.sam2_mode != "off":
+        if not a.opponent_stream:
+            p.error("--sam2-mode needs --opponent-stream (SAM2 reads the small frames)")
+        if a.camera_background is None or a.no_opponent:
+            p.error("--sam2-mode needs the opponent track (--camera-background)")
+        if a.sam2_max_cameras < 1 or a.sam2_hz <= 0:
+            p.error("--sam2-max-cameras and --sam2-hz must be positive")
     if a.seconds < 0:
         p.error("--seconds must be nonnegative")
     if a.transport_ms < 0 or a.processing_ms < 0:
@@ -501,6 +571,17 @@ class Replay:
         self.link_row_ms = []
         self.full_frame_px = {cid: int(c["image_size"][0]) * int(c["image_size"][1])
                               for cid, c in cams.items()}
+        # SAM2 (built in run(), after the camera pool, so no worker inherits CUDA).
+        self.sam2 = None
+        self.sam2_next_ns = {cid: 0 for cid in cams}
+        self.sam2_anchor = None             # last known opponent XY: which cameras run SAM2
+        self.sam2_candidate = None
+        self.sam2_ms, self.sam2_cameras_per_call = [], []
+        self.sam2_counts = collections.Counter()
+        self.sam2_rows = []
+        self.last_silhouette_ns = None      # last accepted background-path camera reading
+        self.last_main_ns = None            # ... or lidar: what may aim a SAM2 prompt
+        self.blackout_ns = []
 
     def _make_lidar(self):
         a, lidar_config = self.a, self.cfg.get("lidar")
@@ -592,8 +673,13 @@ class Replay:
                     if stamp not in window:
                         remaining.append(obs)
                         continue
-                    ok = (obs.camera_id, stamp) in taken
+                    source = f"sam2:{obs.camera_id}" if obs.method == "sam2" else obs.camera_id
+                    ok = (source, stamp) in taken
                     self.record_observation(obs, ok, "fusion_accepted" if ok else "fusion_gate", now_ns)
+                    if ok and name == "opponent" and obs.method != "sam2":
+                        self.last_main_ns = max(self.last_main_ns or 0, stamp)
+                        if obs.method in SILHOUETTE_METHODS:
+                            self.last_silhouette_ns = max(self.last_silhouette_ns or 0, stamp)
                     if ok and obs.camera_id in self.metrics and name == "tag_rover":
                         self.metrics[obs.camera_id]["tag_accepted"] += 1
                         row = self.frame_rows.get((obs.camera_id, obs.capture_time_ns))
@@ -716,11 +802,34 @@ class Replay:
                                         self.cams[cid]["position_world"][1] - prediction[1]), cid)
                             for cid, _ in items)
             tag_allowed = {cid for _, cid in ranked[:self.a.tag_max_cameras]}
+        sam2 = self.sam2_cameras(stamp, items, opp, operator)
+        blackout = self.in_blackout(stamp)
         return {cid: {**common, "tag_allowed": tag_allowed is None or cid in tag_allowed,
                       "operator_box": (self.operator_box["boxes_xyxy_px"].get(cid)
                                                  if operator else None),
-                      "opponent_allowed": allowed is None or cid in allowed}
+                      "opponent_allowed": allowed is None or cid in allowed,
+                      "sam2_frame": cid in sam2, "blackout": blackout}
                 for cid, _ in items}
+
+    def in_blackout(self, stamp_ns):
+        return any(lo <= stamp_ns < hi for lo, hi in self.blackout_ns)
+
+    def sam2_cameras(self, stamp, items, opp, operator):
+        """Cameras whose small frame of this instant goes to SAM2."""
+        if self.sam2 is None:
+            return set()
+        if operator:
+            # The operator's rectangle prompts every camera it was drawn on.
+            return set(self.operator_box["boxes_xyxy_px"]) & {cid for cid, _ in items}
+        if opp is not None:
+            self.sam2_anchor = opp[:2]
+        if self.sam2_anchor is None:
+            return set()
+        ranked = sorted((math.hypot(self.cams[cid]["position_world"][0] - self.sam2_anchor[0],
+                                    self.cams[cid]["position_world"][1] - self.sam2_anchor[1]), cid)
+                        for cid, _ in items)
+        chosen = {cid for _, cid in ranked[:self.a.sam2_max_cameras]}
+        return {cid for cid in chosen if stamp >= self.sam2_next_ns[cid]}
 
     def camera_batch(self, now_ns, items):
         begin = time.perf_counter_ns()
@@ -878,6 +987,11 @@ class Replay:
                     self.enqueue(obs, now_ns)
             if job is not None and (reading is not None or result.get("opponent_box_fit")):
                 self.opponent_observation(cid, row, result, job, now_ns)
+        if self.sam2 is not None:
+            frames = [(cid, row, result) for cid, row, result in results
+                      if result.get("sam2_image") is not None]
+            if frames:
+                self.sam2_step(now_ns, frames)
 
     def opponent_observation(self, cid, row, result, job, now_ns):
         """Main thread: one opponent reading -> Observation + filter measurements."""
@@ -951,6 +1065,202 @@ class Replay:
             self.buffers["opponent"].push(measurement)
         self.pending_observations["opponent"].append(obs)
 
+    # -------------------------------------------------------------- SAM2 side
+
+    def build_sam2(self):
+        """Engine on the GPU and the policy for every camera's small frame."""
+        from localization_contracts.sam2_opponent import Sam2Engine, Sam2Opponent
+        a = self.a
+        w, h = (int(v) for v in a.opponent_stream.split("@")[0].split("x"))
+        factory = SAM2_ENGINE_FACTORY or (lambda: Sam2Engine(
+            a.sam2_checkpoint, a.sam2_config, dtype=a.sam2_dtype, image_size=a.sam2_image_size))
+        self.sam2_engine = factory()
+        cameras, self.sam2_scale = {}, {}
+        for cid, cam in self.cams.items():
+            small, scale = scaled_camera(cam, w, h)
+            cameras[cid] = (CameraModel.from_config(small), cam["R_world_optical"],
+                            cam["position_world"])
+            self.sam2_scale[cid] = scale
+        top = next((t for t in self.cfg["tags"] if t.get("placement", "top") == "top"),
+                   self.cfg["tags"][0])
+        offset = [float(v) for v in top["T_base_tag_translation"]]
+        self.sam2 = Sam2Opponent(
+            self.sam2_engine, cameras, size_m=a.opponent_size,
+            marker=(offset[0], offset[1], offset[2] + a.base_z_nominal, self.tag_size_m),
+            score_threshold=a.sam2_score_threshold, gate_m=a.sam2_gate_m or a.opponent_gate_m,
+            clear_of_tag_m=REACQUIRE_CLEAR_M, sigma_scale=a.sam2_sigma_scale,
+            along_sigma_scale=a.silhouette_along_sigma, extent_plane_z=a.opponent_extent_plane)
+        self.sam2_period_ns = int(1e9 / a.sam2_hz)
+        self.sam2_engine.reset_peak_memory()
+        self.sam2_device = self.sam2_engine.device_name()
+
+    def sam2_step(self, now_ns, frames):
+        """Main thread: the small frames of this arrival through SAM2.
+
+        The readings reach the filter --sam2-latency-ms later (SAM2 event);
+        the refusals are written now.
+        """
+        stamp = int(frames[0][2]["stamp"])
+        for cid, _, result in frames:
+            # Next SAM2 frame of this camera one period on (less half a small
+            # frame, so 30 -> 15 Hz takes every other one).
+            self.sam2_next_ns[cid] = int(result["stamp"]) + self.sam2_period_ns - 10_000_000
+        opp = self.pose_of("opponent", now_ns)
+        tag = self.pose_of("tag_rover", now_ns)
+        f = self.filters["opponent"]
+        # A prompt from the prediction only where the background path itself
+        # has just seen the opponent (a silhouette within 50 ms of this frame):
+        # a box aimed by the prediction alone (lidar, coasting) at a frame that
+        # does not show the opponent makes SAM2 lock onto the floor in the box
+        # and follow that patch with high confidence (blackout run, report 08).
+        may_prompt = (opp is not None and f.tracking_state(now_ns) in ("TRACKING", "COASTING")
+                      and self.last_silhouette_ns is not None
+                      and abs(stamp - self.last_silhouette_ns) <= SAM2_PROMPT_SILHOUETTE_NS)
+        operator = {}
+        if self.operator_box is not None and stamp == self.operator_box["stamp_ns"]:
+            for cid, _, _ in frames:
+                box = self.operator_box["boxes_xyxy_px"].get(cid)
+                if box is not None:
+                    sx, sy = self.sam2_scale[cid]
+                    operator[cid] = (box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy)
+        gate = None if opp is None else max(self.a.sam2_gate_m or self.a.opponent_gate_m,
+                                            3.0 * opp[3])
+        readings, refusals, steps, gpu_ms = self.sam2.process(
+            [(cid, result["sam2_image"]) for cid, _, result in frames], now_ns,
+            opp_prediction=opp, opp_gate_m=gate, tag_prediction=tag,
+            may_prompt=may_prompt, operator_boxes=operator)
+        if gpu_ms is not None:
+            self.sam2_ms.append(gpu_ms)
+            self.sam2_cameras_per_call.append(len(steps))
+        rows = {cid: (row, result) for cid, row, result in frames}
+        for cid, step in steps.items():
+            self.sam2_counts["frames"] += 1
+            self.sam2_counts["prompted"] += int(step.prompted)
+            self.sam2_rows.append({"camera_id": cid, "stamp_ns": int(rows[cid][1]["stamp"]),
+                                   "wall_ns": int(now_ns), "score": round(step.score, 4),
+                                   "mask_px": int(step.mask.sum()), "prompted": step.prompted,
+                                   "gpu_ms": round(step.gpu_ms, 3)})
+        for refusal in refusals:
+            self.sam2_counts[f"refused:{refusal.reason}"] += 1
+            self.sam2_rows[-len(steps) + list(steps).index(refusal.camera_id)]["refused"] = refusal.reason
+            row, result = rows[refusal.camera_id]
+            self.out_obs.write(json.dumps({
+                "observation": {"object_id": "opponent", "camera_id": refusal.camera_id,
+                                "frame_seq": int(row["index"]), "method": "sam2",
+                                "capture_time_ns": int(result["stamp"]),
+                                "position_m": (None if refusal.x is None
+                                               else [refusal.x, refusal.y, self.a.base_z_nominal]),
+                                "pixel_features": {"score": refusal.score,
+                                                   "prompted": refusal.prompted}},
+                "accepted": False, "selection_reason": f"sam2_reject:{refusal.reason}",
+                "wall_ns": int(now_ns), "replay_wall_ns": time.monotonic_ns()}) + "\n")
+        delay = int(round(self.a.sam2_latency_ms * 1e6))
+        for reading in readings:
+            row, result = rows[reading.camera_id]
+            self.push(now_ns + delay, SAM2, (row, result["stamp"], result["received"], reading))
+
+    def main_path_unreliable(self, now_ns):
+        """backup: does the background path need SAM2 right now?  (reason or None)"""
+        opp = self.pose_of("opponent", now_ns)
+        if opp is None:
+            return "opponent_lost"
+        tag = self.pose_of("tag_rover", now_ns)
+        if tag is not None and math.hypot(tag[0] - opp[0], tag[1] - opp[1]) < self.a.identity_close_m:
+            return "rovers_close"
+        if self.last_silhouette_ns is None or now_ns - self.last_silhouette_ns > SAM2_SILHOUETTE_GAP_NS:
+            return "no_silhouette"
+        return None
+
+    def sam2_apply(self, now_ns, row, stamp, received, reading):
+        """A SAM2 reading reaches the filter (or, in backup, waits in reserve)."""
+        cid = reading.camera_id
+        reason = None
+        if self.a.sam2_mode == "backup":
+            reason = self.main_path_unreliable(now_ns)
+            if reason is None:
+                self.sam2_counts["standby"] += 1
+                self.record_sam2(row, stamp, received, now_ns, reading, False, "sam2_standby")
+                return
+            self.sam2_counts[f"fed:{reason}"] += 1
+        else:
+            self.sam2_counts["fed:always"] += 1
+        f = self.filters["opponent"]
+        confirms = False
+        if self.pose_of("opponent", now_ns) is None:
+            # Lost: a SAM2 reading may restart the track like the background
+            # path's reacquisition -- standing tag_rover well away (already
+            # checked by the policy) and two readings that agree.
+            tag = self.pose_of("tag_rover", now_ns)
+            previous = self.sam2_candidate
+            self.sam2_candidate = (int(stamp), cid, reading.x, reading.y)
+            if (tag is None or not self.tag_seated
+                    or math.hypot(reading.x - tag[0], reading.y - tag[1]) < REACQUIRE_CLEAR_M):
+                self.record_sam2(row, stamp, received, now_ns, reading, False, "sam2_lost_near_tag")
+                return
+            if (previous is None or (previous[0], previous[1]) == (int(stamp), cid)
+                    or not 0 <= int(stamp) - previous[0] <= SAM2_REACQUIRE_NS
+                    or math.hypot(reading.x - previous[2], reading.y - previous[3]) > SAM2_REACQUIRE_M):
+                self.record_sam2(row, stamp, received, now_ns, reading, False, "sam2_reacquire_wait")
+                return
+            f.reset()
+            self.reacquisitions.append({"stamp_ns": int(stamp), "camera_id": cid, "source": "sam2",
+                                        "xy": [reading.x, reading.y],
+                                        "tag_distance_m": math.hypot(reading.x - tag[0],
+                                                                     reading.y - tag[1])})
+            confirms = True
+        cov = reading.covariance_xy
+        sigma = math.sqrt(max(cov[0], cov[3]))
+        obs = self.sam2_observation(row, stamp, received, now_ns, reading, sigma)
+        self.buffers["opponent"].push(Measurement(
+            int(stamp), POSITION, (reading.x, reading.y), tuple(cov), f"sam2:{cid}",
+            OPERATOR_IDENTITY if confirms else None, confirms, obs.quality))
+        self.pending_observations["opponent"].append(obs)
+
+    def sam2_observation(self, row, stamp, received, now_ns, reading, sigma):
+        cov = reading.covariance_xy
+        return Observation(
+            SCHEMA_VERSION, reading.camera_id, int(row["index"]),
+            f"{reading.camera_id}:{int(row['index'])}:sam2", "opponent", int(stamp), "sim", 0, 0,
+            int(received), int(now_ns), self.version, FRAME_ARENA,
+            (float(reading.x), float(reading.y), self.a.base_z_nominal),
+            (cov[0], cov[1], 0.0, cov[2], cov[3], 0.0, 0.0, 0.0, 0.04),
+            max(0.0, min(1.0, 0.05 / (0.05 + sigma))), "sam2", None, None,
+            pose_6d_valid=False, attitude_state="unknown",
+            pixel_features={"score": reading.score, "prompted": reading.prompted,
+                            "incidence_deg": math.degrees(reading.incidence_rad),
+                            "pixels": reading.pixels, **reading.detail}).validate()
+
+    def record_sam2(self, row, stamp, received, now_ns, reading, accepted, reason):
+        cov = reading.covariance_xy
+        obs = self.sam2_observation(row, stamp, received, now_ns, reading,
+                                    math.sqrt(max(cov[0], cov[3])))
+        self.record_observation(obs, accepted, reason, now_ns)
+
+    def sam2_report(self):
+        if self.sam2 is None:
+            return None
+        ms = self.sam2_ms
+        return {
+            "mode": self.a.sam2_mode, "device": self.sam2_device,
+            "checkpoint": str(self.a.sam2_checkpoint), "config": self.sam2_engine.config,
+            "dtype": self.a.sam2_dtype, "image_size": self.sam2_engine.image_size,
+            "memory_window_frames": self.sam2_engine.window,
+            "max_cameras": self.a.sam2_max_cameras, "hz": self.a.sam2_hz,
+            "latency_ms_simulated": self.a.sam2_latency_ms,
+            "sigma_scale": self.a.sam2_sigma_scale,
+            "sam2_ms": summary(ms),
+            "sam2_ms_by_cameras": {str(n): summary([m for m, k in zip(ms, self.sam2_cameras_per_call)
+                                                    if k == n])
+                                   for n in sorted(set(self.sam2_cameras_per_call))},
+            "vram_peak_mb": self.sam2_engine.peak_memory_mb(),
+            "prompts": dict(self.sam2.prompts),
+            "memory_frames_end": self.sam2.memory_frames(),
+            "counts": dict(sorted(self.sam2_counts.items())),
+            "note": "sam2_ms: wall time of one SAM2 call (encoder for every camera of the "
+                    "instant + one decoder step each), device synchronised.  The filter sees "
+                    "the reading latency_ms_simulated after arrival, not this time",
+        }
+
     # ------------------------------------------------------------- lidar side
 
     def lidar_scan(self, now_ns, row):
@@ -970,7 +1280,9 @@ class Replay:
             out = {"object_id": name, "stamp_ns": parsed["stamp_ns"], "wall_ns": int(now_ns),
                    "replay_wall_ns": time.monotonic_ns(), "tracking_state": tracking}
             # The lidar continues a track; it never creates one, for either rover.
-            if state is None or not lidar_pipeline.may_continue(tracking):
+            if name == "opponent" and self.in_blackout(parsed["stamp_ns"]):
+                out["reason"] = "blackout"
+            elif state is None or not lidar_pipeline.may_continue(tracking):
                 out["reason"] = "no_confirmed_track"
             else:
                 lidar = self.lidar
@@ -1130,6 +1442,10 @@ class Replay:
             self.pool = POOLS[a.parallel](specs)
         self.background_build_s = self.pool.background_build_s()
         self.pool_start_s = time.monotonic() - started
+        self.blackout_ns = [(self.t0 + int(lo * 1e9), self.t0 + int(hi * 1e9))
+                            for lo, hi in a.blackouts]
+        if a.sam2_mode != "off":
+            self.build_sam2()
         wall_start = time.monotonic()
         next_report = self.t0
         with (out / "observations.jsonl").open("w") as self.out_obs, \
@@ -1146,6 +1462,8 @@ class Replay:
                     job = result["job"]
                     self.apply_results(when, {cid: result["plan"]},
                                        {cid: job} if job is not None else {}, [(cid, row, result)])
+                elif kind == SAM2:
+                    self.sam2_apply(when, *payload)
                 elif kind == LIDAR:
                     self.lidar_scan(when, payload)
                 elif kind == CAMERA:
@@ -1164,6 +1482,10 @@ class Replay:
             self.drain(self.end_ns, force=True)
         self.pool.close()
         wall = time.monotonic() - wall_start
+        if self.sam2 is not None:
+            with (out / "sam2.jsonl").open("w") as handle:
+                for row in self.sam2_rows:
+                    handle.write(json.dumps(row) + "\n")
         with (out / "camera_frames.jsonl").open("w") as handle:
             for row in self.frame_order:
                 handle.write(json.dumps(row) + "\n")
@@ -1245,6 +1567,13 @@ class Replay:
                 "scans_scheduled": self.scans_scheduled,
             },
             "opponent_operator_box": operator_box,
+            "sam2": ({"mode": a.sam2_mode, "max_cameras": a.sam2_max_cameras, "hz": a.sam2_hz,
+                      "checkpoint": str(a.sam2_checkpoint), "config": a.sam2_config,
+                      "image_size": a.sam2_image_size, "dtype": a.sam2_dtype,
+                      "latency_ms": a.sam2_latency_ms, "score_threshold": a.sam2_score_threshold,
+                      "sigma_scale": a.sam2_sigma_scale, "gate_m": a.sam2_gate_m or a.opponent_gate_m}
+                     if a.sam2_mode != "off" else None),
+            "opponent_blackout_s": a.blackouts or None,
             "tag_rover_operator_box": tag_operator_box,
             "link_emulation": {
                 "mode": a.link_emulation, "roi_max_px": a.roi_max_px,
@@ -1324,6 +1653,7 @@ class Replay:
             "jpeg_decode_ms": summary([v for t in self.timing.values()
                                        for v in t["stages"].get("jpeg_decode_ms", [])]),
             "link": self.link_report(),
+            "sam2": self.sam2_report(),
             "cameras": per_camera,
         }
 

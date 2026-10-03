@@ -45,6 +45,17 @@ from .ray_plane import pixel_rays, ray_plane
 REACQUIRE_PERIOD_NS = 250_000_000
 
 
+def scaled_camera(cam, width, height):
+    """Calibration of the whole frame resized to ``width`` x ``height``; (camera, (sx, sy))."""
+    w0, h0 = cam["image_size"]
+    sx, sy = width / w0, height / h0
+    K = list(cam["K"])
+    K[0] *= sx; K[4] *= sy
+    K[2] = (K[2] + 0.5) * sx - 0.5
+    K[5] = (K[5] + 0.5) * sy - 0.5
+    return {**cam, "K": K, "image_size": [int(width), int(height)]}, (sx, sy)
+
+
 def _read_jsonl(path):
     import json
     with Path(path).open() as handle:
@@ -100,13 +111,7 @@ class CameraWorker:
         self.opp_camera, self.opp_model, self.opp_scale = cam, self.model, (1.0, 1.0)
         if stream:
             w, h, hz = int(stream[0]), int(stream[1]), float(stream[2])
-            w0, h0 = cam["image_size"]
-            sx, sy = w / w0, h / h0
-            K = list(cam["K"])
-            K[0] *= sx; K[4] *= sy
-            K[2] = (K[2] + 0.5) * sx - 0.5
-            K[5] = (K[5] + 0.5) * sy - 0.5
-            self.opp_camera = {**cam, "K": K, "image_size": [w, h]}
+            self.opp_camera, (sx, sy) = scaled_camera(cam, w, h)
             self.opp_model = CameraModel.from_config(self.opp_camera)
             self.opp_size, self.opp_scale = (w, h), (sx, sy)
             self.opp_period_ns = int(1e9 / hz)
@@ -116,6 +121,12 @@ class CameraWorker:
             self.opponent_planner = (None if spec.get("opponent_planner") is None else
                                      roi_tracker.CameraRoiPlanner(self.opp_model, R, C,
                                                                   **spec["opponent_planner"]))
+        # Replay only: SAM2 in the main process asks for this camera's small
+        # frame (``sam2_frame``), and an opponent blackout replaces what the
+        # opponent sees with the empty arena (``blackout``).
+        self.want_sam2 = False
+        self.blackout = False
+        self.blackout_image = None
         opponent = spec.get("opponent")
         if opponent is not None:
             started = time.monotonic()
@@ -135,6 +146,8 @@ class CameraWorker:
                 size_m=opponent["size"], tag_size_m=opponent["tag_size"],
                 gate_m=opponent["gate_m"], extent_plane_z=opponent.get("extent_plane_z"),
                 along_sigma_scale=opponent.get("along_sigma_scale", 0.10))
+            # The empty arena as the opponent's stream sees it, for blackouts.
+            self.blackout_image = background.mean_u8.copy()
             self.background_build_s = time.monotonic() - started
 
     def plan(self, context):
@@ -199,6 +212,7 @@ class CameraWorker:
         """Plan, read and report one frame; the plans come back in the result."""
         plan, job = self.plan(context)
         self.opp_tick = False
+        self.blackout = bool(context.get("blackout")) and self.blackout_image is not None
         if self.opp_period_ns:
             # The opponent's stream has a frame only on its own, slower grid,
             # and the node sends that frame whether or not anyone reads it.
@@ -214,6 +228,10 @@ class CameraWorker:
                     self.opp_next_ns += self.opp_period_ns
             if job is not None and not self.opp_tick and context.get("operator_box") is None:
                 job = None
+        # SAM2 reads the small stream: a frame exists on the stream's grid
+        # (and at the operator's instant, when the prompt is drawn).
+        self.want_sam2 = bool(context.get("sam2_frame")) and (
+            self.opp_tick or context.get("operator_box") is not None)
         result = self.read(row, plan, job)
         result["plan"], result["job"] = plan, job
         if not result["idle"]:
@@ -229,7 +247,7 @@ class CameraWorker:
         cid = self.camera_id
         busy = plan.mode != roi_tracker.IDLE or (
             job is not None and job["plan"].mode != roi_tracker.IDLE) or (
-            self.sensor is not None and getattr(self, "opp_tick", False))
+            self.sensor is not None and getattr(self, "opp_tick", False)) or self.want_sam2
         begin = time.perf_counter_ns()
         index = int(row["index"])
         if self.prefetched is not None and self.prefetched[0] == index:
@@ -282,10 +300,15 @@ class CameraWorker:
                   "rejections": dict(rejections), "stamp": stamp,
                   "received": received, "processed": processed,
                   "opponent_ms": 0.0, "background_update_ms": 0.0}
-        if job is not None:
+        if job is not None or self.want_sam2:
             if self.opp_size:
                 opponent_image = cv2.resize(opponent_image, self.opp_size, interpolation=cv2.INTER_AREA)
+            if self.blackout:
+                opponent_image = self.blackout_image.copy()
+        if job is not None:
             result.update(self.process_opponent(opponent_image, job, result["stages"]))
+        if self.want_sam2:
+            result["sam2_image"] = opponent_image
         # The laptop decodes the JPEG windows; that is part of its frame time.
         result["latency_ms"] = tag_ms + result["opponent_ms"] + jpeg_decode_ms
         result["link_windows"] = link_windows
