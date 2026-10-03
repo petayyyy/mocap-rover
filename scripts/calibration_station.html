@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Калибровка камер</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f7; --panel: #ffffff; --ink: #1b1f24; --muted: #5f6b7a; --line: #dde1e6;
+  --accent: #2563eb; --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --chip: #eef1f5;
+  --img-bg: #0e1116;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f1216; --panel: #171b21; --ink: #e6e9ee; --muted: #94a0ae; --line: #2a3039;
+          --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --chip: #222831; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line);
+         padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+h1 { font-size: 17px; margin: 0; font-weight: 650; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 9px; font-size: 12px;
+        white-space: nowrap; }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; }
+.seg button.on { background: var(--accent); color: #fff; }
+button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px;
+         background: var(--panel); color: var(--ink); cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.loadbar { width: 140px; height: 8px; background: var(--chip); border-radius: 4px; overflow: hidden; display: inline-block;
+           vertical-align: middle; }
+.loadbar > div { height: 100%; background: var(--ok); }
+nav { display: flex; gap: 4px; padding: 10px 16px 0; }
+nav button { border-radius: 8px 8px 0 0; border-bottom: 0; }
+nav button.on { background: var(--panel); font-weight: 600; }
+main { padding: 0 16px 16px; }
+.tab { display: none; background: var(--panel); border: 1px solid var(--line); border-radius: 0 10px 10px 10px;
+       padding: 14px; }
+.tab.on { display: block; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.card .img { position: relative; background: var(--img-bg); aspect-ratio: 1640 / 1232; }
+.card img, .big img { width: 100%; height: 100%; display: block; object-fit: contain; }
+.card .head { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; gap: 6px; flex-wrap: wrap; }
+.card .stats { padding: 0 10px 8px; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.badge { position: absolute; left: 8px; top: 8px; background: rgba(0,0,0,.6); color: #fff; font-size: 12px;
+         border-radius: 6px; padding: 2px 7px; }
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px; margin-top: 14px; }
+@media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } }
+.panel { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.panel h3 { margin: 0 0 8px; font-size: 14px; }
+label { display: inline-flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+input[type=number] { width: 86px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px;
+                     background: var(--bg); color: var(--ink); font: inherit; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th, td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+.scroll { overflow-x: auto; }
+.big { position: relative; background: var(--img-bg); aspect-ratio: 1640 / 1232; border-radius: 10px; overflow: hidden; }
+.big canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.progress { height: 10px; background: var(--chip); border-radius: 5px; overflow: hidden; }
+.progress > div { height: 100%; background: var(--accent); transition: width .3s; }
+.camsel { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.camsel button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+#log { margin-top: 14px; max-height: 160px; overflow: auto; font: 12px/1.5 ui-monospace, monospace; }
+svg text { fill: var(--muted); font-size: 10px; }
+.hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Калибровка камер</h1>
+  <span id="demo" class="chip warn" hidden>ДЕМО</span>
+  <span class="small muted">кадры <b>1640×1232</b>, JPEG, сдвиг по фазе между узлами</span>
+  <span class="small">частота:
+    <span class="seg" id="rateSeg">
+      <button data-rate="auto">авто</button><button data-rate="20">20 Гц</button><button data-rate="10">10 Гц</button>
+    </span>
+    <b id="rateHz">–</b>
+  </span>
+  <span class="small">канал <span class="loadbar"><div id="loadBar" style="width:0"></div></span> <b id="loadTxt">–</b></span>
+  <span class="small muted" id="rateReason"></span>
+</header>
+<nav>
+  <button data-tab="extrinsic" class="on">Взаимное положение (все камеры)</button>
+  <button data-tab="intrinsic">Внутренние параметры (одна камера)</button>
+</nav>
+<main>
+  <section class="tab on" id="tab-extrinsic">
+    <div class="grid" id="cams"></div>
+    <div class="cols">
+      <div class="panel">
+        <h3>Положения полотна</h3>
+        <div class="scroll"><table id="plcTable"></table></div>
+        <div class="row" style="margin-top:10px">
+          <button class="primary" id="solveBtn">Решить взаимное положение</button>
+          <span class="small muted" id="solveState"></span>
+        </div>
+        <div id="solution"></div>
+      </div>
+      <div class="panel">
+        <h3>Снять положение</h3>
+        <div class="small muted" id="stripDesc"></div>
+        <p class="hint">Угол листа у маркера ID 0 (с каймой) — точка (x0, y0) арены; длинная сторона вдоль +X,
+          повёрнута на yaw; верхний край печати к +Y. Первое положение мерить рулеткой и отметить «измерено» —
+          оно задаёт систему арены. Остальные можно не мерить: они решаются, если их видит хотя бы одна уже
+          привязанная камера.</p>
+        <div class="row">
+          <label>x0, м<input type="number" id="x0" step="0.01" value="0"></label>
+          <label>y0, м<input type="number" id="y0" step="0.01" value="7.5"></label>
+          <label>yaw, °<input type="number" id="yaw" step="0.1" value="0"></label>
+          <label style="flex-direction:row;align-items:center;gap:6px"><input type="checkbox" id="known" checked>измерено</label>
+        </div>
+        <div class="row">
+          <button class="primary" id="captureBtn">Снять положение</button>
+          <span class="small" id="captureState"></span>
+        </div>
+        <p class="hint" id="suggest"></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-intrinsic">
+    <div class="camsel" id="camSel"></div>
+    <div class="cols">
+      <div>
+        <div class="big"><img id="bigImg" alt=""><canvas id="cover"></canvas>
+          <span class="badge" id="bigBadge">выберите камеру</span></div>
+        <p class="hint">Зелёные точки — найденные углы доски. Цвет клеток — сколько углов уже снято в этой
+          части кадра: для fisheye обязательно снимать края и углы кадра и доску под наклоном.</p>
+      </div>
+      <div class="panel">
+        <h3>Ручная доска</h3>
+        <div class="small muted" id="boardDesc"></div>
+        <div style="margin:10px 0 4px" class="small">Снято <b id="capN">0</b> из <b id="capRec">35</b> (рекомендуется)</div>
+        <div class="progress"><div id="capBar" style="width:0"></div></div>
+        <div class="small" style="margin-top:6px">сейчас видно углов: <b id="cornersNow">0</b></div>
+        <div class="row" style="margin-top:10px">
+          <button class="primary" id="capOne">Снять кадр</button>
+          <button id="autoBtn">Автозахват: выкл</button>
+          <button id="undoBtn">Убрать последний</button>
+        </div>
+        <p class="hint">Автозахват снимает кадр, когда доска неподвижна и стоит иначе, чем на всех снятых.</p>
+        <div class="row"><button class="primary" id="calibBtn">Калибровать: 1640×1232, 820×616, 640×480</button></div>
+        <div class="small muted" id="calibState"></div>
+        <div class="scroll" id="intrResults"></div>
+        <div class="small muted" id="intrOut"></div>
+      </div>
+    </div>
+  </section>
+  <div id="log" class="panel"></div>
+  <div class="small muted" style="margin-top:6px" id="sessionPath"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null, tab = "extrinsic", firstState = true;
+function showTab(name) {
+  tab = name;
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.id === "tab-" + name));
+}
+const post = (path, body) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify(body || {})}).then(r => r.json());
+// Replace a block only when its markup changed: rebuilding it on every poll flickers
+// and throws away the scroll position and focus.
+const shown = {};
+function setHTML(id, html) {
+  if (shown[id] === html) return false;
+  shown[id] = html; $(id).innerHTML = html; return true;
+}
+const fmt = (v, d = 1) => v == null || Number.isNaN(v) ? "–" : Number(v).toFixed(d);
+
+// ---------- tabs, rate
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  showTab(b.dataset.tab);
+  post("/api/mode", {mode: tab});
+});
+document.querySelectorAll("#rateSeg button").forEach(b => b.onclick = () => post("/api/rate", {mode: b.dataset.rate}));
+
+// ---------- images: reload a picture only when the camera has a new frame and the last load is done
+const loaders = {};
+function refreshImg(img, key, url, seq) {
+  const l = loaders[key] || (loaders[key] = {busy: false, seq: -1});
+  if (l.busy || l.seq === seq) return;
+  l.busy = true;
+  const next = new Image();
+  next.onload = () => { img.src = next.src; l.busy = false; l.seq = seq; };
+  next.onerror = () => { l.busy = false; };
+  next.src = url + (url.includes("?") ? "&" : "?") + "s=" + seq;
+}
+
+// ---------- extrinsic tab
+function cornersClass(n) { return n >= 65 ? "ok" : n >= 20 ? "warn" : "bad"; }
+function renderCams() {
+  const box = $("cams");
+  state.cameras.forEach(c => {
+    let card = document.getElementById("card-" + c.id);
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "card"; card.id = "card-" + c.id;
+      card.innerHTML = `<div class="img"><img alt=""><span class="badge"></span></div>
+        <div class="head"><b>${c.id}</b><span class="chip corners"></span></div><div class="stats"></div>`;
+      box.appendChild(card);
+    }
+    const s = c.strip;
+    const corners = s ? s.corners : null;
+    card.querySelector(".badge").textContent = `${fmt(c.fps)} / ${fmt(c.hz, 0)} к/с · фаза ${fmt(c.phase_ms)} мс`;
+    const ch = card.querySelector(".corners");
+    ch.className = "chip corners " + (corners == null ? "" : cornersClass(corners));
+    ch.textContent = corners == null ? "углы: –" : `углов ${corners} · маркеров ${s.markers}`;
+    const n = c.node || {};
+    card.querySelector(".stats").innerHTML = [
+      `${fmt(c.mbps)} Мбит/с`, `задержка ${fmt(c.latency_ms, 0)} мс`, `возраст ${fmt(c.age_s, 2)} с`,
+      `сенсор ${fmt(n.sensor_fps)} к/с`, `сброшено ${n.dropped ?? 0}`,
+      n.temp_c != null ? `${fmt(n.temp_c, 0)} °C` : null,
+      n.ptp_offset_us != null ? `PTP ${fmt(n.ptp_offset_us)} мкс` : "PTP –",
+    ].filter(Boolean).map(t => `<span class="chip">${t}</span>`).join("");
+    if (tab === "extrinsic") refreshImg(card.querySelector("img"), "x" + c.id, `/frame/${c.id}.jpg?w=560&overlay=strip`, c.seq);
+  });
+}
+
+function renderPlacements() {
+  const ext = state.extrinsic, cams = state.cameras.map(c => c.id);
+  $("stripDesc").textContent = ext.strip;
+  const head = `<tr><th>#</th><th>x0</th><th>y0</th><th>yaw</th><th></th>${cams.map(c => `<th>${c.replace("camera_", "к")}</th>`).join("")}<th></th></tr>`;
+  const rows = ext.placements.map(p => `<tr><td>${p.index}</td><td>${fmt(p.x0, 2)}</td><td>${fmt(p.y0, 2)}</td>
+    <td>${fmt(p.yaw_deg)}</td><td>${p.known ? "<span class='chip ok'>измерено</span>" : "<span class='chip'>решается</span>"}</td>
+    ${cams.map(c => { const v = p.cameras[c]; return `<td class="${v ? cornersClass(v.corners) : "muted"}">${v ? v.corners : "–"}</td>`; }).join("")}
+    <td><button data-del="${p.index}" class="small">убрать</button></td></tr>`).join("");
+  if (setHTML("plcTable", head + (rows || `<tr><td colspan="${cams.length + 6}" class="muted">ещё не снято ни одного положения</td></tr>`)))
+  $("plcTable").querySelectorAll("button[data-del]").forEach(b => b.onclick = () => post("/api/extrinsic/delete", {index: +b.dataset.del}));
+  $("solveBtn").disabled = ext.solving || !ext.placements.length;
+  $("solveState").textContent = ext.solving ? "решается…" : "";
+  const sg = ext.suggested;
+  $("suggest").textContent = sg ? `${sg.note}. Положение ${sg.index}: x0 ${sg.x0}, y0 ${sg.y0}, yaw ${sg.yaw_deg}° (отрисовано ${sg.rendered}/${sg.cameras})` : "";
+  if (sg && !document.activeElement.matches("input") && $("x0").dataset.sg !== String(sg.index)) {
+    $("x0").value = sg.x0; $("y0").value = sg.y0; $("yaw").value = sg.yaw_deg; $("known").checked = sg.known;
+    $("x0").dataset.sg = String(sg.index);
+  }
+  renderSolution(ext.solution);
+}
+
+function topView(sol) {
+  const S = 22, W = 12 * S + 40, H = 12 * S + 30, X = (x) => 20 + x * S, Y = (y) => 10 + (12 - y) * S;
+  let g = `<rect x="${X(0)}" y="${Y(12)}" width="${12 * S}" height="${12 * S}" fill="none" stroke="currentColor" opacity=".3"/>`;
+  for (let i = 0; i <= 12; i += 3) g += `<text x="${X(i) - 3}" y="${H - 4}">${i}</text><text x="2" y="${Y(i) + 3}">${i}</text>`;
+  (sol.placements || []).filter(p => p.x0 != null).forEach(p => {
+    const a = p.yaw_deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    const pts = [[0, 0], [12, 0], [12, -3], [0, -3]].map(([u, v]) => [p.x0 + c * u - s * v, p.y0 + s * u + c * v]);
+    g += `<polygon points="${pts.map(([x, y]) => X(x) + "," + Y(y)).join(" ")}" fill="currentColor" opacity=".08" stroke="currentColor" stroke-opacity=".4"/>`;
+    g += `<text x="${X(pts[0][0]) + 3}" y="${Y(pts[0][1]) + 11}">${p.index}${p.known ? " ★" : ""}</text>`;
+  });
+  Object.entries(sol.cameras || {}).forEach(([name, c]) => {
+    // Where the optical axis meets the floor (+ marks the centre of the image).
+    const [x, y, z] = c.position_world, R = c.R_world_optical, a = [R[0][2], R[1][2], R[2][2]];
+    const k = a[2] < -1e-6 ? -z / a[2] : 0, fx = x + k * a[0], fy = y + k * a[1];
+    g += `<line x1="${X(x)}" y1="${Y(y)}" x2="${X(fx)}" y2="${Y(fy)}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="3 2"/>`;
+    g += `<path d="M${X(fx) - 4},${Y(fy)}h8M${X(fx)},${Y(fy) - 4}v8" stroke="var(--accent)" stroke-width="1.5"/>`;
+    g += `<circle cx="${X(x)}" cy="${Y(y)}" r="5" fill="var(--accent)"/><text x="${X(x) + 7}" y="${Y(y) - 6}" style="fill:var(--ink)">${name.replace("camera_", "к")} z=${x == null ? "" : c.position_world[2].toFixed(2)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;color:var(--ink)">${g}</svg>`;
+}
+
+function renderSolution(sol) {
+  if (!sol) { setHTML("solution", ""); return; }
+  if (sol.error) { setHTML("solution", `<p class="bad">${sol.error}</p>`); return; }
+  const truth = sol.vs_truth || {};
+  const rows = Object.entries(sol.cameras).map(([n, c]) => {
+    const p = c.position_world, sg = c.sigma_position_mm || [];
+    const t = truth[n], src = (sol.intrinsics_source || {})[n] || "";
+    return `<tr><td>${n}</td><td>${fmt(p[0], 3)}</td><td>${fmt(p[1], 3)}</td><td>${fmt(p[2], 3)}</td>
+      <td>${fmt(c.tilt_from_nadir_deg)}</td><td>${fmt(c.image_x_heading_deg)}</td><td>${c.corners}</td>
+      <td>${fmt(c.reproj_p50_px, 2)}</td><td class="${c.reproj_p95_px < 1.5 ? "ok" : "warn"}">${fmt(c.reproj_p95_px, 2)}</td>
+      <td>${sg.length ? fmt(Math.max(...sg)) : "–"}</td><td>${fmt(Math.max(0, ...(c.single_view_spread_mm || [0])), 0)}</td>
+      ${t ? `<td>${fmt(t.position_error_mm)}</td><td>${fmt(t.rotation_error_deg, 3)}</td>` : ""}
+      <td class="${src.includes("НЕ") ? "bad" : ""}" style="text-align:left">${src}</td></tr>`;
+  }).join("");
+  const unsolved = Object.entries(sol.unsolved || {}).map(([n, why]) => `<li class="bad">${n}: ${why}</li>`).join("");
+  const names = Object.keys(sol.distances_m || {});
+  const dist = names.length ? `<table><tr><th>расстояния, м</th>${names.map(n => `<th>${n.replace("camera_", "к")}</th>`).join("")}</tr>
+    ${names.map(a => `<tr><td>${a}</td>${names.map(b => `<td>${a === b ? "–" : fmt(sol.distances_m[a][b], 3)}</td>`).join("")}</tr>`).join("")}</table>` : "";
+  const hasTruth = Object.keys(truth).length > 0;
+  setHTML("solution", `
+    <p class="small">углов ${sol.corners}, ошибка репроекции RMS <b>${fmt(sol.rms_px, 2)}</b> px, P95 <b>${fmt(sol.p95_px, 2)}</b> px</p>
+    <div class="scroll"><table><tr><th>камера</th><th>X</th><th>Y</th><th>Z</th><th>наклон°</th><th>курс x°</th><th>углов</th>
+      <th>P50 px</th><th>P95 px</th><th>σ поз. мм</th><th>разброс мм</th>${hasTruth ? "<th>ошибка мм</th><th>ошибка °</th>" : ""}<th style="text-align:left">K, D</th></tr>${rows}</table></div>
+    ${unsolved ? `<ul>${unsolved}</ul>` : ""}
+    ${topView(sol)}
+    <div class="scroll">${dist}</div>
+    <p class="small muted">«разброс» — насколько позы по отдельным положениям расходятся с совместным решением;
+      «σ» — по ковариации. ${hasTruth ? "«ошибка» — против эталона демо-мира." : ""}<br>${(sol.files || []).join("<br>")}</p>`);
+}
+
+$("captureBtn").onclick = async () => {
+  $("captureState").textContent = "снимаю…";
+  const r = await post("/api/extrinsic/capture", {x0: +$("x0").value, y0: +$("y0").value, yaw_deg: +$("yaw").value, known: $("known").checked});
+  $("captureState").innerHTML = r.ok ? "<span class='ok'>снято</span>" : `<span class='bad'>${r.error}</span>`;
+  if (r.ok) $("known").checked = false;
+};
+$("solveBtn").onclick = () => post("/api/extrinsic/solve");
+
+// ---------- intrinsic tab
+function renderIntrinsic() {
+  const it = state.intrinsic;
+  const sel = $("camSel");
+  if (setHTML("camSel", state.cameras.map(c => `<button data-cam="${c.id}" class="${c.id === it.camera ? "on" : ""}">${c.id}</button>`).join("")))
+  sel.querySelectorAll("button").forEach(b => b.onclick = () => post("/api/intrinsic/select", {camera: b.dataset.cam}));
+  $("boardDesc").textContent = it.board;
+  $("capN").textContent = it.captured; $("capRec").textContent = it.recommended;
+  $("capBar").style.width = Math.min(100, 100 * it.captured / it.recommended) + "%";
+  $("cornersNow").textContent = `${it.corners_now} из ${it.corners_total}`;
+  $("autoBtn").textContent = "Автозахват: " + (it.auto ? "вкл" : "выкл");
+  $("autoBtn").classList.toggle("primary", it.auto);
+  ["capOne", "autoBtn", "undoBtn", "calibBtn"].forEach(id => $(id).disabled = !it.camera);
+  $("calibBtn").disabled = !it.camera || it.calibrating || it.captured < 5;
+  $("calibState").textContent = it.calibrating ? ("калибрую… " + it.progress) : "";
+  const cam = state.cameras.find(c => c.id === it.camera);
+  if (cam) {
+    $("bigBadge").textContent = `${cam.id} · ${fmt(cam.fps)} / ${fmt(cam.hz, 0)} к/с · ${fmt(cam.mbps)} Мбит/с`;
+    if (tab === "intrinsic") refreshImg($("bigImg"), "big" + cam.id, `/frame/${cam.id}.jpg?w=1024&overlay=hand`, cam.seq);
+  }
+  drawCoverage(it.coverage);
+  const res = it.results;
+  setHTML("intrResults", !res ? "" : `<table><tr><th>размер</th><th>кадров</th><th>RMS</th><th>ср. ошибка</th>
+    <th>fx</th><th>fy</th><th>cx</th><th>cy</th><th>HFOV°</th><th>отсев</th></tr>${res.map(r => r.error
+      ? `<tr><td>${r.size.join("×")}</td><td colspan="9" class="bad">${r.error}</td></tr>`
+      : `<tr><td>${r.size.join("×")}</td><td>${r.views_used}/${r.views_captured}</td><td>${fmt(r.rms, 3)}</td>
+        <td class="${r.reprojection_error < 0.5 ? "ok" : r.reprojection_error < 1 ? "warn" : "bad"}">${fmt(r.reprojection_error, 3)}</td>
+        <td>${fmt(r.fx, 1)}</td><td>${fmt(r.fy, 1)}</td><td>${fmt(r.cx, 1)}</td><td>${fmt(r.cy, 1)}</td>
+        <td>${fmt(r.fov_deg.horizontal)}</td><td>${r.dropped_outliers + r.dropped_illcond}</td></tr>`).join("")}</table>
+    <p class="small muted">D (k1..k4): ${res.filter(r => r.D).map(r => r.size.join("×") + ": " + r.D.map(v => v.toFixed(4)).join(", ")).join("<br>")}</p>`);
+  $("intrOut").textContent = res ? "файлы: " + it.output : "";
+}
+
+let coverKey = "";
+function drawCoverage(grid) {
+  const cv = $("cover"), box = cv.getBoundingClientRect();
+  const key = JSON.stringify(grid) + box.width;
+  if (key === coverKey) return;
+  coverKey = key;
+  cv.width = box.width; cv.height = box.height;
+  const g = cv.getContext("2d");
+  g.clearRect(0, 0, cv.width, cv.height);
+  if (!grid) return;
+  const rows = grid.length, cols = grid[0].length, cw = cv.width / cols, ch = cv.height / rows;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const n = grid[r][c];
+    g.fillStyle = n === 0 ? "rgba(239,68,68,.16)" : n < 15 ? "rgba(234,179,8,.16)" : "rgba(34,197,94,.13)";
+    g.fillRect(c * cw + 1, r * ch + 1, cw - 2, ch - 2);
+  }
+}
+
+$("capOne").onclick = () => post("/api/intrinsic/capture").then(r => { if (!r.ok) $("calibState").textContent = r.error; });
+$("autoBtn").onclick = () => post("/api/intrinsic/auto", {enable: !state.intrinsic.auto});
+$("undoBtn").onclick = () => post("/api/intrinsic/undo");
+$("calibBtn").onclick = () => post("/api/intrinsic/calibrate").then(r => { if (!r.ok) $("calibState").textContent = r.error; });
+
+// ---------- poll
+async function tick() {
+  try {
+    state = await fetch("/api/state").then(r => r.json());
+    $("demo").hidden = !state.demo;
+    if (firstState) { firstState = false; if (state.mode !== tab) showTab(state.mode); }
+    const rt = state.rate;
+    document.querySelectorAll("#rateSeg button").forEach(b => b.classList.toggle("on", b.dataset.rate === rt.mode));
+    $("rateHz").textContent = `${rt.hz} Гц`;
+    const load = rt.load * 100;
+    $("loadBar").style.width = Math.min(100, load) + "%";
+    $("loadBar").style.background = rt.load > rt.max_load ? "var(--bad)" : rt.load > rt.max_load * 0.8 ? "var(--warn)" : "var(--ok)";
+    const total = state.cameras.reduce((a, c) => a + c.mbps, 0);
+    $("loadTxt").textContent = `${total.toFixed(0)} / ${rt.link_mbit} Мбит/с (${load.toFixed(0)} %)`;
+    $("rateReason").textContent = rt.reason;
+    renderCams(); renderPlacements(); renderIntrinsic();
+    setHTML("log", state.messages.slice().reverse().map(m => `<div><span class="muted">${m.t}</span> ${m.text}</div>`).join(""));
+    $("sessionPath").textContent = "сессия: " + state.session;
+  } catch (e) { /* station restarting */ }
+  setTimeout(tick, 400);
+}
+tick();
+</script>
+</body>
+</html>

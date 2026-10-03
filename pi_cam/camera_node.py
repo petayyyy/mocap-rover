@@ -494,6 +494,7 @@ class Window:
     format: str
     request_id: int
     scaled: bool = False     # the whole frame reduced to w x h (stream_small)
+    gray: bool = False       # demosaic a raw (Bayer) frame to luminance before sending
 
 
 try:
@@ -530,6 +531,25 @@ def scale_luma(y, width, height):
         cols_i = ((np.arange(width) + 0.5) * bw / width).astype(np.intp)
         binned = binned[rows_i][:, cols_i]
     return ((binned + 2) >> 2).astype(np.uint8)
+
+
+def demosaic_full_gray(bayer):
+    """A whole raw SBGGR8 frame -> luminance at full resolution.
+
+    JPEG cannot carry a Bayer mosaic (the 2x2 colour pattern is exactly the
+    high frequency it throws away), so a raw node demosaics a full frame that
+    is asked for with ``gray``.  ~5 ms for 1640x1232 on a CM4 with OpenCV;
+    without OpenCV a 2x2 average repeated back to full size (half the detail).
+    """
+    if _cv2 is not None:
+        return _cv2.cvtColor(np.ascontiguousarray(bayer), _cv2.COLOR_BayerBG2GRAY)
+    rows, cols = (bayer.shape[0] // 2) * 2, (bayer.shape[1] // 2) * 2
+    binned = bayer[0:rows:2, 0:cols:2].astype(np.uint16)
+    binned += bayer[1:rows:2, 0:cols:2]
+    binned += bayer[0:rows:2, 1:cols:2]
+    binned += bayer[1:rows:2, 1:cols:2]
+    out = ((binned + 2) >> 2).astype(np.uint8)
+    return np.ascontiguousarray(out.repeat(2, axis=0).repeat(2, axis=1))
 
 
 @dataclass
@@ -601,7 +621,9 @@ class CameraNode:
         self.state_lock = threading.Lock()
         self.windows: list[Window] = []
         self.full_pending: Window | None = None
-        self.full_stream: dict | None = None      # {"divisor", "format", "request_id"}
+        # {"divisor", "format", "request_id", "gray"} or, timed, {"period_ns", "phase_ns", ...}
+        self.full_stream: dict | None = None
+        self.full_last_tick = None
         # {"width", "height", "period_ns", "phase_ns", "format", "request_id"}
         self.small_stream: dict | None = None
         self.small_last_tick = None
@@ -702,13 +724,28 @@ class CameraNode:
                     return {"ok": True, "cmd": cmd, "request_id": request_id, "format": fmt}
                 if cmd == "stream_full":
                     divisor = int(meta.get("divisor", 0))
+                    hz = float(meta.get("hz", 0) or 0)
                     fmt = meta.get("format", self.cfg.full_frame_format)
                     if fmt not in proto.FORMAT_CODES:
                         raise proto.ProtocolError(f"unknown format {fmt!r}")
-                    self.full_stream = (None if divisor <= 0 else
-                                        {"divisor": divisor, "format": fmt, "request_id": request_id})
-                    return {"ok": True, "cmd": cmd, "request_id": request_id,
-                            "divisor": divisor, "format": fmt}
+                    gray = bool(meta.get("gray", False))
+                    answer = {"ok": True, "cmd": cmd, "request_id": request_id,
+                              "divisor": divisor, "format": fmt, "gray": gray}
+                    self.full_last_tick = None
+                    if hz > 0:
+                        # Timed, like the small stream: the phase is on the
+                        # common (PTP) scale, so nodes given k * period / N send
+                        # their full frames in turn instead of all at once.
+                        period_ns = int(round(NS / hz))
+                        phase_ns = int(meta.get("phase_ns", 0)) % period_ns
+                        self.full_stream = {"period_ns": period_ns, "phase_ns": phase_ns,
+                                            "format": fmt, "request_id": request_id, "gray": gray}
+                        answer.update(hz=hz, phase_ns=phase_ns)
+                    else:
+                        self.full_stream = (None if divisor <= 0 else
+                                            {"divisor": divisor, "format": fmt,
+                                             "request_id": request_id, "gray": gray})
+                    return answer
                 if cmd == "stream_small":
                     return {"ok": True, "cmd": cmd, "request_id": request_id,
                             **self._set_small_stream_locked(meta, request_id)}
@@ -759,9 +796,18 @@ class CameraNode:
                         except queue.Full:
                             with self.stats_lock:
                                 self.small_dropped += 1
-                if stream is not None and frame.sequence % stream["divisor"] == 0 and full is None:
-                    full = Window(0, 0, self.sensor_width, self.sensor_height,
-                                  stream["format"], stream["request_id"])
+                if stream is not None and full is None:
+                    if "period_ns" in stream:
+                        tick = (stamp_ns - stream["phase_ns"]) // stream["period_ns"]
+                        due = tick != self.full_last_tick
+                        if due:
+                            self.full_last_tick = tick
+                    else:
+                        due = frame.sequence % stream["divisor"] == 0
+                    if due:
+                        full = Window(0, 0, self.sensor_width, self.sensor_height,
+                                      stream["format"], stream["request_id"],
+                                      gray=stream.get("gray", False))
                 cuts = []
                 for w in windows:
                     cuts.append((w, np.ascontiguousarray(
@@ -873,6 +919,9 @@ class CameraNode:
         count = len(job.windows)
         ptp = self.ptp.snapshot()["offset_ns"]
         for index, (w, array) in enumerate(job.windows):
+            gray = w.gray and self.wire_format == "bayer8"
+            if gray:
+                array = demosaic_full_gray(array)
             if w.format == "jpeg":
                 if JPEG_ENCODE is None:
                     self.last_error = "no JPEG encoder (install simplejpeg or opencv)"
@@ -884,7 +933,7 @@ class CameraNode:
             # "y8" means "whatever luminance this node produces": on a board
             # reading the raw stream those pixels are a Bayer mosaic, and the
             # receiver must be told so it can flatten it.
-            wire = self.wire_format if (w.format == "y8" and not w.scaled) else w.format
+            wire = self.wire_format if (w.format == "y8" and not w.scaled and not gray) else w.format
             header = proto.FrameHeader(
                 camera_id=self.cfg.camera_id, frame_seq=job.frame_seq, stamp_ns=job.stamp_ns,
                 exposure_ns=job.exposure_ns, line_time_ns=self.line_time_ns,

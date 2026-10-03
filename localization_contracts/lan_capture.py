@@ -589,11 +589,22 @@ class LanCameraSource:
         return self._link(camera_id).send_command({"cmd": "full_frame", "format": fmt},
                                                   wait=wait, timeout=timeout)
 
-    def stream_full(self, camera_id, divisor, fmt="y8", wait=True, timeout=2.0):
-        """Every ``divisor``-th full frame, continuously; 0 stops (dataset recording)."""
+    def stream_full(self, camera_id, divisor, fmt="y8", wait=True, timeout=2.0, *,
+                    hz=0.0, phase_ns=0, gray=False):
+        """Full frames, continuously; ``divisor`` and ``hz`` both 0 stop the stream.
+
+        ``divisor``: every N-th sensor frame (dataset recording).  ``hz`` > 0
+        instead: one frame per period, placed by ``phase_ns`` on the common time
+        scale like ``stream_small``, so N nodes given ``k * period / N`` send in
+        turn.  ``gray``: a raw node demosaics to luminance first (needed for JPEG).
+        """
         link = self._link(camera_id)
         meta = {"cmd": "stream_full", "divisor": int(divisor), "format": fmt}
-        link.last_stream = meta if divisor > 0 else None
+        if hz > 0:
+            meta.update(hz=float(hz), phase_ns=int(phase_ns))
+        if gray:
+            meta["gray"] = True
+        link.last_stream = meta if (divisor > 0 or hz > 0) else None
         return link.send_command(meta, wait=wait, timeout=timeout)
 
     def stream_small(self, camera_id, width=640, height=480, hz=30.0, phase_ns=0, fmt="y8",

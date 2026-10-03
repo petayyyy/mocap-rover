@@ -601,6 +601,80 @@ class TimingToolFullFrameMode(unittest.TestCase):
         self.assertIsNone(node.full_stream, "the stream was left running on the node")
 
 
+class TimedFullStream(unittest.TestCase):
+    """Full frames by timer with a phase per node (calibration station)."""
+
+    def collect(self, source, camera_id, seconds):
+        frames = []
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            group = source.take(camera_id, 0.2)
+            if group:
+                frames.extend(f for f in group if f.is_full)
+        return frames
+
+    def test_frames_come_once_per_period_at_the_given_phase(self):
+        node = start_node(camera_id="cam_timed")
+        source = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
+        try:
+            self.assertEqual(source.wait_connected(5.0), ["cam_timed"])
+            period, phase = 50_000_000, 20_000_000
+            ack = source.stream_full("cam_timed", 0, "y8", hz=20.0, phase_ns=phase)
+            self.assertTrue(ack["ok"], ack)
+            self.assertEqual((ack["hz"], ack["phase_ns"]), (20.0, phase))
+            self.collect(source, "cam_timed", 0.3)
+            frames = self.collect(source, "cam_timed", 1.5)
+        finally:
+            source.close()
+            node.stop()
+        self.assertAlmostEqual(len(frames) / 1.5, 20.0, delta=4.0)
+        ticks = [(f.stamp_ns - phase) // period for f in frames]
+        self.assertEqual(len(set(ticks)), len(ticks), "two frames in one period")
+        # Each frame is the first sensor frame (10 ms apart) after its tick.
+        offsets = [(f.stamp_ns - phase) % period for f in frames]
+        self.assertLess(max(offsets), 12_000_000)
+
+    def test_gray_turns_a_raw_mosaic_into_luminance_before_jpeg(self):
+        from pi_cam.camera_node import demosaic_full_gray
+        node = start_node(camera_id="cam_raw")
+        node.wire_format = "bayer8"           # behave like a CM4 reading the raw stream
+        source = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
+        try:
+            source.wait_connected(5.0)
+            source.stream_full("cam_raw", 0, "jpeg", hz=10.0, gray=True)
+            self.collect(source, "cam_raw", 0.3)
+            gray = self.collect(source, "cam_raw", 0.6)
+            source.stream_full("cam_raw", 0, "y8", hz=10.0)
+            self.collect(source, "cam_raw", 0.3)
+            raw = self.collect(source, "cam_raw", 0.6)
+        finally:
+            source.close()
+            node.stop()
+        self.assertTrue(gray and raw)
+        self.assertEqual({f.format for f in gray}, {"jpeg"})
+        self.assertEqual({f.format for f in raw}, {"bayer8"}, "without gray the mosaic travels raw")
+        frame = gray[-1]
+        mosaic = np.asarray([[SyntheticSensor.expected_pixel(r, c, frame.frame_seq)
+                              for c in range(WIDTH)] for r in range(HEIGHT)], np.uint8)
+        expected = demosaic_full_gray(mosaic).astype(float)
+        self.assertLess(np.abs(frame.array.astype(float) - expected)[4:-4, 4:-4].mean(), 4.0)
+
+    def test_divisor_stream_is_unchanged(self):
+        node = start_node(camera_id="cam_div")
+        source = lan_capture.LanCameraSource([("127.0.0.1", node.port)])
+        try:
+            source.wait_connected(5.0)
+            ack = source.stream_full("cam_div", 4)
+            self.assertNotIn("hz", ack)
+            self.assertEqual(node.full_stream["divisor"], 4)
+            source.stream_full("cam_div", 0)
+            time.sleep(0.2)
+            self.assertIsNone(node.full_stream)
+        finally:
+            source.close()
+            node.stop()
+
+
 class ExposureSweep(unittest.TestCase):
     """The probe that decided the timestamp reference without an LED."""
 

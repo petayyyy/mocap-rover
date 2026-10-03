@@ -34,7 +34,7 @@ step() { printf '\n== %s\n' "$*"; }
 step "Packages"
 apt-get update
 apt-get install -y python3-picamera2 python3-numpy python3-simplejpeg linuxptp \
-  ethtool python3-lgpio git rsync
+  ethtool python3-lgpio python3-opencv git rsync   # opencv: demosaic for calibration frames
 
 step "Camera overlay (CM4-NANO-B does not auto-detect the IMX219)"
 cfg=/boot/firmware/config.txt

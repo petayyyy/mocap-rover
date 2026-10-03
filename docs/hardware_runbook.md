@@ -29,10 +29,12 @@
   прямоугольника оператора, который в реплее берётся из эталона
   (`operator_box_from_truth`); у живой записи эталона нет. Нужен ввод
   оператора (клик в UI), его пока нет.
-- **Калибровка.** Внутренняя (K, D) и внешняя калибровка реального стенда
-  в `runtime_cameras.json` — отдельная работа (промпт 05). Пока её нет,
-  используется `config/mocap_arena_imx219/runtime_cameras.json` из симуляции,
-  и координаты будут неточными.
+- **Калибровка.** Делается станцией калибровки: внутренняя (K, D) —
+  [calibration_intrinsics.md](calibration_intrinsics.md), взаимное положение
+  шести камер — [calibration_extrinsics.md](calibration_extrinsics.md). Результат —
+  `runtime_cameras.json`, его передать в запись: `CAM_CONFIG=<путь> run_hardware.sh record …`.
+  Без неё используется `config/mocap_arena_imx219/runtime_cameras.json` из
+  симуляции, и координаты будут неточными.
 
 ## 1. Сеть
 
@@ -104,7 +106,7 @@ sudo reboot
 
 `N` — номер камеры 1…6. Для CM5 добавить `--cm5`. Скрипт:
 
-- ставит `python3-picamera2 python3-numpy python3-simplejpeg linuxptp ethtool python3-lgpio`;
+- ставит `python3-picamera2 python3-numpy python3-simplejpeg linuxptp ethtool python3-lgpio python3-opencv`;
 - пишет в `/boot/firmware/config.txt` `camera_auto_detect=0` и `dtoverlay=imx219,cam0`
   (на CM4-NANO-B камера сама не находится);
 - задаёт адрес `192.168.10.10N/24` через NetworkManager;
@@ -213,4 +215,4 @@ scripts/hardware/run_hardware.sh sam2-bench --dataset artifacts/dataset_run_01
      (контракт кадра уже общий — `localization_contracts/frame_source.py`);
   2. приёма лидара Airy (из `br_lidar/airy_py`) в формате `lidar_pipeline`;
   3. ввода прямоугольника оператора для старта соперника;
-  4. калибровки реального стенда в `runtime_cameras.json`.
+  4. проверки калибровки станцией на реальном стенде (код готов, на железе не запускался).
