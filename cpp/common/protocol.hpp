@@ -35,8 +35,9 @@ enum Format : uint8_t {
 };
 
 enum Flags : uint8_t {
-    kFlagScaled = 0x01,
+    kFlagScaled = 0x01,     // the whole sensor frame resized to width x height
     kFlagKeyframe = 0x02,   // H.264 IDR with SPS/PPS in front: a receiver can start here
+    kFlagColor = 0x04,      // H.264 carries real chroma (otherwise U = V = 128)
 };
 
 constexpr int64_t kUnknown = std::numeric_limits<int64_t>::min();

@@ -43,6 +43,10 @@ public:
     int acquire_input();
     uint8_t* input_plane(int index) const { return in_maps_[size_t(index)].ptr; }
     int stride() const { return stride_; }
+    int buffer_height() const { return buf_height_; }
+    // YUV420 planes of an input buffer: Y (stride), then U and V (stride / 2).
+    uint8_t* u_plane(int index) const { return input_plane(index) + size_t(stride_) * size_t(buf_height_); }
+    uint8_t* v_plane(int index) const { return u_plane(index) + size_t(stride_ / 2) * size_t(buf_height_ / 2); }
     void queue_input(int index, uint64_t frame_id);
     void release_input(int index);          // give back an acquired buffer unused
     void force_keyframe();

@@ -60,6 +60,11 @@ public:
     std::string mode() const { return mode_; }
     uint64_t missed() const { return missed_; }
     double line_time_ns() const { return line_ns_; }
+    // What the sensor actually runs: exposure in whole rows, gain in register steps.
+    int exposure_us() const { return int(exposure_ns_ / 1000); }
+    float gain() const { return gain_; }
+    double fps() const { return frame_duration_ns_ ? 1e9 / double(frame_duration_ns_) : 0; }
+    int max_exposure_us() const { return int((frame_lines_ - 4) * line_ns_ / 1000); }
 
 private:
     void apply_timing(double fps, int exposure_us, float gain);

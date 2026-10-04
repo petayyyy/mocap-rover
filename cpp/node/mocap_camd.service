@@ -1,0 +1,16 @@
+[Unit]
+Description=mocap-rover camera node (C++, one H.264 stream)
+After=network-online.target
+Wants=network-online.target
+Conflicts=camera_node.service
+
+[Service]
+ExecStart=/usr/local/bin/mocap_camd --config /etc/mocap-rover/camd.json
+Restart=always
+RestartSec=1
+User=pi
+Group=video
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
