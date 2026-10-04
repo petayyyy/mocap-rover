@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 artifacts/
 models/sam2/
+cpp/build/
