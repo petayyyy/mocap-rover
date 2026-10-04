@@ -18,7 +18,7 @@
 Как mocap связан с навигацией, порядок подготовки стенда и запуск —
 [`br_lidar/mocap/docs/INTEGRATION.md`](https://github.com/mi1en/br_lidar/blob/migrate-mocap-rover/mocap/docs/INTEGRATION.md).
 
-## Что уже перенесено (на 4 октября 2026)
+## Что уже перенесено (на вечер 4 октября 2026)
 
 | mocap-rover | Что | В br_lidar |
 |---|---|---|
@@ -26,6 +26,7 @@
 | `b3b2427` | SAM2 как второе мнение для соперника | `11183c0` на `migrate-mocap-rover` |
 | `9a15543` | инструкция по железу и скрипты установки | `397109f` на `migrate-mocap-rover` |
 | `35da4b6` | станция калибровки ChArUco | `8556cda` на `migrate-mocap-rover` |
+| `field/round2-h264`: `4053997` … `e9c229f` (10 коммитов) | полевой тест раунд 2, H.264, C++-узел `mocap_camd`, приёмник `mocap_rx`, реплей потока H.264, сценарии камер | `ddb96a0` … `4e01bb0` на `migrate-mocap-rover` |
 
 Ветка `migrate-mocap-rover` в br_lidar = `main` + влитая `pult-ui` + три коммита выше +
 интеграция: живой тракт `mocap/scripts/run_mocap_live.py`, приём поз в пульте
@@ -34,17 +35,13 @@
 
 ## Что ещё НЕ перенесено
 
-| Где | Коммиты | Что |
-|---|---|---|
-| ветка `field/round2-h264` | `4053997`, `29416f5` | полевой тест, раунд 2: поиск неисправности коммутатора, профиль с одним окном, проба H.264 (`pi_cam/h264_probe.py`) |
-| рабочая копия на ноутбуке (не закоммичено) | — | правки `localization_contracts/camera_worker.py`, `scripts/replay_dataset.py` |
+На вечер 4 октября 2026 — ничего: всё до `e9c229f` ветки `field/round2-h264` в br_lidar.
+Поверх переноса в br_lidar сделано (коммит `26b83cb`): живой тракт и станция калибровки
+читают кадры основного сценария из `/dev/shm` (`--source shm`), исправлен Bayer в
+Python-путях (`BayerBG` → явные `BayerBGGR`).
 
-Ветка `fix/camera-model-and-async-fusion` уже влита в `main`, переносить нечего.
-
-Незакоммиченные правки сначала закоммитить (в `field/round2-h264` или новую ветку) и
-запушить в mocap-rover, потом переносить по порядку ниже. Оба файла в br_lidar уже
-изменены интеграцией (там добавлен живой режим), так что при переносе возможен конфликт:
-разрешать, сохраняя обе стороны.
+Всё, что появится здесь после `e9c229f` (в любой ветке), переносить по разделу ниже и
+дописывать в таблицу выше.
 
 ## Как перенести коммит из mocap-rover в br_lidar
 
@@ -64,14 +61,14 @@
 2. Достать объекты mocap-rover (нужны для трёхстороннего слияния):
 
    ```bash
-   git fetch https://github.com/petayyyy/mocap-rover.git field/round2-h264:refs/tmp/mocap-rover
+   git fetch https://github.com/petayyyy/mocap-rover.git <ветка>:refs/tmp/mocap-rover
    ```
 
-3. Сделать патчи и наложить их с префиксом `mocap/` (пример — два коммита
-   `field/round2-h264`):
+3. Сделать патчи от последнего перенесённого коммита (сейчас `e9c229f`) и наложить их
+   с префиксом `mocap/`:
 
    ```bash
-   git format-patch -o /tmp/mr-patches 35da4b6..refs/tmp/mocap-rover
+   git format-patch -o /tmp/mr-patches e9c229f..refs/tmp/mocap-rover
    ```
 
    ```bash
