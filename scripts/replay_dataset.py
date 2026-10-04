@@ -61,7 +61,7 @@ from localization_contracts.camera_model import CameraModel  # noqa: E402
 from localization_contracts.detector import PROFILES  # noqa: E402
 from localization_contracts.marker_families import normalize_marker_family  # noqa: E402
 from localization_contracts.rover_filter import (  # noqa: E402
-    AsyncObservationBuffer, ImmRoverFilter, Measurement, POSITION, YAW, YAW_ONLY,
+    AsyncObservationBuffer, ImmRoverFilter, Measurement, OMEGA, POSITION, VX, VY, YAW, YAW_ONLY,
     measurement_from_observation, observation_stamp_ns,
 )
 from localization_contracts.contracts import Observation, SCHEMA_VERSION, FRAME_ARENA  # noqa: E402
@@ -70,6 +70,8 @@ from localization_contracts.opponent_camera import OpponentCamera, SILHOUETTE  #
 from localization_contracts.camera_worker import POOLS, REACQUIRE_PERIOD_NS, scaled_camera  # noqa: E402
 from localization_contracts.cuboid import localize_box  # noqa: E402
 from localization_contracts.link_emulation import LinkModel, MODES as LINK_MODES  # noqa: E402
+from localization_contracts.small_stream_codec import (  # noqa: E402
+    CODECS as SMALL_CODECS, size_summary as small_size_summary)
 
 # Opponent cuboid as the operator sees it: 0.9 x 0.52 m, top at 0.483 m.
 OPPONENT_SIZE_M = (0.9, 0.52, 0.483)
@@ -147,6 +149,38 @@ def parse_args(argv=None):
                         "(e.g. 640x480@30); the marker keeps the full frames")
     p.add_argument("--opponent-stream-stagger", action="store_true",
                    help="spread the cameras' small frames evenly over the stream period")
+    p.add_argument("--opponent-stream-codec", choices=SMALL_CODECS, default="y8",
+                   help="how the node sends the small stream: y8 raw grey (default), jpeg "
+                        "per frame, or h264 (one persistent x264 stream per camera emulating "
+                        "the CM4 hardware encoder: no B-frames, zerolatency, VBR); needs "
+                        "--opponent-stream and --link-emulation cm4/cm5")
+    p.add_argument("--opponent-stream-bitrate", type=float, default=4.0, metavar="MBIT",
+                   help="h264 target bitrate per camera, Mbit/s (ceiling 1.5x)")
+    p.add_argument("--opponent-stream-gop-s", type=float, default=0.2,
+                   help="h264 keyframe period, seconds (GOP = round(rate * this))")
+    p.add_argument("--opponent-stream-jpeg-quality", type=int, default=90)
+    p.add_argument("--opponent-stream-link-as-y8", action="store_true",
+                   help="experiment: the codec changes the small frames' pixels, but the "
+                        "link model still carries them as raw y8 (separates image quality "
+                        "from the port-timing gain of a smaller stream)")
+    p.add_argument("--full-stream-codec", choices=("none", "h264"), default="none",
+                   help="h264: every camera sends ONLY its whole frame as H.264 (one persistent "
+                        "x264 stream per camera, as --opponent-stream-codec h264); no marker "
+                        "windows from the node, no separate small stream.  The laptop decodes, "
+                        "cuts the marker windows out losslessly and reduces the frame for the "
+                        "opponent (--opponent-stream WxH@HZ) like the node's scale_luma.  Only "
+                        "frames on the --full-stream-fps grid exist; each reaches the tract "
+                        "--full-stream-latency-ms + |N(0, jitter)| after its stamp.  Needs "
+                        "--link-emulation cm4/cm5 (the sensor path); the port model is not used")
+    p.add_argument("--full-stream-fps", type=float, default=50.0)
+    p.add_argument("--full-stream-bitrate", type=float, default=15.0, metavar="MBIT")
+    p.add_argument("--full-stream-gop-s", type=float, default=0.2)
+    p.add_argument("--full-stream-latency-ms", type=float, default=68.0,
+                   help="stamp to arrival in the tract, the fixed part (default with jitter "
+                        "16.3: P50 79, P95 100 ms, as measured on a CM4)")
+    p.add_argument("--full-stream-latency-jitter-ms", type=float, default=16.3,
+                   help="sigma of the half-normal added to --full-stream-latency-ms")
+    p.add_argument("--full-stream-seed", type=int, default=0)
     p.add_argument("--tag-max-cameras", type=int, default=0,
                    help="at most this many cameras get a marker window per instant, the "
                         "nearest to the predicted tag_rover; 0 = no limit")
@@ -319,6 +353,20 @@ def parse_args(argv=None):
             p.error("--sam2-mode needs the opponent track (--camera-background)")
         if a.sam2_max_cameras < 1 or a.sam2_hz <= 0:
             p.error("--sam2-max-cameras and --sam2-hz must be positive")
+    if a.opponent_stream_codec != "y8":
+        if not a.opponent_stream or a.link_emulation == "ideal":
+            p.error("--opponent-stream-codec needs --opponent-stream and --link-emulation cm4/cm5")
+        if a.opponent_stream_bitrate <= 0 or a.opponent_stream_gop_s <= 0:
+            p.error("--opponent-stream-bitrate and --opponent-stream-gop-s must be positive")
+    if a.full_stream_codec != "none":
+        if a.link_emulation == "ideal":
+            p.error("--full-stream-codec needs --link-emulation cm4/cm5 (the sensor path)")
+        if a.opponent_stream_codec != "y8":
+            p.error("--full-stream-codec: the small frame comes from the decoded full frame; "
+                    "drop --opponent-stream-codec")
+        if a.full_stream_fps <= 0 or a.full_stream_bitrate <= 0 or a.full_stream_gop_s <= 0 \
+                or a.full_stream_latency_ms < 0 or a.full_stream_latency_jitter_ms < 0:
+            p.error("--full-stream-* must be positive")
     if a.seconds < 0:
         p.error("--seconds must be nonnegative")
     if a.transport_ms < 0 or a.processing_ms < 0:
@@ -559,13 +607,19 @@ class Replay:
                              "reasons": collections.Counter(), "tag_ms": [],
                              "opponent_ms": [], "background_update_ms": [],
                              "opponent_reasons": collections.Counter(),
+                             "small_stream_bytes": [], "full_stream_bytes": [],
+                             "full_stream_arrival_ms": [],
                              "stages": collections.defaultdict(list)} for cid in cams}
         self.batch_ms = []
         self.main_ms = {"plan": [], "apply": [], "publish": []}
         self.lidar_ms = []
         self.last_clock_ns = None
         self.errors = []
-        self.link = LinkModel(a.link_emulation) if a.link_emulation != "ideal" else None
+        # The full-frame stream has no node-side windows and no port model:
+        # its frames arrive by the measured latency (build_events).
+        self.full_stream = a.full_stream_codec != "none"
+        self.link = (LinkModel(a.link_emulation)
+                     if a.link_emulation != "ideal" and not self.full_stream else None)
         self.link_latency_ms = collections.defaultdict(list)
         self.link_counts = collections.Counter()
         self.link_row_ms = []
@@ -606,12 +660,33 @@ class Replay:
 
     # ------------------------------------------------------------ filter side
 
-    def track_prediction(self, now_ns):
-        """(x, y, sigma) of the tag_rover track, or None when there is none."""
+    @staticmethod
+    def state_back_at(f, at_ns):
+        """The track at ``at_ns``, which may be older than the filter's own time.
+
+        ``state_at`` never predicts backwards; a frame that arrives late
+        (full-frame stream) is planned for its own stamp, so the position is
+        taken back along the velocity.
+        """
+        state, covariance, mu = f.state_at(at_ns)
+        if f.stamp_ns is not None and f.stamp_ns > at_ns:
+            state = np.array(state, dtype=float)
+            dt = (int(at_ns) - int(f.stamp_ns)) / 1e9
+            state[0] += state[VX] * dt
+            state[1] += state[VY] * dt
+            state[YAW] += state[OMEGA] * dt
+        return state, covariance, mu
+
+    def track_prediction(self, now_ns, at_ns=None):
+        """(x, y, sigma) of the tag_rover track, or None when there is none.
+
+        ``at_ns``: the instant the position is for (default ``now_ns``).
+        """
         f = self.filters["tag_rover"]
         if not f.initialized or f.tracking_state(now_ns) == "LOST":
             return None
-        state, covariance, _ = f.state_at(now_ns)
+        state, covariance, _ = (f.state_at(now_ns) if at_ns is None
+                                else self.state_back_at(f, at_ns))
         return (float(state[0]), float(state[1]),
                 float(math.sqrt(max(covariance[0, 0], covariance[1, 1]))))
 
@@ -763,14 +838,23 @@ class Replay:
                 "opponent_stream": (None if not a.opponent_stream else
                                     [*map(int, a.opponent_stream.split("@")[0].split("x")),
                                      float(a.opponent_stream.split("@")[1]),
-                                     len(self.cams) if a.opponent_stream_stagger else 0])}
+                                     len(self.cams) if a.opponent_stream_stagger else 0]),
+                "full_stream": ({"codec": a.full_stream_codec, "fps": a.full_stream_fps,
+                                 "bitrate_mbit": a.full_stream_bitrate,
+                                 "gop_s": a.full_stream_gop_s} if self.full_stream else None),
+                "small_stream_codec": {"codec": a.opponent_stream_codec,
+                                       "bitrate_mbit": a.opponent_stream_bitrate,
+                                       "gop_s": a.opponent_stream_gop_s,
+                                       "jpeg_quality": a.opponent_stream_jpeg_quality,
+                                       "link_as_y8": a.opponent_stream_link_as_y8}}
 
-    def pose_of(self, name, now_ns):
+    def pose_of(self, name, now_ns, at_ns=None):
         """(x, y, yaw, sigma) of a live track, or None."""
         f = self.filters.get(name)
         if f is None or not f.initialized or f.tracking_state(now_ns) == "LOST":
             return None
-        state, covariance, _ = f.state_at(now_ns)
+        state, covariance, _ = (f.state_at(now_ns) if at_ns is None
+                                else self.state_back_at(f, at_ns))
         return (float(state[0]), float(state[1]), float(state[YAW]),
                 float(math.sqrt(max(covariance[0, 0], covariance[1, 1]))))
 
@@ -778,14 +862,18 @@ class Replay:
         """Main thread: what every camera needs from the filters for this instant.
 
         Only track poses and flags; each camera plans its own windows from them.
+        Full-frame stream: the frame arrives after its stamp and is planned
+        on arrival, for its stamp.
         """
-        tag = self.pose_of("tag_rover", now_ns) if self.opponent_enabled else None
-        opp = self.pose_of("opponent", now_ns) if self.opponent_enabled else None
         stamp = int(items[0][1]["stamp_ns"])
+        at = stamp if self.full_stream else None
+        tag = self.pose_of("tag_rover", now_ns, at) if self.opponent_enabled else None
+        opp = self.pose_of("opponent", now_ns, at) if self.opponent_enabled else None
         operator = (self.opponent_enabled and self.operator_box is not None
                     and not self.operator_done and stamp == self.operator_box["stamp_ns"])
         common = {"now_ns": now_ns,
-                  "prediction": None if self.a.no_roi_tracking else self.track_prediction(now_ns),
+                  "prediction": (None if self.a.no_roi_tracking
+                                 else self.track_prediction(now_ns, at)),
                   "opponent_enabled": self.opponent_enabled, "tag": tag, "opp": opp,
                   "operator_done": self.operator_done}
         allowed = None
@@ -832,6 +920,10 @@ class Replay:
         return {cid for cid in chosen if stamp >= self.sam2_next_ns[cid]}
 
     def camera_batch(self, now_ns, items):
+        if self.full_stream and len({int(row["stamp_ns"]) for _, row in items}) > 1:
+            for item in items:                 # one plan per frame stamp
+                self.camera_batch(now_ns, [item])
+            return
         begin = time.perf_counter_ns()
         contexts = self.frame_context(now_ns, items)
         self.main_ms["plan"].append((time.perf_counter_ns() - begin) / 1e6)
@@ -945,6 +1037,12 @@ class Replay:
             for stage, value in result.get("stages", {}).items():
                 timing["stages"][stage].append(value)
             timing["decode_ms"].append(result["decode_ms"])
+            if result.get("full_stream_bytes") is not None:
+                timing["full_stream_bytes"].append(result["full_stream_bytes"])
+                timing["full_stream_arrival_ms"].append(
+                    (int(row["arrival_ns"]) - result["stamp"]) / 1e6)
+            if result.get("small_stream_bytes") is not None:
+                timing["small_stream_bytes"].append(result["small_stream_bytes"])
             timing["by_mode"][plan.mode].append(result["latency_ms"])
             if job is not None and job["plan"].mode != roi_tracker.IDLE:
                 timing["opponent_ms"].append(result["opponent_ms"])
@@ -1383,11 +1481,32 @@ class Replay:
         self.stamps_by_camera = {cid: {} for cid in self.cams}
         last = self.t0
         self.frames_scheduled = 0
-        for cid in sorted(index):
+        period_ns = int(round(1e9 / a.full_stream_fps)) if self.full_stream else 0
+        for number, cid in enumerate(sorted(index)):
+            rng = np.random.default_rng([a.full_stream_seed, number])
+            next_ns = arrived_ns = None
             for row in index[cid]:
                 stamp = int(row["stamp_ns"])
                 if limit is not None and stamp >= limit:
                     break
+                if self.full_stream:
+                    # Only the frames on the stream's grid exist for the tract;
+                    # each arrives after the node's encode, the network and the
+                    # decode, in order (one stream per camera).
+                    if next_ns is not None and stamp < next_ns:
+                        continue
+                    next_ns = (next_ns or stamp) + period_ns
+                    while next_ns <= stamp:
+                        next_ns += period_ns
+                    delay = a.full_stream_latency_ms + abs(rng.normal(0.0, a.full_stream_latency_jitter_ms)) \
+                        if a.full_stream_latency_jitter_ms else a.full_stream_latency_ms
+                    arrival = max(stamp + int(round(delay * 1e6)), arrived_ns or 0)
+                    arrived_ns = arrival
+                    self.stamps_by_camera[cid][stamp] = int(row["index"])
+                    self.push(arrival, CAMERA, (cid, {**row, "arrival_ns": arrival}))
+                    self.frames_scheduled += 1
+                    last = max(last, arrival)
+                    continue
                 self.stamps_by_camera[cid][stamp] = int(row["index"])
                 # Under link emulation a frame is planned and read at its
                 # stamp (the node has the window request before exposure) and
@@ -1583,6 +1702,18 @@ class Replay:
                 "opponent_max_cameras": a.opponent_max_cameras,
                 "tag_max_cameras": a.tag_max_cameras,
                 "opponent_stream": a.opponent_stream,
+                "opponent_stream_codec": a.opponent_stream_codec,
+                "opponent_stream_bitrate_mbit": a.opponent_stream_bitrate,
+                "opponent_stream_gop_s": a.opponent_stream_gop_s,
+                "opponent_stream_jpeg_quality": a.opponent_stream_jpeg_quality,
+                "opponent_stream_link_as_y8": a.opponent_stream_link_as_y8,
+                "full_stream_codec": a.full_stream_codec,
+                "full_stream_fps": a.full_stream_fps,
+                "full_stream_bitrate_mbit": a.full_stream_bitrate,
+                "full_stream_gop_s": a.full_stream_gop_s,
+                "full_stream_latency_ms": a.full_stream_latency_ms,
+                "full_stream_latency_jitter_ms": a.full_stream_latency_jitter_ms,
+                "full_stream_seed": a.full_stream_seed,
                 "acquire_full_frame_hz": a.acquire_full_frame_hz,
                 "transport_ms": a.transport_ms if a.link_emulation == "ideal" else None,
                 "link_line_time_ns_reported_only": a.link_line_time_ns,
@@ -1611,6 +1742,7 @@ class Replay:
                 "latency_ms_by_mode": {k: summary(v) for k, v in sorted(t["by_mode"].items())},
                 "decode_ms": summary(t["decode_ms"] + t["idle_decode_ms"]),
                 "stages_ms": {k: summary(v) for k, v in sorted(t["stages"].items())},
+                "small_stream": self.small_stream_summary(t["small_stream_bytes"]),
             }
         sim_seconds = (self.end_ns - self.t0) / 1e9
         frames = processed + idle
@@ -1653,9 +1785,40 @@ class Replay:
             "jpeg_decode_ms": summary([v for t in self.timing.values()
                                        for v in t["stages"].get("jpeg_decode_ms", [])]),
             "link": self.link_report(),
+            "full_stream": ({"codec": self.a.full_stream_codec, "fps": self.a.full_stream_fps,
+                             "bitrate_target_mbit": self.a.full_stream_bitrate,
+                             "gop_s": self.a.full_stream_gop_s,
+                             "latency_model_ms": [self.a.full_stream_latency_ms,
+                                                  self.a.full_stream_latency_jitter_ms],
+                             "arrival_ms": summary([v for t in self.timing.values()
+                                                    for v in t["full_stream_arrival_ms"]]),
+                             "all_cameras": small_size_summary(
+                                 [v for t in self.timing.values() for v in t["full_stream_bytes"]],
+                                 self.a.full_stream_fps),
+                             "cameras": {cid: small_size_summary(t["full_stream_bytes"],
+                                                                 self.a.full_stream_fps)
+                                         for cid, t in sorted(self.timing.items())}}
+                            if self.full_stream else None),
+            "small_stream": ({"codec": self.a.opponent_stream_codec,
+                              "bitrate_target_mbit": self.a.opponent_stream_bitrate
+                              if self.a.opponent_stream_codec == "h264" else None,
+                              "gop_s": self.a.opponent_stream_gop_s
+                              if self.a.opponent_stream_codec == "h264" else None,
+                              "jpeg_quality": self.a.opponent_stream_jpeg_quality
+                              if self.a.opponent_stream_codec == "jpeg" else None,
+                              "all_cameras": self.small_stream_summary(
+                                  [v for t in self.timing.values()
+                                   for v in t["small_stream_bytes"]])}
+                             if self.a.opponent_stream else None),
             "sam2": self.sam2_report(),
             "cameras": per_camera,
         }
+
+    def small_stream_summary(self, sizes):
+        """Encoded size of the small frames sent (link emulation only)."""
+        if not self.a.opponent_stream:
+            return None
+        return small_size_summary(sizes, float(self.a.opponent_stream.split("@")[1]))
 
     def link_report(self):
         """Port load and arrival times under link emulation; None for ideal."""

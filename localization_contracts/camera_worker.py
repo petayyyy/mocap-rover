@@ -39,6 +39,7 @@ from .image_pipeline import OneCameraImagePipeline
 from .link_emulation import SensorPath, clip_roi, jpeg_roundtrip
 from .opponent_camera import OpponentCamera
 from .ray_plane import pixel_rays, ray_plane
+from .small_stream_codec import SmallStreamCodec, scale_like_node
 
 # A lost opponent is looked for over the whole frame at most this often per
 # camera.
@@ -109,6 +110,35 @@ class CameraWorker:
         self.opp_size = self.opp_period_ns = self.opp_next_ns = None
         self.opp_phase_ns = 0
         self.opp_camera, self.opp_model, self.opp_scale = cam, self.model, (1.0, 1.0)
+        # Replay only: the small stream through a codec (``small_stream_codec``:
+        # jpeg or h264; y8 or absent = raw grey, the frames untouched).  One
+        # codec per camera, fed every small frame the node sends, in order.
+        self.small_codec = None
+        codec_spec = spec.get("small_stream_codec") or {}
+        # Experiment only: the port still carries the raw y8 frame, so a
+        # codec's effect on the pixels is seen apart from its effect on timing.
+        self.small_link_as_y8 = bool(codec_spec.get("link_as_y8", False))
+        if stream and codec_spec.get("codec", "y8") != "y8":
+            if self.sensor is None:
+                raise ValueError("a small-stream codec needs link emulation (cm4/cm5)")
+            self.small_codec = SmallStreamCodec(
+                codec_spec["codec"], int(stream[0]), int(stream[1]), float(stream[2]),
+                bitrate_mbit=codec_spec.get("bitrate_mbit", 4.0),
+                gop_s=codec_spec.get("gop_s", 0.2),
+                jpeg_quality=codec_spec.get("jpeg_quality", 90))
+        # Replay only: every camera sends only its whole frame as H.264
+        # (``full_stream``); the laptop decodes it, cuts the marker windows
+        # out of it and reduces it for the opponent as the node would.  The
+        # main process sends only the frames on the stream's grid.
+        self.full_codec = None
+        full = spec.get("full_stream")
+        if full:
+            if self.sensor is None:
+                raise ValueError("the full-frame stream needs link emulation (cm4/cm5)")
+            width, height = (int(v) for v in cam["image_size"])
+            self.full_codec = SmallStreamCodec(
+                full["codec"], width, height, float(full["fps"]),
+                bitrate_mbit=full.get("bitrate_mbit", 15.0), gop_s=full.get("gop_s", 0.2))
         if stream:
             w, h, hz = int(stream[0]), int(stream[1]), float(stream[2])
             self.opp_camera, (sx, sy) = scaled_camera(cam, w, h)
@@ -137,6 +167,27 @@ class CameraWorker:
             convert = self.sensor or (lambda image: image)
             shrink = ((lambda image: cv2.resize(image, self.opp_size, interpolation=cv2.INTER_AREA))
                       if self.opp_size else (lambda image: image))
+            if self.full_codec is not None:
+                # The empty arena comes through the same full-frame stream
+                # (a codec of its own) and the node's reduction.
+                clip_codec = SmallStreamCodec(
+                    self.full_codec.codec, self.full_codec.width, self.full_codec.height,
+                    self.full_codec.rate_hz, bitrate_mbit=self.full_codec.bitrate / 1e6,
+                    gop_s=self.full_codec.gop / self.full_codec.rate_hz)
+                size = self.opp_size
+                shrink = lambda image: (  # noqa: E731
+                    clip_codec.roundtrip_rgb(image)[0] if size is None
+                    else scale_like_node(clip_codec.roundtrip_rgb(image)[0], *size))
+            if self.small_codec is not None:
+                # The empty arena is learnt from the same stream: its frames
+                # go through a codec of their own (the live one stays clean).
+                clip_codec = SmallStreamCodec(
+                    self.small_codec.codec, *self.opp_size, self.small_codec.rate_hz,
+                    bitrate_mbit=self.small_codec.bitrate / 1e6,
+                    gop_s=self.small_codec.gop / self.small_codec.rate_hz,
+                    jpeg_quality=self.small_codec.jpeg_quality)
+                plain_shrink = shrink
+                shrink = lambda image: clip_codec.roundtrip_rgb(plain_shrink(image))[0]  # noqa: E731
             background = ClipBackground.from_frames(
                 (shrink(convert(clip.read_image(int(row["index"])))) for row in rows[::opponent["stride"]]),
                 threshold=opponent["threshold"], alpha=opponent["alpha"])
@@ -247,7 +298,8 @@ class CameraWorker:
         cid = self.camera_id
         busy = plan.mode != roi_tracker.IDLE or (
             job is not None and job["plan"].mode != roi_tracker.IDLE) or (
-            self.sensor is not None and getattr(self, "opp_tick", False)) or self.want_sam2
+            self.sensor is not None and getattr(self, "opp_tick", False)) or self.want_sam2 or (
+            self.full_codec is not None)          # every frame of the stream is decoded
         begin = time.perf_counter_ns()
         index = int(row["index"])
         if self.prefetched is not None and self.prefetched[0] == index:
@@ -266,10 +318,29 @@ class CameraWorker:
             raise ValueError(f"{cid}: image size differs from calibration")
         link_windows, jpeg_decode_ms = [], 0.0
         opponent_image = image
-        if self.sensor is not None:
+        small_coded = False
+        small_bytes = small_decode_ms = None
+        full_bytes, full_decode_ms = None, 0.0
+        if self.full_codec is not None:
+            image, full_bytes, full_decode_ms = self.full_codec.roundtrip_rgb(self.sensor(image))
+            opponent_image = image
+            link_windows = [(image.shape[1], image.shape[0], self.full_codec.codec, full_bytes)]
+        elif self.sensor is not None:
             image, opponent_image, link_windows, jpeg_decode_ms = self.emulate_link(image, plan, job)
+            if self.small_codec is not None and getattr(self, "opp_tick", False):
+                # Every small frame the node sends goes through this camera's
+                # stream, read or not; the laptop sees the decoded one.
+                small = cv2.resize(opponent_image, self.opp_size, interpolation=cv2.INTER_AREA)
+                opponent_image, small_bytes, small_decode_ms = self.small_codec.roundtrip_rgb(small)
+                small_coded = True
+                w, h, fmt, _ = link_windows[-1]
+                assert (w, h, fmt) == (*self.opp_size, "raw"), link_windows[-1]
+                if not self.small_link_as_y8:
+                    link_windows[-1] = (w, h, self.small_codec.codec, small_bytes)
+            elif self.opp_size and getattr(self, "opp_tick", False):
+                small_bytes = self.opp_size[0] * self.opp_size[1]     # y8, as sent
         stamp = frame.stamp_ns
-        received = frame.receive_ns
+        received = int(row.get("arrival_ns", frame.receive_ns))
         processed = received + self.processing_ns
         pipe = self.pipe
         begin = time.perf_counter_ns()
@@ -301,7 +372,9 @@ class CameraWorker:
                   "received": received, "processed": processed,
                   "opponent_ms": 0.0, "background_update_ms": 0.0}
         if job is not None or self.want_sam2:
-            if self.opp_size:
+            if self.opp_size and self.full_codec is not None:
+                opponent_image = scale_like_node(opponent_image, *self.opp_size)
+            elif self.opp_size and not small_coded:
                 opponent_image = cv2.resize(opponent_image, self.opp_size, interpolation=cv2.INTER_AREA)
             if self.blackout:
                 opponent_image = self.blackout_image.copy()
@@ -310,11 +383,18 @@ class CameraWorker:
         if self.want_sam2:
             result["sam2_image"] = opponent_image
         # The laptop decodes the JPEG windows; that is part of its frame time.
-        result["latency_ms"] = tag_ms + result["opponent_ms"] + jpeg_decode_ms
+        result["latency_ms"] = tag_ms + result["opponent_ms"] + jpeg_decode_ms + full_decode_ms
         result["link_windows"] = link_windows
         result["jpeg_decode_ms"] = jpeg_decode_ms
         if self.sensor is not None:
             result["stages"]["jpeg_decode_ms"] = jpeg_decode_ms
+        if small_bytes is not None:
+            result["small_stream_bytes"] = small_bytes
+        if small_coded:
+            result["stages"]["small_stream_decode_ms"] = small_decode_ms
+        if full_bytes is not None:
+            result["full_stream_bytes"] = full_bytes
+            result["stages"]["full_stream_decode_ms"] = full_decode_ms
         return result
 
     def emulate_link(self, rgb, plan, job):
