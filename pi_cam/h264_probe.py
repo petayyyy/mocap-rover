@@ -95,6 +95,18 @@ CID_H264_LEVEL = CID_CODEC_BASE + 359
 CID_H264_PROFILE = CID_CODEC_BASE + 363
 BITRATE_MODES = {"vbr": 0, "cbr": 1}
 H264_LEVELS = {"4.0": 11, "4.1": 12, "4.2": 13, "5.0": 14, "5.1": 15}
+# Macroblocks per second each level allows (H.264 table A-1).  The CM4's
+# firmware refuses to start streaming above the level it is given: 1640x1232
+# at 83 fps under 4.2 fails STREAMON with ESRCH ("Failed enabling i/p port").
+H264_LEVEL_MBPS = {"4.0": 245760, "4.1": 245760, "4.2": 522240, "5.0": 589824, "5.1": 983040}
+
+
+def pick_level(width, height, fps):
+    """The lowest of 4.2 / 5.1 that covers the stream's macroblock rate."""
+    mbps = ((width + 15) // 16) * ((height + 15) // 16) * fps
+    return "4.2" if mbps <= H264_LEVEL_MBPS["4.2"] else "5.1"
+
+
 H264_PROFILES = {"baseline": 0, "constrained_baseline": 1, "main": 2, "high": 4}
 
 
@@ -249,9 +261,11 @@ class V4L2H264Encoder:
     """
 
     def __init__(self, device, width, height, fps, bitrate, gop, profile="high",
-                 level="4.2", rate_mode="vbr", out_buffers=2, cap_buffers=4,
+                 level="auto", rate_mode="vbr", out_buffers=2, cap_buffers=4,
                  keep_data=False, on_output=None):
         self.width, self.height = width, height
+        if level == "auto":
+            level = pick_level(width, height, fps)
         self.on_output = on_output
         self.keep_data = keep_data
         self.fd = os.open(device, os.O_RDWR | os.O_NONBLOCK)
@@ -592,9 +606,38 @@ def run_case(sensor, case, a, device, make_encoder=V4L2H264Encoder, first_id=1):
             sensor.capture().release()
 
         rows = []               # (id, exp_start, in_python, prepared, queued)
-        skipped_busy = sensor_frames = submitted = 0
+        counts = {"skipped_busy": 0, "skipped_prep": 0}
+        sensor_frames = 0
         seqs = []
         last_tick = None
+        # As in the node: the capture thread only copies the frame out and
+        # releases it; the reduction (or demosaic) and the encoder run on a
+        # worker, so a slow step drops frames instead of queueing the camera.
+        handoff = collections.deque(maxlen=1)
+        ready = threading.Event()
+        stopping = threading.Event()
+
+        def worker():
+            fid = next_id
+            while not (stopping.is_set() and not handoff):
+                if not ready.wait(0.05):
+                    continue
+                ready.clear()
+                try:
+                    raw_copy, exp_start, in_python = handoff.popleft()
+                except IndexError:
+                    continue
+                gray = prepare(raw_copy, width, height, a.raw)
+                prepared = boottime_ns()
+                queued = encoder.submit(gray, fid)
+                if queued is None:
+                    counts["skipped_busy"] += 1
+                    continue
+                rows.append((fid, exp_start, in_python, prepared, queued))
+                fid += 1
+
+        thread = threading.Thread(target=worker, daemon=True, name="prep")
+        thread.start()
         cpu = CpuMeter()
         start = time.monotonic()
         save_until = boottime_ns() + int(a.save_seconds * 1e9)
@@ -611,17 +654,18 @@ def run_case(sensor, case, a, device, make_encoder=V4L2H264Encoder, first_id=1):
                     frame.release()
                     continue
                 last_tick = tick
-            gray = prepare(frame.y, width, height, a.raw)
+            raw_copy = np.array(frame.y, copy=True)
             exp_start = stamp - frame.exposure_ns
             frame.release()
-            prepared = boottime_ns()
-            queued = encoder.submit(gray, next_id)
-            if queued is None:
-                skipped_busy += 1
-                continue
-            rows.append((next_id, exp_start, in_python, prepared, queued))
-            submitted += 1
-            next_id += 1
+            if handoff:
+                counts["skipped_prep"] += 1      # the worker has not taken the last one
+            handoff.append((raw_copy, exp_start, in_python))
+            ready.set()
+        stopping.set()
+        ready.set()
+        thread.join(timeout=2.0)
+        submitted = len(rows)
+        skipped_busy = counts["skipped_busy"]
         elapsed = time.monotonic() - start
         cpu_result = cpu.percent()
         time.sleep(0.5)         # the last frames in flight
@@ -655,6 +699,7 @@ def run_case(sensor, case, a, device, make_encoder=V4L2H264Encoder, first_id=1):
         "sensor_frames": sensor_frames,
         "sensor_missed": int(np.sum(np.clip(gaps - 1, 0, None))),
         "submitted": submitted, "skipped_encoder_busy": skipped_busy,
+        "skipped_prep_busy": counts["skipped_prep"],
         "encoded": encoded, "lost_in_encoder": submitted - encoded,
         "input_fps": round(submitted / elapsed, 2), "encoded_fps": round(encoded / elapsed, 2),
         "released_before_next_input": round(before_next / max(len(rows) - 1, 1), 3),
@@ -671,11 +716,11 @@ def run_case(sensor, case, a, device, make_encoder=V4L2H264Encoder, first_id=1):
 
 
 def print_case(r):
+    if "error" in r:
+        print(f"\n== {r['case']}\n  ERROR: {r['error']}")
+        return
     print(f"\n== {r['case']}  ({r['width']}x{r['height']}, rate {r['rate_hz']}, "
           f"GOP {r['gop_frames']}, {r['bitrate_mbit_s']:g} Mbit/s target)")
-    if "error" in r:
-        print(f"  ERROR: {r['error']}")
-        return
     enc = r.get("encoder", {})
     print(f"  encoder          {enc.get('card')} {enc.get('device')}, stride {enc.get('stride')}, "
           f"controls {enc.get('controls')}")
@@ -683,7 +728,8 @@ def print_case(r):
     print(f"  hold test        {h['released_alone']}/{h['sent']} frames released alone "
           f"{h['latencies_ms']} -> {'HOLDS A FRAME' if h['holds_a_frame'] else 'no hold'}")
     print(f"  frames           sensor {r['sensor_frames']} (missed {r['sensor_missed']}), "
-          f"submitted {r['submitted']}, encoder busy {r['skipped_encoder_busy']}, "
+          f"prep busy {r['skipped_prep_busy']}, submitted {r['submitted']}, "
+          f"encoder busy {r['skipped_encoder_busy']}, "
           f"encoded {r['encoded']}, lost {r['lost_in_encoder']}")
     print(f"  rate             in {r['input_fps']} fps, out {r['encoded_fps']} fps; "
           f"frame k out before k+1 in: {r['released_before_next_input'] * 100:.1f} %")
@@ -710,7 +756,8 @@ def parse_args(argv=None):
     p.add_argument("--rate-mode", choices=sorted(BITRATE_MODES), default="vbr")
     p.add_argument("--gop-s", type=float, default=0.2, help="keyframe period, seconds")
     p.add_argument("--profile", choices=sorted(H264_PROFILES), default="high")
-    p.add_argument("--level", choices=sorted(H264_LEVELS), default="4.2")
+    p.add_argument("--level", choices=["auto"] + sorted(H264_LEVELS), default="auto",
+                   help="auto: 4.2, or 5.1 when the stream needs it")
     p.add_argument("--device", help="encoder device; found by its card name if omitted")
     p.add_argument("--save-dir", help="keep the H.264 of each case here (first --save-seconds)")
     p.add_argument("--save-seconds", type=float, default=10.0)
@@ -750,12 +797,12 @@ def main(argv=None, make_encoder=V4L2H264Encoder):
             try:
                 r = run_case(sensor, case, a, device, make_encoder, first_id=1 + n * 1_000_000)
             except Exception as exc:     # one case failing must not cost the others
-                r = {"case": case, "width": None, "height": None, "rate_hz": None,
-                     "gop_frames": None, "bitrate_mbit_s": None,
-                     "error": f"{type(exc).__name__}: {exc}"}
+                r = {"case": case, "error": f"{type(exc).__name__}: {exc}"}
             results["cases"].append(r)
             print_case(r)
             sys.stdout.flush()
+            if a.output:        # after every case, so a later crash keeps the rest
+                Path(a.output).write_text(json.dumps(results, indent=2, default=str))
     finally:
         sensor.stop()
     if a.output:

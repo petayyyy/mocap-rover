@@ -43,7 +43,7 @@ class FakeEncoder:
     delay_s = 0.004
     hold = False
 
-    def __init__(self, device, width, height, fps, bitrate, gop, profile="high", level="4.2",
+    def __init__(self, device, width, height, fps, bitrate, gop, profile="high", level="auto",
                  rate_mode="vbr", keep_data=False, on_output=None, **_):
         self.on_output = on_output
         self.gop = gop
@@ -107,3 +107,9 @@ def test_rates_and_counts(tmp_path):
         assert r["encoded"] == r["submitted"]
         assert r["latency_ms"]["total_exposure_to_encoded"]["p50"] > r["latency_ms"]["encoder"]["p50"]
         assert r["frame_kbytes"]["keyframes"]["n"] > 0
+
+
+def test_level_follows_the_macroblock_rate():
+    assert hp.pick_level(640, 480, 83) == "4.2"
+    assert hp.pick_level(1640, 1232, 30) == "4.2"
+    assert hp.pick_level(1640, 1232, 83) == "5.1"     # refused by the CM4 firmware under 4.2
