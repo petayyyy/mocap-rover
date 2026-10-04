@@ -346,6 +346,32 @@ class ReplayDataset(unittest.TestCase):
         if delays:
             self.assertGreaterEqual(min(delays), 70_000_000)
 
+    @unittest.skipUnless(importlib.util.find_spec("av"), "PyAV not installed")
+    def test_the_colour_full_stream_feeds_the_opponent_colour(self):
+        args = ("--link-emulation", "cm4", "--roi-max-px", "480", "--roi-jpeg-max-px", "480",
+                "--opponent-stream", "320x240@30", "--full-stream-codec", "h264",
+                "--full-stream-fps", "40", "--full-stream-bitrate", "4",
+                "--full-stream-latency-ms", "50", "--full-stream-latency-jitter-ms", "5")
+        grey = self.run_replay("full_grey", *args)
+        colour = self.run_replay("full_colour", *args, "--full-stream-color")
+        timing = json.loads((colour / "timing.json").read_text())
+        self.assertTrue(timing["full_stream"]["color"])
+        self.assertFalse(json.loads((grey / "timing.json").read_text())["full_stream"]["color"])
+        self.assertTrue(json.loads((colour / "runtime_parameters.json").read_text())
+                        ["link_emulation"]["full_stream_color"])
+        self.assertGreater(timing["full_stream"]["all_cameras"]["frames"], 0)
+        methods = {json.loads(l)["observation"]["method"]
+                   for l in (colour / "observations.jsonl").read_text().splitlines()
+                   if '"opponent"' in l}
+        self.assertIn("silhouette_extent", methods)
+        with self.assertRaises(SystemExit), open(self.root / "colour_refused.log", "w") as sink:
+            stderr, sys.stderr = sys.stderr, sink
+            try:
+                self.replay.parse_args([str(self.dataset), "--output", str(self.root / "x"),
+                                        "--full-stream-color"])
+            finally:
+                sys.stderr = stderr
+
     def test_an_existing_output_is_never_overwritten(self):
         with self.assertRaises(SystemExit):
             self.replay.main([str(self.dataset), "--output", str(self.out)])

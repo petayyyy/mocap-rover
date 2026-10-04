@@ -14,7 +14,8 @@ slice, a keyframe every ``round(rate * gop_s)`` frames, a VBR target with a
 quality at a given bitrate differ; this is the closest software stand-in.
 
 ``SmallStreamCodec.roundtrip(gray)`` returns (decoded grey, encoded bytes,
-decode ms).  The decoded frame is what the laptop sees; the bytes are what
+decode ms); ``roundtrip_color(rgb)`` sends a real colour YUV420 frame through
+the same encoder and returns the decoded Y plane and RGB.  The decoded frame is what the laptop sees; the bytes are what
 goes on the wire.
 """
 from __future__ import annotations
@@ -73,8 +74,7 @@ class SmallStreamCodec:
         dec.open()
         self._dec = dec
         if self.width % 2 or self.height % 2:
-            raise ValueError("H.264 small stream needs even width and height")
-        # U then V, each (h/2)x(w/2), packed as h/2 rows of w (from_ndarray's layout).
+            raise ValueError("H.264 small stream needs even width and height")        # U then V, each (h/2)x(w/2), packed as h/2 rows of w (from_ndarray's layout).
         self._chroma = np.full((self.height // 2, self.width), 128, np.uint8)
 
     def _h264(self, gray):
@@ -128,6 +128,55 @@ class SmallStreamCodec:
         if image.ndim == 3:
             out = np.repeat(out[:, :, None], image.shape[2], axis=2)
         return out, size, ms
+
+    def roundtrip_color(self, rgb):
+        """One colour frame (HxWx3 uint8 RGB) -> (decoded Y, decoded RGB, bytes, decode ms).
+
+        H.264 only.  The frame enters as full-range BT.601 YCbCr 4:2:0 (the
+        JPEG / sYCC matrix; its Y is exactly ``cv2.COLOR_RGB2GRAY``), chroma
+        reduced by a 2x2 area mean; the laptop gets the decoded Y plane (for
+        the marker, which reads luminance) and the frame back in RGB, chroma
+        brought up bilinearly (for the opponent and SAM2).  The decode time
+        includes that conversion.
+        """
+        import av
+        import cv2
+        if self.codec != "h264":
+            raise ValueError("a colour stream is H.264 only")
+        rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
+        h, w = self.height, self.width
+        if rgb.shape != (h, w, 3):
+            raise ValueError(f"colour frame {rgb.shape} != {(h, w, 3)}")
+        ycrcb = cv2.cvtColor(rgb, cv2.COLOR_RGB2YCrCb)
+        half = (w // 2, h // 2)
+        cr = cv2.resize(ycrcb[:, :, 1], half, interpolation=cv2.INTER_AREA)
+        cb = cv2.resize(ycrcb[:, :, 2], half, interpolation=cv2.INTER_AREA)
+        flat = np.concatenate((ycrcb[:, :, 0].ravel(), cb.ravel(), cr.ravel()))
+        frame = av.VideoFrame.from_ndarray(flat.reshape(h * 3 // 2, w), format="yuv420p")
+        frame.pts = self.frames
+        packets = self._enc.encode(frame)
+        size = sum(p.size for p in packets)
+        self.keyframes += sum(1 for p in packets if p.is_keyframe)
+        if not packets:
+            raise RuntimeError("x264 held a frame: zerolatency/no B-frames not in effect")
+        begin = time.perf_counter_ns()
+        decoded = []
+        for packet in packets:
+            decoded.extend(self._dec.decode(packet))
+        if len(decoded) != 1:
+            raise RuntimeError(f"H.264 decoder returned {len(decoded)} frames for one")
+        planes = decoded[-1].to_ndarray(format="yuv420p")
+        y = np.ascontiguousarray(planes[:h, :w])
+        rest = planes[h:].ravel()
+        quarter = half[0] * half[1]
+        cb = rest[:quarter].reshape(half[1], half[0])
+        cr = rest[quarter:2 * quarter].reshape(half[1], half[0])
+        up = lambda plane: cv2.resize(plane, (w, h), interpolation=cv2.INTER_LINEAR)  # noqa: E731
+        out = cv2.cvtColor(cv2.merge((y, up(cr), up(cb))), cv2.COLOR_YCrCb2RGB)
+        decode_ms = (time.perf_counter_ns() - begin) / 1e6
+        self.frames += 1
+        self.sizes.append(int(size))
+        return y, out, int(size), decode_ms
 
 
 def size_summary(sizes, rate_hz):

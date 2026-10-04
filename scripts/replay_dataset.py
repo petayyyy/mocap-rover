@@ -181,6 +181,12 @@ def parse_args(argv=None):
     p.add_argument("--full-stream-latency-jitter-ms", type=float, default=16.3,
                    help="sigma of the half-normal added to --full-stream-latency-ms")
     p.add_argument("--full-stream-seed", type=int, default=0)
+    p.add_argument("--full-stream-color", action="store_true",
+                   help="the full-frame stream in colour: the CM4 Bayer mosaic demosaiced to "
+                        "colour, encoded as YUV420 H.264 at the same bitrate; the marker reads "
+                        "the decoded Y plane, the opponent's background model and SAM2 the "
+                        "decoded colour frame (background difference = largest per-channel "
+                        "|frame - background|, same threshold)")
     p.add_argument("--tag-max-cameras", type=int, default=0,
                    help="at most this many cameras get a marker window per instant, the "
                         "nearest to the predicted tag_rover; 0 = no limit")
@@ -367,6 +373,8 @@ def parse_args(argv=None):
         if a.full_stream_fps <= 0 or a.full_stream_bitrate <= 0 or a.full_stream_gop_s <= 0 \
                 or a.full_stream_latency_ms < 0 or a.full_stream_latency_jitter_ms < 0:
             p.error("--full-stream-* must be positive")
+    if a.full_stream_color and a.full_stream_codec == "none":
+        p.error("--full-stream-color needs --full-stream-codec h264")
     if a.seconds < 0:
         p.error("--seconds must be nonnegative")
     if a.transport_ms < 0 or a.processing_ms < 0:
@@ -841,7 +849,8 @@ class Replay:
                                      len(self.cams) if a.opponent_stream_stagger else 0]),
                 "full_stream": ({"codec": a.full_stream_codec, "fps": a.full_stream_fps,
                                  "bitrate_mbit": a.full_stream_bitrate,
-                                 "gop_s": a.full_stream_gop_s} if self.full_stream else None),
+                                 "gop_s": a.full_stream_gop_s,
+                                 "color": a.full_stream_color} if self.full_stream else None),
                 "small_stream_codec": {"codec": a.opponent_stream_codec,
                                        "bitrate_mbit": a.opponent_stream_bitrate,
                                        "gop_s": a.opponent_stream_gop_s,
@@ -1714,6 +1723,7 @@ class Replay:
                 "full_stream_latency_ms": a.full_stream_latency_ms,
                 "full_stream_latency_jitter_ms": a.full_stream_latency_jitter_ms,
                 "full_stream_seed": a.full_stream_seed,
+                "full_stream_color": a.full_stream_color,
                 "acquire_full_frame_hz": a.acquire_full_frame_hz,
                 "transport_ms": a.transport_ms if a.link_emulation == "ideal" else None,
                 "link_line_time_ns_reported_only": a.link_line_time_ns,
@@ -1786,6 +1796,7 @@ class Replay:
                                        for v in t["stages"].get("jpeg_decode_ms", [])]),
             "link": self.link_report(),
             "full_stream": ({"codec": self.a.full_stream_codec, "fps": self.a.full_stream_fps,
+                             "color": self.a.full_stream_color,
                              "bitrate_target_mbit": self.a.full_stream_bitrate,
                              "gop_s": self.a.full_stream_gop_s,
                              "latency_model_ms": [self.a.full_stream_latency_ms,

@@ -107,6 +107,47 @@ class FullFrame(unittest.TestCase):
         self.assertEqual(codec.gop, 10)
 
 
+@unittest.skipUnless(HAVE_AV, "PyAV not installed")
+class Colour(unittest.TestCase):
+    def colour(self, seq=0):
+        grey = smooth(seq).astype(int)
+        return np.clip(np.stack((grey + 40, grey, grey - 40), axis=2), 0, 255).astype(np.uint8)
+
+    def test_colour_comes_back_as_y_and_rgb(self):
+        import cv2
+        codec = SmallStreamCodec("h264", W, H, 30, bitrate_mbit=2.0, gop_s=0.2)
+        for seq in range(8):
+            image = self.colour(seq)
+            y, rgb, size, ms = codec.roundtrip_color(image)
+        self.assertEqual((y.shape, y.dtype), ((H, W), np.uint8))
+        self.assertEqual((rgb.shape, rgb.dtype), ((H, W, 3), np.uint8))
+        self.assertGreater(size, 0)
+        self.assertGreaterEqual(ms, 0.0)
+        luma = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY).astype(int)
+        self.assertLess(np.abs(y.astype(int) - luma).mean(), 3.0)
+        error = np.abs(rgb.astype(int) - image).reshape(-1, 3).mean(axis=0)
+        self.assertLess(error.max(), 4.0)
+        # Red stays above blue: the chroma made it through.
+        self.assertGreater(rgb[..., 0].mean() - rgb[..., 2].mean(), 60)
+        self.assertEqual((codec.frames, len(codec.sizes), codec.keyframes), (8, 8, 2))
+
+    def test_full_size_colour_frame(self):
+        codec = StreamCodec("h264", 1640, 1232, 50, bitrate_mbit=15.0)
+        yy, xx = np.mgrid[0:1232, 0:1640]
+        grey = np.clip(120 + 50 * np.sin(xx / 40.0) * np.cos(yy / 60.0), 0, 255)
+        image = np.stack((grey, grey * 0.8, grey * 0.5), axis=2).astype(np.uint8)
+        y, rgb, _, _ = codec.roundtrip_color(image)
+        self.assertEqual(y.shape, (1232, 1640))
+        self.assertEqual(rgb.shape, (1232, 1640, 3))
+        self.assertLess(np.abs(rgb.astype(int) - image).mean(), 3.0)
+
+    def test_colour_needs_h264_and_the_right_shape(self):
+        with self.assertRaises(ValueError):
+            SmallStreamCodec("jpeg", W, H, 30).roundtrip_color(self.colour())
+        with self.assertRaises(ValueError):
+            SmallStreamCodec("h264", W, H, 30).roundtrip_color(smooth())
+
+
 class NodeScale(unittest.TestCase):
     def test_bin_then_area_like_the_node(self):
         import cv2

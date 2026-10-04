@@ -19,6 +19,13 @@ runtime.  For every render instant of the cameras the replay used:
 "could" minus "accepted" is what the tract lost, not what the cameras'
 placement cannot see.  Writes ``coverage.json`` into the replay directory
 and prints it.
+
+``--bin-ms N`` counts time bins of N ms instead of render instants: a bin
+could when any of its instants could, and was covered when an observation
+of any of its instants was accepted.  Streams that do not read every render
+instant (a 50 fps full-frame stream over 83 Hz renders, a 30 Hz small
+stream) are compared on the same footing that way; the report is then
+``coverage_bin<N>ms.json``.
 """
 from __future__ import annotations
 
@@ -89,7 +96,8 @@ def interpolate(rows, stamp):
     return tuple(lo[k] * (1 - a) + hi[k] * a for k in ("x", "y", "z"))
 
 
-def coverage(replay, dataset, *, max_incidence_deg=65.0, min_side_px=20.0, upright_max_z=0.2):
+def coverage(replay, dataset, *, max_incidence_deg=65.0, min_side_px=20.0, upright_max_z=0.2,
+             bin_ms=0.0):
     replay, dataset = Path(replay), Path(dataset)
     calibration = json.loads((replay / "initial_calibration.json").read_text())
     status = json.loads((replay / "status.json").read_text())
@@ -109,35 +117,57 @@ def coverage(replay, dataset, *, max_incidence_deg=65.0, min_side_px=20.0, uprig
             accepted[obs["object_id"]].add(int(obs["capture_time_ns"]))
     counts = {k: 0 for k in ("instants", "marker_could", "marker_accepted", "marker_both",
                              "silhouette_could", "silhouette_accepted", "silhouette_both")}
-    for stamp in stamps:
-        tag = interpolate(truth.get("tag_rover", []), stamp)
-        opp = interpolate(truth.get("opponent", []), stamp)
-        if tag is None and opp is None:
-            continue
-        counts["instants"] += 1
-        if tag is not None:
-            could = False
-            if tag[2] < upright_max_z:
-                point = (tag[0], tag[1], tag[2] + MARKER_ABOVE_BASE_M)
+    bin_ns = int(round(float(bin_ms) * 1e6))
+    if bin_ns > 0 and stamps:
+        # One "instant" per bin: could = any instant of the bin could,
+        # accepted = any accepted capture inside the bin.
+        first = stamps[0]
+        def key(stamp):
+            return (int(stamp) - first) // bin_ns
+        accepted = {name: {key(s) for s in values if s >= first}
+                    for name, values in accepted.items()}
+        bins = {}
+        for stamp in stamps:
+            bins.setdefault(key(stamp), []).append(stamp)
+    else:
+        bins = {stamp: [stamp] for stamp in stamps}
+    for slot, members in sorted(bins.items()):
+        tag_could = opp_could = None
+        for stamp in members:
+            tag = interpolate(truth.get("tag_rover", []), stamp)
+            opp = interpolate(truth.get("opponent", []), stamp)
+            if tag is not None:
+                could = False
+                if tag[2] < upright_max_z:
+                    point = (tag[0], tag[1], tag[2] + MARKER_ABOVE_BASE_M)
+                    could = any(v.pixel(point) is not None
+                                and v.incidence_deg(point) <= max_incidence_deg
+                                and v.side_px(*point) >= min_side_px for v in views.values())
+                tag_could = bool(tag_could) or could
+            if opp is not None:
+                point = (opp[0], opp[1], OPPONENT_TOP_M)
                 could = any(v.pixel(point) is not None
                             and v.incidence_deg(point) <= max_incidence_deg
-                            and v.side_px(*point) >= min_side_px for v in views.values())
-            took = stamp in accepted["tag_rover"]
-            counts["marker_could"] += could
+                            for v in views.values())
+                opp_could = bool(opp_could) or could
+        if tag_could is None and opp_could is None:
+            continue
+        counts["instants"] += 1
+        if tag_could is not None:
+            took = slot in accepted["tag_rover"]
+            counts["marker_could"] += tag_could
             counts["marker_accepted"] += took
-            counts["marker_both"] += could and took
-        if opp is not None:
-            point = (opp[0], opp[1], OPPONENT_TOP_M)
-            could = any(v.pixel(point) is not None and v.incidence_deg(point) <= max_incidence_deg
-                        for v in views.values())
-            took = stamp in accepted["opponent"]
-            counts["silhouette_could"] += could
+            counts["marker_both"] += tag_could and took
+        if opp_could is not None:
+            took = slot in accepted["opponent"]
+            counts["silhouette_could"] += opp_could
             counts["silhouette_accepted"] += took
-            counts["silhouette_both"] += could and took
+            counts["silhouette_both"] += opp_could and took
     n = max(counts["instants"], 1)
     report = {
         "replay": str(replay), "dataset": str(dataset), "cameras": used,
         "max_incidence_deg": max_incidence_deg, "min_side_px": min_side_px,
+        "bin_ms": float(bin_ms),
         "instants": counts["instants"],
         "marker": {"could": counts["marker_could"] / n,
                    "accepted": counts["marker_accepted"] / n,
@@ -146,8 +176,10 @@ def coverage(replay, dataset, *, max_incidence_deg=65.0, min_side_px=20.0, uprig
                        "accepted": counts["silhouette_accepted"] / n,
                        "accepted_when_could": counts["silhouette_both"]
                        / max(counts["silhouette_could"], 1)},
-        "note": "fractions of render instants; accepted = at least one camera's observation "
-                "of that instant accepted by the fusion",
+        "note": ("fractions of render instants; accepted = at least one camera's observation "
+                 "of that instant accepted by the fusion") if bin_ns <= 0 else
+                (f"fractions of {bin_ms:g} ms bins; could = any render instant of the bin "
+                 "could, accepted = an accepted observation captured inside the bin"),
     }
     return report
 
@@ -160,10 +192,14 @@ def main(argv=None):
     p.add_argument("--max-incidence-deg", type=float, default=65.0)
     p.add_argument("--min-side-px", type=float, default=20.0)
     p.add_argument("--upright-max-z", type=float, default=0.2)
+    p.add_argument("--bin-ms", type=float, default=0.0,
+                   help="count time bins of this width instead of render instants (0 = instants)")
     a = p.parse_args(argv)
     report = coverage(a.replay, a.dataset, max_incidence_deg=a.max_incidence_deg,
-                      min_side_px=a.min_side_px, upright_max_z=a.upright_max_z)
-    (a.replay / "coverage.json").write_text(json.dumps(report, indent=2) + "\n")
+                      min_side_px=a.min_side_px, upright_max_z=a.upright_max_z,
+                      bin_ms=a.bin_ms)
+    name = "coverage.json" if a.bin_ms <= 0 else f"coverage_bin{a.bin_ms:g}ms.json"
+    (a.replay / name).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     return report
 

@@ -50,6 +50,26 @@ class SensorAndJpeg(unittest.TestCase):
         bayer = link_emulation.SensorPath("cm4")(rgb)
         self.assertLess(np.abs(bayer[4:-4, 4:-4, 0].astype(int) - y[4:-4, 4:-4, 0]).max(), 4)
 
+    def test_cm4_colour_keeps_the_colour_of_a_flat_patch(self):
+        rgb = np.zeros((48, 64, 3), np.uint8)
+        rgb[:] = (180, 90, 40)
+        out = link_emulation.SensorPath("cm4").color(rgb)
+        self.assertEqual(out.shape, rgb.shape)
+        self.assertEqual(out.dtype, np.uint8)
+        inner = out[4:-4, 4:-4].reshape(-1, 3).astype(int)
+        # R 0.95, G 1.00, B 1.05: the white-balance error of the mosaic gains.
+        np.testing.assert_allclose(inner.mean(axis=0), (171, 90, 42), atol=1.5)
+        self.assertLessEqual(np.ptp(inner, axis=0).max(), 1)
+        self.assertTrue(np.array_equal(link_emulation.SensorPath("cm5").color(rgb), rgb))
+
+    def test_cm4_colour_does_not_touch_the_grey_path(self):
+        rng = np.random.default_rng(4)
+        rgb = rng.integers(0, 255, (32, 48, 3), dtype=np.uint8)
+        a, b = link_emulation.SensorPath("cm4"), link_emulation.SensorPath("cm4")
+        before = a(rgb)
+        b.color(rgb)
+        self.assertTrue(np.array_equal(b(rgb), before))
+
     def test_jpeg_changes_only_the_window_and_reports_its_size(self):
         rng = np.random.default_rng(3)
         gray = rng.integers(0, 255, (120, 160), dtype=np.uint8)
@@ -178,6 +198,13 @@ class CoverageReport(unittest.TestCase):
                                                             "capture_time_ns": stamps[0]}})
             (replay / "observations.jsonl").write_text("".join(json.dumps(o) + "\n" for o in obs))
             report = coverage_report.coverage(replay, dataset)
+            binned = coverage_report.coverage(replay, dataset, bin_ms=24.0)
+        # 24 ms bins of two 12 ms instants: 0-1 2-3 4-5 6-7 8-9; accepted 0, 1, 2.
+        self.assertEqual(binned["instants"], 5)
+        self.assertAlmostEqual(binned["marker"]["could"], 0.6)       # bin 4-5 has 4
+        self.assertAlmostEqual(binned["marker"]["accepted"], 0.4)
+        self.assertAlmostEqual(binned["marker"]["accepted_when_could"], 2 / 3)
+        self.assertAlmostEqual(binned["silhouette"]["accepted"], 0.0)
         self.assertEqual(report["instants"], 10)
         self.assertAlmostEqual(report["marker"]["could"], 0.5)
         self.assertAlmostEqual(report["marker"]["accepted"], 0.3)

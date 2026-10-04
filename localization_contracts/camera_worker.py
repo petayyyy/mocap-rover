@@ -139,6 +139,10 @@ class CameraWorker:
             self.full_codec = SmallStreamCodec(
                 full["codec"], width, height, float(full["fps"]),
                 bitrate_mbit=full.get("bitrate_mbit", 15.0), gop_s=full.get("gop_s", 0.2))
+        # Colour full stream: the node demosaics to colour and encodes real
+        # YUV420; the marker reads the decoded Y plane, the opponent (and
+        # SAM2) the decoded colour frame.
+        self.full_color = bool(full and full.get("color", False))
         if stream:
             w, h, hz = int(stream[0]), int(stream[1]), float(stream[2])
             self.opp_camera, (sx, sy) = scaled_camera(cam, w, h)
@@ -165,6 +169,8 @@ class CameraWorker:
             # The empty-arena clip goes through the same sensor path as the
             # live frames, or the model would compare grey with colour.
             convert = self.sensor or (lambda image: image)
+            if self.full_color:
+                convert = self.sensor.color
             shrink = ((lambda image: cv2.resize(image, self.opp_size, interpolation=cv2.INTER_AREA))
                       if self.opp_size else (lambda image: image))
             if self.full_codec is not None:
@@ -175,9 +181,10 @@ class CameraWorker:
                     self.full_codec.rate_hz, bitrate_mbit=self.full_codec.bitrate / 1e6,
                     gop_s=self.full_codec.gop / self.full_codec.rate_hz)
                 size = self.opp_size
+                coded = ((lambda image: clip_codec.roundtrip_color(image)[1]) if self.full_color
+                         else (lambda image: clip_codec.roundtrip_rgb(image)[0]))
                 shrink = lambda image: (  # noqa: E731
-                    clip_codec.roundtrip_rgb(image)[0] if size is None
-                    else scale_like_node(clip_codec.roundtrip_rgb(image)[0], *size))
+                    coded(image) if size is None else scale_like_node(coded(image), *size))
             if self.small_codec is not None:
                 # The empty arena is learnt from the same stream: its frames
                 # go through a codec of their own (the live one stays clean).
@@ -321,7 +328,12 @@ class CameraWorker:
         small_coded = False
         small_bytes = small_decode_ms = None
         full_bytes, full_decode_ms = None, 0.0
-        if self.full_codec is not None:
+        if self.full_codec is not None and self.full_color:
+            luma, opponent_image, full_bytes, full_decode_ms = self.full_codec.roundtrip_color(
+                self.sensor.color(image))
+            image = cv2.cvtColor(luma, cv2.COLOR_GRAY2RGB)
+            link_windows = [(image.shape[1], image.shape[0], self.full_codec.codec, full_bytes)]
+        elif self.full_codec is not None:
             image, full_bytes, full_decode_ms = self.full_codec.roundtrip_rgb(self.sensor(image))
             opponent_image = image
             link_windows = [(image.shape[1], image.shape[0], self.full_codec.codec, full_bytes)]
