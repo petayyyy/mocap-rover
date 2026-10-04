@@ -50,6 +50,7 @@
 #include "frame_prep.hpp"
 #include "h264_encoder.hpp"
 #include "http_server.hpp"
+#include "ptp_monitor.hpp"
 #include "web_page.hpp"
 
 using nlohmann::json;
@@ -99,6 +100,8 @@ struct Config {
     int line_time_ns = 9452;     // IMX219 1640x1232 register model; LED probe pending
     int send_queue = 8;          // messages; beyond it frames are dropped to the next keyframe
     std::string encoder_device;  // found by name if empty
+    bool ptp_enabled = true;      // poll pmc for the offset from the PTP master
+    double ptp_period_s = 5.0;
     std::string video_device = "/dev/video0";     // unicam-image
     std::string subdev = "/dev/v4l-subdev0";      // imx219
 
@@ -117,6 +120,8 @@ struct Config {
         c.send_queue = j.value("send_queue", c.send_queue);
         c.encoder_device = j.value("encoder_device", c.encoder_device);
         c.video_device = j.value("video_device", c.video_device);
+        c.ptp_enabled = j.value("ptp_enabled", c.ptp_enabled);
+        c.ptp_period_s = j.value("ptp_period_s", c.ptp_period_s);
         c.subdev = j.value("subdev", c.subdev);
         return c;
     }
@@ -152,6 +157,7 @@ public:
         camera_ = std::make_unique<mocap::Camera>(cs, [this](const mocap::Frame& f) { on_frame(f); });
         cfg_.line_time_ns = int(camera_->line_time_ns() + 0.5);   // from the sensor's pixel rate
         build_encoder(st);
+        if (cfg_.ptp_enabled) ptp_ = std::make_unique<mocap::PtpMonitor>(cfg_.ptp_period_s);
         std::cerr << "camera " << camera_->mode() << "\nstream " << describe(st) << ", encoder "
                   << encoder_->card() << " " << encoder_device_ << "\nweb page on :" << cfg_.http_port << "\n";
 
@@ -556,6 +562,7 @@ private:
         h.sensor_height = 1232;
         h.sensor_stamp_ns = sensor_stamp;
         h.clock_offset_ns = offset;
+        h.ptp_offset_ns = ptp_ ? ptp_->offset_ns() : proto::kUnknown;
         return h;
     }
 
@@ -757,6 +764,13 @@ private:
         return s;
     }
 
+    json ptp_json() const {
+        if (!ptp_) return {{"state", "disabled"}};
+        int64_t off = ptp_->offset_ns();
+        return {{"state", ptp_->state()}, {"age_s", ptp_->age_s()},
+                {"offset_ns", off == proto::kUnknown ? json(nullptr) : json(off)}};
+    }
+
     static double read_temp() {
         std::ifstream f("/sys/class/thermal/thermal_zone0/temp");
         double t = 0;
@@ -798,7 +812,8 @@ private:
                   {"dropped_link", w.dropped_link},
                   {"prep_ms", stat(w.prep_ms)}, {"demosaic_ms", stat(w.cvt_ms)}, {"encoder_ms", stat(w.encoder_ms)},
                   {"exp_to_encoded_ms", stat(w.exp_to_encoded_ms)}, {"exp_to_send_ms", stat(w.exp_to_send_ms)},
-                  {"cpu_percent", cpu}, {"temp_c", read_temp()}, {"realtime_ns", mocap::realtime_ns()}};
+                  {"cpu_percent", cpu}, {"temp_c", read_temp()}, {"realtime_ns", mocap::realtime_ns()},
+                  {"ptp", ptp_json()}};
         last_status_ = s;
         push_message(proto::encode_json(proto::kMsgStatus, s.dump()), true);
     }
@@ -811,6 +826,7 @@ private:
     mocap::OutputFormat out_;
     mocap::FramePrep prep_;
     std::unique_ptr<mocap::Camera> camera_;
+    std::unique_ptr<mocap::PtpMonitor> ptp_;
     std::atomic<bool> force_keyframe_soon_{false};
     std::atomic<bool> rebuild_wanted_{false};
 

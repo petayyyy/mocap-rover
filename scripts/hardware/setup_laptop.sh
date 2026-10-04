@@ -32,7 +32,8 @@ step() { printf '\n== %s\n' "$*"; }
 step "System packages"
 sudo apt-get update
 sudo apt-get install -y git python3-venv python3-pip python3-dev build-essential \
-  ffmpeg ethtool iputils-ping network-manager rsync curl pciutils
+  ffmpeg ethtool iputils-ping network-manager rsync curl pciutils \
+  cmake pkg-config libavcodec-dev libavutil-dev   # the C++ receiver (cpp/rx)
 
 step "NVIDIA driver"
 if nvidia-smi >/dev/null 2>&1; then
@@ -90,6 +91,10 @@ if [[ -n "$iface" ]]; then
   sudo nmcli con up "$con"
 fi
 
+step "C++ receiver and tools (cpp/ -> cpp/build: mocap_rx, mocap_camstat)"
+cmake -S cpp -B cpp/build -DMOCAP_BUILD_LAPTOP=ON -DMOCAP_BUILD_NODE=OFF
+cmake --build cpp/build -j"$(nproc)"
+
 step "Check"
 "$py" - <<'EOF'
 import cv2, numpy, scipy
@@ -104,6 +109,6 @@ try:
 except ImportError as e:
     print("torch/sam2 not installed:", e)
 EOF
-"$py" -m pytest tests/test_lan_capture.py -q
+"$py" -m pytest tests/test_lan_capture.py tests/test_shm_frames.py -q
 echo
 echo "Laptop ready. Next: docs/hardware_runbook.md, section 3 (camera nodes)."

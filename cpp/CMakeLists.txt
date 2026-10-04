@@ -20,7 +20,7 @@ if(MOCAP_BUILD_NODE)
   find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
   find_package(nlohmann_json REQUIRED)
   add_executable(mocap_camd node/main.cpp node/camera.cpp node/h264_encoder.cpp node/frame_prep.cpp
-                          node/http_server.cpp)
+                          node/http_server.cpp node/ptp_monitor.cpp)
   target_link_libraries(mocap_camd PRIVATE ${OpenCV_LIBS}
                         nlohmann_json::nlohmann_json Threads::Threads)
   install(TARGETS mocap_camd DESTINATION bin)

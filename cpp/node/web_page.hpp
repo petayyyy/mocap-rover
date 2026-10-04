@@ -81,7 +81,8 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
    <div><div class="k">CPU %</div><div class="n" id="scpu">—</div></div>
    <div><div class="k">°C</div><div class="n" id="stemp">—</div></div>
    <div><div class="k">пропуски</div><div class="n" id="sdrop">—</div></div>
-   <div><div class="k">клиент</div><div class="n" id="scli">—</div></div></div>
+   <div><div class="k">клиент</div><div class="n" id="scli">—</div></div>
+   <div style="grid-column:1/-1"><div class="k">PTP</div><div class="n" id="sptp" style="font-size:14px">—</div></div></div>
  </div>
 </section>
 </main>
@@ -113,7 +114,9 @@ function show(s,force){
  const r=s.roi;if(r){$('roihint').textContent='область '+r.w+'×'+r.h+' пикс. кадра';$('rmean').textContent=f1(r.mean);$('rp').textContent=r.p5+' / '+r.p95;$('rc').textContent=(r.contrast*100).toFixed(0)+'%';$('rsat').textContent=f1(r.saturated_pct)+'%';$('rsat').className='n'+(r.saturated_pct>0?' warn':'')}
  const n=s.status||{};$('sfps').textContent=n.encoded??'—';$('smb').textContent=f1(n.mbit_s);$('senc').textContent=n.encoder_ms?f1(n.encoder_ms.p50):'—';
  $('slat').textContent=n.exp_to_encoded_ms?f1(n.exp_to_encoded_ms.p50)+'/'+f1(n.exp_to_encoded_ms.p95):'—';$('scpu').textContent=f1(n.cpu_percent);$('stemp').textContent=f1(n.temp_c);
- $('sdrop').textContent=n.frames!=null?(n.dropped_prep+n.dropped_encoder+n.dropped_link):'—';$('scli').textContent=s.client?'есть':'нет'}
+ $('sdrop').textContent=n.frames!=null?(n.dropped_prep+n.dropped_encoder+n.dropped_link):'—';$('scli').textContent=s.client?'есть':'нет';
+ const p=n.ptp||{};$('sptp').textContent=p.state?(p.state+(p.offset_ns!=null?', смещение '+(p.offset_ns/1000).toFixed(1)+' мкс':'')):'—';
+ $('sptp').className='n'+((p.state==='SLAVE'&&Math.abs(p.offset_ns||0)<10000)||p.state==='MASTER'?' ok':' warn')}
 function drawHist(h){const c=$('hist'),g=c.getContext('2d'),W=c.width,H=c.height;g.clearRect(0,0,W,H);const cs=getComputedStyle(document.documentElement);
  const m=Math.max(...h.map(v=>Math.sqrt(v)))||1,bw=W/h.length;h.forEach((v,i)=>{g.fillStyle=i==h.length-1&&v>0?cs.getPropertyValue('--warn'):cs.getPropertyValue('--hist');const y=Math.sqrt(v)/m*(H-4);g.fillRect(i*bw,H-y,bw-1,y)})}
 function poll(){const q=roi?`?roi=${roi.x.toFixed(4)},${roi.y.toFixed(4)},${roi.w.toFixed(4)},${roi.h.toFixed(4)}`:'';

@@ -1,5 +1,12 @@
 # Запуск системы на железе: установка и запуск
 
+> **Основной сценарий с 04.10.2026 — C++-узел, один поток H.264 на камеру.**
+> Установка узла: `sudo scripts/hardware/setup_cm4_node.sh N --cpp`; приём и
+> проверка: `run_hardware.sh rx | rx-check | rx-record | wall | configure`;
+> задание на стенд — [field_test_cpp_h264.md](field_test_cpp_h264.md),
+> сравнение сценариев — [camera_scenarios.md](camera_scenarios.md). Ниже —
+> прежний Python-путь (окна), он остаётся для калибровки и как запасной.
+
 Стенд: 6 × Raspberry Pi CM4 (Waveshare CM4-NANO-B) + 6 × IMX219-160,
 коммутатор 1 Гбит с PoE, ноутбук Ubuntu 24.04 с NVIDIA (проверено на RTX 3070, 8 GB),
 лидар RoboSense Airy. Скрипты лежат в `scripts/hardware/`:
