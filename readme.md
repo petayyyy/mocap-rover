@@ -1,3 +1,7 @@
+> **Репозиторий переехал в [mi1en/br_lidar](https://github.com/mi1en/br_lidar) (каталог `mocap/`).**
+> Новую работу делать там. Что уже перенесено, что нет и как переносить —
+> [MOVED_TO_BR_LIDAR.md](MOVED_TO_BR_LIDAR.md).
+
 # Арена локализации — Gazebo Harmonic
 
 > Текущая доработка локализации: [статус и ограничения](docs/localization_plan/STATUS.md),
