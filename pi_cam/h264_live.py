@@ -108,11 +108,13 @@ class LiveBench:
         self.measuring = None       # CaseStats while a case is measured
         self.state = {"phase": "idle", "label": "", "case": IDLE_CASE, "left_s": 0}
         self.results = []
+        self.clips = []
         self.preview = None
         self.last_preview = 0.0
         self.handoff = collections.deque(maxlen=1)
         self.ready = threading.Event()
         self.stop = threading.Event()
+        self.recording = None       # list of full grey frames while a motion clip is recorded
         self.out_dir = Path(a.output_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -190,6 +192,9 @@ class LiveBench:
                 continue
             _, width, height, _ = case
             gray = prepare(raw_copy, width, height, self.raw)
+            rec = self.recording
+            if rec is not None and gray.shape == (FULL_H, FULL_W):
+                rec.append(np.array(gray, copy=True))
             now = time.monotonic()
             if now - self.last_preview >= PREVIEW_PERIOD_S:
                 self.last_preview = now
@@ -244,6 +249,73 @@ class LiveBench:
             except Exception:
                 pass
 
+    def run_clip(self, seconds, bitrates):
+        """Record full grey frames at 60 Hz while the person moves, then put the
+        very same frames through the hardware encoder at each bitrate, paced at
+        60 fps, and keep the lossless frames as PNG for the comparison."""
+        try:
+            for left in (3, 2, 1):
+                self.state.update(phase="countdown", label="clip", left_s=left)
+                time.sleep(1.0)
+            self.state.update(phase="switching", case="full@60", left_s=seconds)
+            self.switch("full@60")
+            time.sleep(0.3)
+            self.recording = []
+            self.state["phase"] = "recording"
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                self.state["left_s"] = round(end - time.monotonic(), 1)
+                time.sleep(0.1)
+            frames, self.recording = self.recording, None
+            self.switch(IDLE_CASE)
+            clip = self.out_dir / f"clip_{time.strftime('%H%M%S')}"
+            clip.mkdir(parents=True, exist_ok=True)
+            summary_rows = []
+            for n, br in enumerate(bitrates):
+                self.state.update(phase="encoding", label=f"{br} Мбит/с", left_s=len(bitrates) - n)
+                sizes, lock = [], threading.Lock()
+                out = open(clip / f"h264_{br:g}mbit.h264", "wb")
+
+                def keep(_fid, _t, nbytes, _k, data):
+                    with lock:
+                        out.write(data)
+                        sizes.append(nbytes)
+                enc = V4L2H264Encoder(self.device, FULL_W, FULL_H, 60.0, int(br * 1e6), 12,
+                                      keep_data=True, on_output=keep)
+                t0 = time.monotonic()
+                for i, g in enumerate(frames):
+                    while time.monotonic() < t0 + i / 60:
+                        time.sleep(0.0005)
+                    while enc.submit(g, i + 1) is None:
+                        time.sleep(0.001)
+                time.sleep(0.5)
+                enc.close()
+                out.close()
+                summary_rows.append({"bitrate_target": br, "frames": len(sizes),
+                                     "mbit_s": round(sum(sizes) * 8 / (len(frames) / 60) / 1e6, 2)})
+            self.state.update(phase="encoding", label="PNG без сжатия", left_s=0)
+            for i, g in enumerate(frames):
+                _cv2.imwrite(str(clip / f"ref_{i:03d}.png"), g)
+            info = {"clip": str(clip), "frames": len(frames), "encoded": summary_rows}
+            (clip / "clip.json").write_text(json.dumps(info, indent=2))
+            self.clips.append(info)
+            self.state.update(phase="idle", label="", left_s=0)
+        except Exception as exc:
+            self.recording = None
+            self.state.update(phase="error", label=f"{type(exc).__name__}: {exc}")
+            try:
+                self.switch(IDLE_CASE)
+            except Exception:
+                pass
+
+    def start_clip(self):
+        if self.state["phase"] not in ("idle", "error"):
+            return False
+        self.state.update(phase="countdown", label="clip", left_s=3)
+        threading.Thread(target=self.run_clip, args=(self.a.clip_seconds, self.a.clip_bitrates),
+                         daemon=True).start()
+        return True
+
     def start_sequence(self, label):
         if self.state["phase"] not in ("idle", "error"):
             return False
@@ -268,6 +340,7 @@ class LiveBench:
             "enc_ms_max": round(max(enc), 2) if enc else None,
             "soc": soc_state() if int(time.time()) % 3 == 0 else None,
             "results": self.results,
+            "clips": self.clips,
         }
 
     def serve(self):
@@ -305,7 +378,11 @@ class LiveBench:
 
             def do_POST(self):
                 path, _, query = self.path.partition("?")
-                if path == "/start":
+                if path == "/clip":
+                    ok = bench.start_clip()
+                    self._send(200 if ok else 409, json.dumps({"ok": ok}).encode(),
+                               "application/json")
+                elif path == "/start":
                     label = "motion" if "motion=1" in query else "still"
                     ok = bench.start_sequence(label)
                     self._send(200 if ok else 409, json.dumps({"ok": ok}).encode(),
@@ -363,7 +440,10 @@ th,td{text-align:right;padding:4px 6px;border-bottom:1px solid var(--line)}th:fi
 <p><span id="phase">готов</span> <span id="label" class="k"></span></p>
 <p style="display:flex;gap:8px;flex-wrap:wrap">
 <button id="still">Замер: без движения</button>
-<button id="motion" class="primary">Замер: двигаю рукой</button></p>
+<button id="motion">Замер: двигаю рукой</button>
+<button id="clip" class="primary">Запись 1640×1232 с движением</button></p>
+<p class="k" id="cliphint">Запись: после отсчёта 3 с — 5 с полного кадра 60 к/с. Водите доской по кадру: сначала медленно, потом быстрее, держите её целиком в кадре. Потом кодирование на 5 битрейтах (~30 с).</p>
+<p class="k" id="clips"></p>
 <p class="k">После нажатия — отсчёт 3 с, затем каждый кейс по очереди. Для «двигаю рукой» двигайте всё время замера, быстро и по всему кадру.</p>
 </section>
 <section class="card wide"><h1>Результаты</h1><div id="results" class="k">Пока нет.</div></section>
@@ -379,15 +459,18 @@ function fmt(s){return s&&s.p50!=null?`${s.p50} / ${s.p95}`:'—'}
 function table(results){if(!results.length)return'Пока нет.';let r='<table><tr><th>замер</th><th>кейс</th><th>к/с</th><th>Мбит/с</th><th>макс за 1 с</th><th>P-кадр КБ P50/P95</th><th>опорный КБ</th><th>кодер мс P50/P95</th><th>кодер макс</th><th>пропуски</th><th>CPU %</th><th>°C</th></tr>';
 results.forEach(b=>b.cases.forEach(c=>{r+=`<tr><td>${b.label==='motion'?'рука':'без движения'} ${b.time}</td><td>${c.case}</td><td>${c.encoded_fps}</td><td>${c.mbit_s}</td><td>${c.mbit_s_per_second_max??'—'}</td><td>${fmt(c.p_frame_kb)}</td><td>${c.keyframe_kb.p50??'—'}</td><td>${fmt(c.encoder_ms)}</td><td>${c.encoder_ms.max??'—'}</td><td>${c.sensor_missed}/${c.skipped_prep_busy}/${c.skipped_encoder_busy}</td><td>${c.cpu.board_percent??'—'}</td><td>${c.soc.temp_c?.toFixed?.(0)??'—'}</td></tr>`}));
 return r+'</table><p class="k">Пропуски: сенсор / подготовка не успела / кодер занят. JSON: <a href="/results.json">results.json</a></p>'}
-const names={idle:'готов',countdown:'отсчёт',switching:'переключаю кейс',measuring:'замер',error:'ошибка'};
+const names={idle:'готов',countdown:'отсчёт',switching:'переключаю кейс',measuring:'замер',recording:'ЗАПИСЬ — двигайте доску!',encoding:'кодирую',error:'ошибка'};
 async function tick(){try{const s=await (await fetch('/stats')).json();$('mbit').textContent=s.mbit_s;$('fps').textContent=s.fps;
 $('pkb').textContent=s.p_frame_kb??'—';$('enc').textContent=s.enc_ms_p50!=null?`${s.enc_ms_p50} / ${s.enc_ms_max}`:'—';
 $('case').textContent=s.state.case;const st=s.state;$('phase').textContent=names[st.phase]||st.phase;
+if(st.label==='clip'||st.phase==='recording'||st.phase==='encoding'){$('label').textContent=st.phase==='countdown'?`приготовьтесь двигать доску: ${st.left_s}`:st.phase==='recording'?`осталось ${st.left_s} с`:st.phase==='encoding'?`${st.label}`:'';}else
 $('label').textContent=st.phase==='countdown'?`${st.label==='motion'?'приготовьтесь двигать рукой':'не двигайтесь'}: ${st.left_s}`:st.phase==='measuring'?`${st.label==='motion'?'двигайте рукой!':'без движения'} осталось ${st.left_s} с`:st.phase==='error'?st.label:'';
-const busy=!['idle','error'].includes(st.phase);$('still').disabled=busy;$('motion').disabled=busy;
+const busy=!['idle','error'].includes(st.phase);$('still').disabled=busy;$('motion').disabled=busy;$('clip').disabled=busy;
+$('phase').style.color=st.phase==='recording'?'#dc2626':'';$('clips').textContent=(s.clips||[]).map(c=>`записано: ${c.clip.split('/').pop()}, ${c.frames} кадров; `+c.encoded.map(e=>`${e.bitrate_target}→${e.mbit_s} Мбит/с`).join(', ')).join(' | ');
 hist.push(s.mbit_s);if(hist.length>60)hist.shift();draw();$('results').innerHTML=table(s.results)}catch(e){$('phase').textContent='нет связи с CM4'}}
 setInterval(tick,500);tick();
 setInterval(()=>{$('cam').src='/preview.jpg?'+Date.now()},150);
+$('clip').onclick=()=>fetch('/clip',{method:'POST'});
 $('still').onclick=()=>fetch('/start',{method:'POST'});$('motion').onclick=()=>fetch('/start?motion=1',{method:'POST'});
 </script></body></html>
 """
@@ -405,6 +488,8 @@ def parse_args(argv=None):
     p.add_argument("--bitrate-small", type=float, default=10.0)
     p.add_argument("--bitrate-full", type=float, default=25.0)
     p.add_argument("--gop-s", type=float, default=0.2)
+    p.add_argument("--clip-seconds", type=float, default=5.0)
+    p.add_argument("--clip-bitrates", type=float, nargs="+", default=[2, 4, 8, 15, 25])
     p.add_argument("--device")
     p.add_argument("--output-dir", default="h264_live")
     return p.parse_args(argv)

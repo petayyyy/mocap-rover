@@ -84,6 +84,8 @@ CAP_VIDEO_M2M_MPLANE = 0x4000
 CAP_DEVICE_CAPS = 0x80000000
 BUF_FLAG_KEYFRAME = 0x8
 PIX_FMT_YUV420 = int.from_bytes(b"YU12", "little")
+COLORSPACE_JPEG = 7
+QUANTIZATION_FULL_RANGE = 1
 PIX_FMT_H264 = int.from_bytes(b"H264", "little")
 
 CID_CODEC_BASE = 0x00990900
@@ -262,7 +264,7 @@ class V4L2H264Encoder:
 
     def __init__(self, device, width, height, fps, bitrate, gop, profile="high",
                  level="auto", rate_mode="vbr", out_buffers=2, cap_buffers=4,
-                 keep_data=False, on_output=None):
+                 keep_data=False, on_output=None, full_range=False):
         self.width, self.height = width, height
         if level == "auto":
             level = pick_level(width, height, fps)
@@ -284,10 +286,18 @@ class V4L2H264Encoder:
         pix = fmt.fmt.pix_mp
         pix.width, pix.height, pix.pixelformat, pix.num_planes = width, height, PIX_FMT_YUV420, 1
         pix.plane_fmt[0].bytesperline = width
+        if full_range:
+            # Tags the format as full range.  Measured on the CM4 it changes
+            # nothing: the encoder passes Y 0..255 through unclipped either
+            # way and writes no range flag, so a receiver must take the
+            # decoded Y plane as is (ffmpeg's "gray" output stretches it as
+            # if it were 16..235).
+            pix.colorspace, pix.quantization = COLORSPACE_JPEG, QUANTIZATION_FULL_RANGE
         fcntl.ioctl(self.fd, VIDIOC_S_FMT, fmt)
         self.stride = int(pix.plane_fmt[0].bytesperline)
         self.buf_height = int(pix.height)
         self.sizeimage = int(pix.plane_fmt[0].sizeimage)
+        self.info_range = {"colorspace": int(pix.colorspace), "quantization": int(pix.quantization)}
         if pix.pixelformat != PIX_FMT_YUV420 or pix.width < width or self.stride < width:
             raise RuntimeError(f"encoder refused {width}x{height} YU12: got "
                                f"{pix.width}x{pix.height} stride {self.stride}")
@@ -295,9 +305,13 @@ class V4L2H264Encoder:
         fmt = Format(type=BUF_TYPE_CAPTURE_MPLANE)
         pix = fmt.fmt.pix_mp
         pix.width, pix.height, pix.pixelformat, pix.num_planes = width, height, PIX_FMT_H264, 1
+        if full_range:
+            pix.colorspace, pix.quantization = COLORSPACE_JPEG, QUANTIZATION_FULL_RANGE
         pix.plane_fmt[0].sizeimage = max(512 * 1024, width * height)
         fcntl.ioctl(self.fd, VIDIOC_S_FMT, fmt)
-        self.info.update(stride=self.stride, buffer_height=self.buf_height,
+        self.info.update(range_out=self.info_range,
+                         range_cap={"colorspace": int(pix.colorspace), "quantization": int(pix.quantization)},
+                         stride=self.stride, buffer_height=self.buf_height,
                          sizeimage=self.sizeimage,
                          capture_sizeimage=int(pix.plane_fmt[0].sizeimage))
 
@@ -624,10 +638,11 @@ def run_case(sensor, case, a, device, make_encoder=V4L2H264Encoder, first_id=1):
                     continue
                 ready.clear()
                 try:
-                    raw_copy, exp_start, in_python = handoff.popleft()
+                    frame, exp_start, in_python = handoff.popleft()
                 except IndexError:
                     continue
-                gray = prepare(raw_copy, width, height, a.raw)
+                gray = prepare(frame.y, width, height, a.raw)
+                frame.release()
                 prepared = boottime_ns()
                 queued = encoder.submit(gray, fid)
                 if queued is None:
@@ -654,16 +669,22 @@ def run_case(sensor, case, a, device, make_encoder=V4L2H264Encoder, first_id=1):
                     frame.release()
                     continue
                 last_tick = tick
-            raw_copy = np.array(frame.y, copy=True)
+            # The frame itself, not a copy: the worker releases it once the
+            # grey picture is made.  A frame the worker never took goes back now.
             exp_start = stamp - frame.exposure_ns
-            frame.release()
             if handoff:
-                counts["skipped_prep"] += 1      # the worker has not taken the last one
-            handoff.append((raw_copy, exp_start, in_python))
+                try:
+                    handoff.popleft()[0].release()
+                    counts["skipped_prep"] += 1
+                except IndexError:
+                    pass
+            handoff.append((frame, exp_start, in_python))
             ready.set()
         stopping.set()
         ready.set()
         thread.join(timeout=2.0)
+        while handoff:
+            handoff.popleft()[0].release()
         submitted = len(rows)
         skipped_busy = counts["skipped_busy"]
         elapsed = time.monotonic() - start
