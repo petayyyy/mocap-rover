@@ -107,6 +107,32 @@ class SensorPath:
         import cv2
         return cv2.cvtColor(self.gray(rgb), cv2.COLOR_GRAY2RGB)
 
+    def color(self, rgb):
+        """Rendered RGB -> the node's colour frame (RGB), for a colour stream.
+
+        ``cm4``: each site of the SBGGR mosaic keeps only its own channel of
+        the render, times the same +/-5 % gains (here a white-balance error),
+        and the frame is demosaiced to colour -- not grey -- as the node's
+        ISP-less path would before a colour encoder.  ``cm5``: the ISP's
+        colour output, the render as is.
+        """
+        import cv2
+        rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
+        if self.mode == "cm5":
+            return rgb
+        height, width = rgb.shape[:2]
+        if self._tile is None or self._tile.shape != (height, width):
+            self._tile = np.tile(self.gains, ((height + 1) // 2, (width + 1) // 2))[:height, :width]
+        mosaic = np.empty((height, width), np.float32)
+        mosaic[0::2, 0::2] = rgb[0::2, 0::2, 2]          # B
+        mosaic[0::2, 1::2] = rgb[0::2, 1::2, 1]          # G
+        mosaic[1::2, 0::2] = rgb[1::2, 0::2, 1]          # G
+        mosaic[1::2, 1::2] = rgb[1::2, 1::2, 0]          # R
+        mosaic = np.clip(mosaic * self._tile + 0.5, 0, 255).astype(np.uint8)
+        # OpenCV names the pattern one site off: a BGGR mosaic to RGB is its
+        # ``BayerRG2RGB`` (the same operation as ``BayerBG2BGR``).
+        return cv2.cvtColor(mosaic, cv2.COLOR_BayerRG2RGB)
+
 
 def clip_roi(roi, width, height):
     """(x, y, w, h) clipped to the frame, or None when nothing is left."""

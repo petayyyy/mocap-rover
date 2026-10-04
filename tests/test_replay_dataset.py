@@ -4,6 +4,8 @@ A two-camera, ten-frame dataset is written in the recorder's own format --
 FFV1 video, per-frame jsonl index, clock and truth rows -- with the marker
 rendered where each camera sees it, then replayed end to end.
 """
+import collections
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -305,6 +307,70 @@ class ReplayDataset(unittest.TestCase):
         valid = [json.loads(l) for l in (out / "odometry.jsonl").read_text().splitlines()]
         self.assertTrue(any(r["valid"] and r["object_id"] == "tag_rover" for r in valid))
         self.assertIsNone(json.loads((self.out / "timing.json").read_text())["link"])
+
+    @unittest.skipUnless(importlib.util.find_spec("av"), "PyAV not installed")
+    def test_the_small_stream_through_h264_is_counted_on_the_port(self):
+        out = self.run_replay("small_h264", "--link-emulation", "cm4", "--roi-max-px", "320",
+                              "--opponent-stream", "320x240@30", "--opponent-stream-codec", "h264",
+                              "--opponent-stream-bitrate", "2")
+        timing = json.loads((out / "timing.json").read_text())
+        small = timing["small_stream"]
+        self.assertEqual(small["codec"], "h264")
+        self.assertGreater(small["all_cameras"]["frames"], 0)
+        self.assertLess(small["all_cameras"]["frame_kb_p50"], 320 * 240 / 1000)
+        self.assertGreater(timing["link"]["windows_h264"], 0)
+
+    @unittest.skipUnless(importlib.util.find_spec("av"), "PyAV not installed")
+    def test_the_full_frame_stream_keeps_its_grid_and_latency(self):
+        out = self.run_replay("full_h264", "--link-emulation", "cm4", "--roi-max-px", "480",
+                              "--roi-jpeg-max-px", "480", "--opponent-stream", "320x240@30",
+                              "--full-stream-codec", "h264", "--full-stream-fps", "40",
+                              "--full-stream-bitrate", "4", "--full-stream-latency-ms", "70",
+                              "--full-stream-latency-jitter-ms", "10")
+        timing = json.loads((out / "timing.json").read_text())
+        self.assertIsNone(timing["link"])
+        full = timing["full_stream"]
+        # 12 ms frames on a 25 ms grid: every other or third frame exists.
+        stamps = collections.defaultdict(list)
+        for row in (json.loads(l) for l in (out / "camera_frames.jsonl").read_text().splitlines()):
+            stamps[row["camera_id"]].append(row["capture_ns"])
+        for values in stamps.values():
+            self.assertLess(len(values), FRAMES)
+            self.assertGreaterEqual(min(np.diff(sorted(values))), 24_000_000)
+        self.assertEqual(full["all_cameras"]["frames"], sum(map(len, stamps.values())))
+        self.assertGreaterEqual(full["arrival_ms"]["p50"], 70.0)
+        observations = [json.loads(l)["observation"]
+                        for l in (out / "observations.jsonl").read_text().splitlines()]
+        delays = [o["receive_time_ns"] - o["capture_time_ns"] for o in observations
+                  if o["method"] != "operator_box"]
+        if delays:
+            self.assertGreaterEqual(min(delays), 70_000_000)
+
+    @unittest.skipUnless(importlib.util.find_spec("av"), "PyAV not installed")
+    def test_the_colour_full_stream_feeds_the_opponent_colour(self):
+        args = ("--link-emulation", "cm4", "--roi-max-px", "480", "--roi-jpeg-max-px", "480",
+                "--opponent-stream", "320x240@30", "--full-stream-codec", "h264",
+                "--full-stream-fps", "40", "--full-stream-bitrate", "4",
+                "--full-stream-latency-ms", "50", "--full-stream-latency-jitter-ms", "5")
+        grey = self.run_replay("full_grey", *args)
+        colour = self.run_replay("full_colour", *args, "--full-stream-color")
+        timing = json.loads((colour / "timing.json").read_text())
+        self.assertTrue(timing["full_stream"]["color"])
+        self.assertFalse(json.loads((grey / "timing.json").read_text())["full_stream"]["color"])
+        self.assertTrue(json.loads((colour / "runtime_parameters.json").read_text())
+                        ["link_emulation"]["full_stream_color"])
+        self.assertGreater(timing["full_stream"]["all_cameras"]["frames"], 0)
+        methods = {json.loads(l)["observation"]["method"]
+                   for l in (colour / "observations.jsonl").read_text().splitlines()
+                   if '"opponent"' in l}
+        self.assertIn("silhouette_extent", methods)
+        with self.assertRaises(SystemExit), open(self.root / "colour_refused.log", "w") as sink:
+            stderr, sys.stderr = sys.stderr, sink
+            try:
+                self.replay.parse_args([str(self.dataset), "--output", str(self.root / "x"),
+                                        "--full-stream-color"])
+            finally:
+                sys.stderr = stderr
 
     def test_an_existing_output_is_never_overwritten(self):
         with self.assertRaises(SystemExit):

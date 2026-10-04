@@ -1,0 +1,18 @@
+[Unit]
+Description=mocap-rover camera node (C++, one H.264 stream)
+After=network-online.target
+Wants=network-online.target
+Conflicts=camera_node.service
+# Keep retrying (the camera may come up late); systemd would give up after 5 tries in 10 s.
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/mocap_camd --config /etc/mocap-rover/camd.json
+Restart=always
+RestartSec=2
+User=pi
+Group=video
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

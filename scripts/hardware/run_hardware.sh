@@ -9,6 +9,14 @@
 #   scripts/hardware/run_hardware.sh track NAME [BACKGROUND]   # localization on a recording
 #   scripts/hardware/run_hardware.sh sam2-bench                # SAM2 speed on this GPU
 #
+# Main scenario, C++ nodes (mocap_camd, one H.264 stream per camera):
+#   scripts/hardware/run_hardware.sh rx                        # live: decode all, stats, frames to /dev/shm
+#   scripts/hardware/run_hardware.sh rx-check SECONDS [NAME]   # measured run -> artifacts/field_<NAME>/rx_summary.json
+#   scripts/hardware/run_hardware.sh rx-record NAME [SECONDS]  # H.264 as it came -> artifacts/rec_<NAME>/
+#   scripts/hardware/run_hardware.sh wall                      # all cameras on http://localhost:8090 (needs rx running)
+#   scripts/hardware/run_hardware.sh configure '{"exposure_us":900}'   # the same settings on every node
+#   PTP=1 ...                                                 # stamps already on the PTP scale (no offset estimate)
+#
 # Environment: NODES="192.168.10.101:5600 ..." (default: .101-.106),
 # CAM_CONFIG (default config/mocap_arena_imx219/runtime_cameras.json; replace it
 # with the calibration of the real stand), IFACE (laptop port for 'status'),
@@ -72,6 +80,35 @@ case "$cmd" in
     fi
     "$py" scripts/replay_dataset.py "artifacts/dataset_$name" "${args[@]}" "$@"
     echo "result: artifacts/track_$name"
+    ;;
+  rx|rx-check|rx-record)
+    rx=cpp/build/mocap_rx
+    [[ -x $rx ]] || { echo "no $rx: run scripts/hardware/setup_laptop.sh (C++ step)" >&2; exit 1; }
+    ptp=(); [[ "${PTP:-0}" == 1 ]] && ptp=(--ptp)
+    case "$cmd" in
+      rx) exec "$rx" "${ptp[@]}" --shm --stats 2 "${nodes[@]}" ;;
+      rx-check)
+        secs="${1:-600}"; name="${2:-$(date +%Y%m%d_%H%M)}"; out="artifacts/field_$name"; mkdir -p "$out"
+        "$rx" "${ptp[@]}" --shm --stats 5 --seconds "$secs" --summary "$out/rx_summary.json" "${nodes[@]}" | tee "$out/rx_check.txt"
+        echo "summary: $out/rx_summary.json" ;;
+      rx-record)
+        name="${1:?recording name}"; secs="${2:-60}"; out="artifacts/rec_$name"
+        [[ -e $out ]] && { echo "$out exists; recordings are never overwritten" >&2; exit 1; }
+        need_space $(( secs * 6 * 15 / 8 / 1000 + 1 ))   # 6 cameras x 15 Mbit/s
+        "$rx" "${ptp[@]}" --shm --stats 5 --seconds "$secs" --record "$out" --summary "$out/rx_summary.json" "${nodes[@]}"
+        echo "recording: $out (one .h264 + .jsonl per camera)" ;;
+    esac
+    ;;
+  wall)
+    exec "$py" scripts/hardware/camera_wall.py "$@"
+    ;;
+  configure)
+    body="${1:?JSON with settings, e.g. '{\"exposure_us\":900}'}"
+    for n in "${nodes[@]}"; do
+      host="${n%%:*}"
+      printf '%-16s ' "$host"
+      curl -s -m 10 -X POST -d "$body" "http://$host:8080/api/apply" | "$py" -c "import json,sys; s=json.load(sys.stdin); print(s.get('message') or 'ok', s['settings'])" || echo "no answer"
+    done
     ;;
   sam2-bench)
     "$py" scripts/bench_sam2.py --models tiny --dtypes bfloat16 --image-sizes 512 \

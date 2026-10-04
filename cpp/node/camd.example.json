@@ -1,0 +1,17 @@
+{
+  "camera_id": "camera_1",
+  "port": 5600,
+  "http_port": 8080,
+  "width": 1640,
+  "height": 1232,
+  "color": false,
+  "fps": 50,
+  "exposure_us": 800,
+  "gain": 4.0,
+  "bitrate": 15000000,
+  "gop_s": 0.2,
+  "red_gain": 1.0,
+  "blue_gain": 1.0,
+  "buffer_count": 4,
+  "send_queue": 8
+}
