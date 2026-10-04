@@ -31,18 +31,21 @@ void copy_rows(const cv::Mat& from, uint8_t* to, int to_stride) {
 // One Bayer cell row pair (B G / G R) -> BT.601 luma of the cell's colour
 // (B, mean G, R) -- the weights of the full demosaic -- and, if asked, its
 // full-range chroma after white balance (gains in 1/256).
-void cells_row(const uint8_t* r0, const uint8_t* r1, int cw, uint8_t* gray, uint8_t* cb, uint8_t* cr,
-               int red_q8, int blue_q8) {
-    for (int x = 0; x < cw; ++x) {
-        int b = r0[2 * x], g2x = r0[2 * x + 1] + r1[2 * x], r = r1[2 * x + 1];
-        gray[x] = uint8_t((77 * r + 75 * g2x + 29 * b + 128) >> 8);
-    }
+void cells_row(const uint8_t* __restrict r0, const uint8_t* __restrict r1, int cw, uint8_t* __restrict gray,
+               uint8_t* __restrict cb, uint8_t* __restrict cr, int red_q8, int blue_q8) {
+    if (gray)
+        for (int x = 0; x < cw; ++x) {
+            int b = r0[2 * x], g2x = r0[2 * x + 1] + r1[2 * x], r = r1[2 * x + 1];
+            gray[x] = uint8_t((77 * r + 75 * g2x + 29 * b + 128) >> 8);
+        }
     if (!cb) return;
+    // Inputs are 0..255 after the white-balance clip, so the results stay in
+    // 0..255 without clamping (the loop vectorises).
     for (int x = 0; x < cw; ++x) {
         int g = (r0[2 * x + 1] + r1[2 * x] + 1) >> 1;
         int b = std::min(255, (r0[2 * x] * blue_q8) >> 8), r = std::min(255, (r1[2 * x + 1] * red_q8) >> 8);
-        cb[x] = uint8_t(std::clamp((-43 * r - 85 * g + 128 * b + 32768) >> 8, 0, 255));
-        cr[x] = uint8_t(std::clamp((128 * r - 107 * g - 21 * b + 32768) >> 8, 0, 255));
+        cb[x] = uint8_t((-43 * r - 85 * g + 128 * b + 32768) >> 8);
+        cr[x] = uint8_t((128 * r - 107 * g - 21 * b + 32768) >> 8);
     }
 }
 
@@ -79,8 +82,9 @@ void FramePrep::process(const uint8_t* raw, int raw_stride, int width, int heigh
     const bool small = out.width <= cw && out.height <= ch;   // at or below one pixel per Bayer cell
     const bool demosaic = !small;
     const bool cells = small || out.color || preview != nullptr;
+    const bool cells_gray = small || preview != nullptr;   // full-size colour takes Y from the demosaic
 
-    if (cells) cells_gray_.create(ch, cw, CV_8UC1);
+    if (cells_gray) cells_gray_.create(ch, cw, CV_8UC1);
     if (out.color) {
         cb_.create(ch, cw, CV_8UC1);
         cr_.create(ch, cw, CV_8UC1);
@@ -104,7 +108,7 @@ void FramePrep::process(const uint8_t* raw, int raw_stride, int width, int heigh
                 const uint8_t* r0 = band.ptr(y - m0);
                 const uint8_t* r1 = band.ptr(y - m0 + 1);
                 int cy = y / 2;
-                cells_row(r0, r1, cw, cells_gray_.ptr(cy), out.color ? cb_.ptr(cy) : nullptr,
+                cells_row(r0, r1, cw, cells_gray ? cells_gray_.ptr(cy) : nullptr, out.color ? cb_.ptr(cy) : nullptr,
                           out.color ? cr_.ptr(cy) : nullptr, int(out.red_gain * 256), int(out.blue_gain * 256));
             }
         }

@@ -520,6 +520,16 @@ private:
             res.body = (j.is_object() ? apply(j) : json{{"error", true}, {"message", "bad JSON"}}).dump();
         } else if (r.method == "POST" && r.path == "/api/save") {
             res.body = save().dump();
+        } else if (r.method == "POST" && r.path == "/api/restart") {
+            // A fresh encoder: the stream starts again at a keyframe with what
+            // the sensor delivers from now on.
+            Settings s;
+            {
+                std::lock_guard<std::mutex> g(settings_lock_);
+                s = cfg_.settings;
+            }
+            build_encoder(s);
+            res.body = state_json({}, "поток перезапущен", false).dump();
         } else if (r.method == "POST" && r.path == "/api/keyframe") {
             std::lock_guard<std::mutex> pipe(pipe_lock_);
             encoder_->force_keyframe();

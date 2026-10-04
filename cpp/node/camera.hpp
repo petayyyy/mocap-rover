@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -69,6 +70,15 @@ public:
 private:
     void apply_timing(double fps, int exposure_us, float gain);
     void loop();
+    template <class T>
+    static T value_at(const std::deque<std::pair<int64_t, T>>& h, int64_t seq);
+
+    // What the sensor really used for a frame: a value written now takes
+    // effect a fixed number of frames later (IMX219, as libcamera's helper:
+    // exposure and frame length 2 frames, gain 1), so each change is kept with
+    // the first sequence it applies to.
+    std::deque<std::pair<int64_t, int64_t>> exposure_hist_, duration_hist_;
+    std::deque<std::pair<int64_t, float>> gain_hist_;
 
     CameraSettings s_;
     FrameFn on_frame_;
@@ -83,7 +93,7 @@ private:
     std::mutex controls_lock_;
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> missed_{0};
-    int64_t last_sequence_ = -1;
+    std::atomic<int64_t> last_sequence_{-1};
     std::thread thread_;
 };
 

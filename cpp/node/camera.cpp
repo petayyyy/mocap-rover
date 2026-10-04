@@ -134,24 +134,45 @@ Camera::~Camera() {
     close(sd_);
 }
 
+template <class T>
+T Camera::value_at(const std::deque<std::pair<int64_t, T>>& h, int64_t seq) {
+    T v = h.empty() ? T{} : h.front().second;
+    for (const auto& [from, value] : h) {
+        if (from > seq) break;
+        v = value;
+    }
+    return v;
+}
+
 void Camera::apply_timing(double fps, int exposure_us, float gain) {
     std::lock_guard<std::mutex> g(controls_lock_);
+    // The frame after the last delivered one is already being read out; a
+    // write now reaches the sensor's next frame start, and IMX219 latches it
+    // one more frame later for exposure and frame length.
+    const int64_t next = running_ ? last_sequence_ + 1 : 0;
+    const int64_t exp_from = running_ ? next + 2 : 0, gain_from = running_ ? next + 1 : 0;
     if (fps > 0) {
         frame_lines_ = int(std::lround(1e9 / fps / line_ns_));
         if (!set_ctrl(sd_, V4L2_CID_VBLANK, frame_lines_ - s_.height))
             throw std::runtime_error("sensor refused the frame length for this rate");
         frame_duration_ns_ = int64_t(frame_lines_ * line_ns_);
+        duration_hist_.emplace_back(exp_from, frame_duration_ns_);
     }
     if (exposure_us > 0) {
         int lines = std::clamp(int(std::lround(exposure_us * 1000.0 / line_ns_)), 1, frame_lines_ - 4);
         set_ctrl(sd_, V4L2_CID_EXPOSURE, lines);
         exposure_ns_ = int64_t(lines * line_ns_);
+        exposure_hist_.emplace_back(exp_from, exposure_ns_);
     }
     if (gain > 0) {
         int code = gain_code(gain);
         set_ctrl(sd_, V4L2_CID_ANALOGUE_GAIN, code);
         gain_ = float(256.0 / (256.0 - code));
+        gain_hist_.emplace_back(gain_from, gain_);
     }
+    for (auto* h : {&exposure_hist_, &duration_hist_})   // keep the last few changes
+        while (h->size() > 8) h->pop_front();
+    while (gain_hist_.size() > 8) gain_hist_.pop_front();
 }
 
 void Camera::start() {
@@ -201,9 +222,12 @@ void Camera::loop() {
         // unicam stamps the frame-start interrupt: the start of readout of row 0
         // (the frame is in userspace exactly one readout, 11.7 ms, later).
         f.sensor_stamp_ns = int64_t(b.timestamp.tv_sec) * 1'000'000'000 + int64_t(b.timestamp.tv_usec) * 1000;
-        f.exposure_ns = exposure_ns_;
-        f.frame_duration_ns = frame_duration_ns_;
-        f.gain = gain_;
+        {
+            std::lock_guard<std::mutex> g(controls_lock_);
+            f.exposure_ns = value_at(exposure_hist_, int64_t(f.sequence));
+            f.frame_duration_ns = value_at(duration_hist_, int64_t(f.sequence));
+            f.gain = value_at(gain_hist_, int64_t(f.sequence));
+        }
         if (last_sequence_ >= 0 && int64_t(f.sequence) > last_sequence_ + 1)
             missed_ += uint64_t(int64_t(f.sequence) - last_sequence_ - 1);
         last_sequence_ = int64_t(f.sequence);

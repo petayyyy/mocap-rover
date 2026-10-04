@@ -22,7 +22,7 @@ if(MOCAP_BUILD_NODE)
   add_executable(mocap_camd node/main.cpp node/camera.cpp node/h264_encoder.cpp node/frame_prep.cpp
                           node/http_server.cpp node/ptp_monitor.cpp)
   # nlohmann/json 3.11 trips GCC 12's -Wmaybe-uninitialized (a known false positive)
-  target_compile_options(mocap_camd PRIVATE -Wno-maybe-uninitialized)
+  target_compile_options(mocap_camd PRIVATE -Wno-maybe-uninitialized -mcpu=native)   # built on the node
   target_link_libraries(mocap_camd PRIVATE ${OpenCV_LIBS}
                         nlohmann_json::nlohmann_json Threads::Threads)
   install(TARGETS mocap_camd DESTINATION bin)

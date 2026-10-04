@@ -69,8 +69,9 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
   <div class="row"><label for="bg">Баланс: синий</label><input type="range" id="bgr" min="0.25" max="4" step="0.01"><input type="number" id="bg" min="0.25" max="4" step="0.01"></div>
   <p style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 0"><button id="wbroi">Баланс белого по области</button><button id="wball">по всему кадру</button></p>
   <p class="mut">Выделите на картинке белый или серый лист на арене и нажмите «по области». Баланс влияет только на цвет, не на яркость (маркер читается по яркости).</p>
-  <p style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0"><button class="primary" id="save">Сохранить в конфиг</button><button id="key">Опорный кадр</button></p>
+  <p style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0"><button class="primary" id="save">Сохранить в конфиг</button><button id="restart">Перезапустить поток</button><button id="key">Опорный кадр</button></p>
   <p class="mut" id="msg"></p>
+  <p class="warn" id="over" style="display:none"></p>
  </div>
  <div class="card" style="margin-top:14px"><h2>Узел сейчас</h2>
   <div class="grid">
@@ -101,6 +102,7 @@ $('res').onchange=()=>{const[w,h]=$('res').value.split('x').map(Number);queue('w
 $('color').onchange=()=>queue('color',$('color').checked);
 $('save').onclick=()=>fetch('/api/save',{method:'POST'}).then(r=>r.json()).then(s=>{$('msg').textContent=s.message;$('msg').className='mut'+(s.error?' warn':' ok')});
 $('key').onclick=()=>fetch('/api/keyframe',{method:'POST'});
+$('restart').onclick=()=>fetch('/api/restart',{method:'POST'}).then(r=>r.json()).then(s=>{$('msg').textContent=s.message||'';$('msg').className='mut ok'});
 function f1(x){return x==null?'—':(+x).toFixed(1)}
 function show(s,force){
  const st=s.settings;$('title').textContent=s.camera_id;$('mode').textContent=s.mode;
@@ -114,7 +116,10 @@ function show(s,force){
  const r=s.roi;if(r){$('roihint').textContent='область '+r.w+'×'+r.h+' пикс. кадра';$('rmean').textContent=f1(r.mean);$('rp').textContent=r.p5+' / '+r.p95;$('rc').textContent=(r.contrast*100).toFixed(0)+'%';$('rsat').textContent=f1(r.saturated_pct)+'%';$('rsat').className='n'+(r.saturated_pct>0?' warn':'')}
  const n=s.status||{};$('sfps').textContent=n.encoded??'—';$('smb').textContent=f1(n.mbit_s);$('senc').textContent=n.encoder_ms?f1(n.encoder_ms.p50):'—';
  $('slat').textContent=n.exp_to_encoded_ms?f1(n.exp_to_encoded_ms.p50)+'/'+f1(n.exp_to_encoded_ms.p95):'—';$('scpu').textContent=f1(n.cpu_percent);$('stemp').textContent=f1(n.temp_c);
- $('sdrop').textContent=n.frames!=null?(n.dropped_prep+n.dropped_encoder+n.dropped_link):'—';$('scli').textContent=s.client?'есть':'нет';
+ $('sdrop').textContent=n.frames!=null?(n.dropped_prep+n.dropped_encoder+n.dropped_link):'—';
+ const period=1000/(s.actual.fps||50),prep=n.prep_ms?n.prep_ms.p50:0,drops=n.frames!=null?(n.dropped_prep+n.dropped_encoder):0;
+ const over=n.frames!=null&&(prep>0.9*period||drops>0||n.cpu_percent>90);$('over').style.display=over?'':'none';
+ if(over)$('over').textContent=`Узел не успевает за режимом: подготовка кадра ${prep.toFixed(1)} мс при периоде ${period.toFixed(1)} мс, пропущено ${drops} к/с, CPU ${n.cpu_percent.toFixed(0)} %. Уменьшите разрешение, выключите цвет или снизьте к/с — иначе растут задержка и потери (цвет на 1640×1232 при 50 к/с CM4 не тянет).`;$('scli').textContent=s.client?'есть':'нет';
  const p=n.ptp||{};$('sptp').textContent=p.state?(p.state+(p.offset_ns!=null?', смещение '+(p.offset_ns/1000).toFixed(1)+' мкс':'')):'—';
  $('sptp').className='n'+((p.state==='SLAVE'&&Math.abs(p.offset_ns||0)<10000)||p.state==='MASTER'?' ok':' warn')}
 function drawHist(h){const c=$('hist'),g=c.getContext('2d'),W=c.width,H=c.height;g.clearRect(0,0,W,H);const cs=getComputedStyle(document.documentElement);
