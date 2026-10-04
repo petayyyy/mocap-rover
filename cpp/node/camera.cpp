@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 
@@ -61,6 +62,15 @@ Camera::Camera(const CameraSettings& s, FrameFn on_frame) : s_(s), on_frame_(std
     if (vd_ < 0) throw std::runtime_error("open " + s.video_device + ": " + std::strerror(errno) +
                                           " (is camera_node or another camera user running?)");
 
+    // Orientation as libcamera sets it: the overlay declares the sensor mounted
+    // at 180 degrees, so both flips go on.  This also makes the mosaic BGGR;
+    // after a cold boot the flips are off and the sensor offers RGGB, which is
+    // why the format below is refused without this (seen on a bench CM4).
+    v4l2_control rot{V4L2_CID_CAMERA_SENSOR_ROTATION, 0};
+    bool rotated = ioctl(sd_, VIDIOC_G_CTRL, &rot) == 0 && rot.value == 180;
+    if (rotated && !(set_ctrl(sd_, V4L2_CID_HFLIP, 1) && set_ctrl(sd_, V4L2_CID_VFLIP, 1)))
+        throw std::runtime_error("sensor refused the flips for its 180-degree mounting");
+
     v4l2_subdev_format sf{};
     sf.which = V4L2_SUBDEV_FORMAT_ACTIVE;
     sf.format.width = uint32_t(s.width);
@@ -70,7 +80,11 @@ Camera::Camera(const CameraSettings& s, FrameFn on_frame) : s_(s), on_frame_(std
     xioctl(sd_, VIDIOC_SUBDEV_S_FMT, &sf, "sensor format");
     if (sf.format.width != uint32_t(s.width) || sf.format.height != uint32_t(s.height) ||
         sf.format.code != MEDIA_BUS_FMT_SBGGR8_1X8)
-        throw std::runtime_error("sensor refused 1640x1232 SBGGR8");
+        throw std::runtime_error("sensor refused 1640x1232 SBGGR8 (offers code 0x" + [&] {
+            char b[16];
+            std::snprintf(b, sizeof b, "%x", sf.format.code);
+            return std::string(b);
+        }() + ")");
 
     v4l2_format vf{};
     vf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -103,8 +117,9 @@ Camera::Camera(const CameraSettings& s, FrameFn on_frame) : s_(s), on_frame_(std
         maps_.emplace_back(static_cast<uint8_t*>(p), b.length);
     }
     char buf[160];
-    std::snprintf(buf, sizeof buf, "%dx%d SBGGR8 via unicam (V4L2), stride %d, line %.1f ns, %d lines/frame",
-                  s.width, s.height, stride_, line_ns_, frame_lines_);
+    std::snprintf(buf, sizeof buf, "%dx%d SBGGR8 via unicam (V4L2), %s, stride %d, line %.1f ns, %d lines/frame",
+                  s.width, s.height, rotated ? "rotated 180 (flips on)" : "no rotation", stride_, line_ns_,
+                  frame_lines_);
     mode_ = buf;
 }
 

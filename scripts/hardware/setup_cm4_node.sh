@@ -44,6 +44,9 @@ step "Packages"
 apt-get update
 apt-get install -y python3-picamera2 python3-numpy python3-simplejpeg linuxptp \
   ethtool python3-lgpio python3-opencv git rsync   # opencv: demosaic for calibration frames
+# The C++ node is built here, so its packages come now, while the node still
+# has its old address (the static camera-network address below has no gateway).
+[[ $cpp == 1 ]] && apt-get install -y cmake g++ pkg-config libopencv-dev nlohmann-json3-dev
 
 step "Camera overlay (CM4-NANO-B does not auto-detect the IMX219)"
 cfg=/boot/firmware/config.txt
@@ -113,6 +116,12 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
+# PTP owns the clock: phc2sys steers CLOCK_REALTIME on the slaves, and NTP
+# (systemd-timesyncd) would fight it.  Measured on a bench CM4: with both,
+# the clock wandered by milliseconds; after a slave -> master switch the
+# frequency phc2sys had set stayed and the clock lost ~120 ms per second
+# until a reboot.  The camera network has no internet anyway.
+systemctl disable --now systemd-timesyncd 2>/dev/null || true
 # The node polls pmc as the service user.
 echo "$user_name ALL=(root) NOPASSWD: /usr/sbin/pmc" > /etc/sudoers.d/mocap-pmc
 chmod 440 /etc/sudoers.d/mocap-pmc
@@ -120,21 +129,19 @@ usermod -aG video "$user_name"
 
 if [[ $cpp == 1 ]]; then
   step "C++ node mocap_camd (one H.264 stream per camera)"
-  apt-get install -y cmake g++ pkg-config libopencv-dev nlohmann-json3-dev
   build="$repo/cpp/build-node"
   sudo -u "$user_name" cmake -S "$repo/cpp" -B "$build" -DMOCAP_BUILD_NODE=ON -DMOCAP_BUILD_LAPTOP=OFF
   sudo -u "$user_name" cmake --build "$build" -j4
   install -m 755 "$build/mocap_camd" /usr/local/bin/mocap_camd
   camd=/etc/mocap-rover/camd.json
-  if [[ ! -f $camd ]]; then
-    python3 - "$repo/cpp/node/camd.example.json" "$camd" "$n" <<'EOF'
-import json, sys
+  # Settings already tuned on the arena are kept; the camera number always follows N.
+  python3 - "$repo/cpp/node/camd.example.json" "$camd" "$n" <<'EOF'
+import json, os, sys
 src, dst, n = sys.argv[1:]
-c = json.load(open(src))
+c = json.load(open(dst if os.path.exists(dst) else src))
 c["camera_id"] = f"camera_{n}"
 json.dump(c, open(dst, "w"), indent=2)
 EOF
-  fi
   chown "$user_name" "$camd"   # the web page's "save" writes it
   sed "s/^User=pi/User=$user_name/" "$repo/cpp/node/mocap_camd.service" > /etc/systemd/system/mocap_camd.service
 fi

@@ -4,7 +4,7 @@
 // decoder per camera, so six cameras decode on six cores in parallel); a
 // small pinger thread sends a "status" command every few seconds, and the
 // answers keep the node-to-host clock offset (NTP estimator: the round trip
-// with the smallest delay in the last minute wins).  Under PTP the stamps are
+// with the smallest delay in the last 10 s wins).  Under PTP the stamps are
 // already on a common scale and the offset is taken as 0.
 //
 // The connection is re-established if the node goes away; the decoder starts

@@ -129,7 +129,9 @@ void NodeReceiver::on_ack(const std::string& json, int64_t receive_ns) {
     int64_t offset = int64_t(node) - (sent + receive_ns) / 2;   // node clock minus ours
     std::lock_guard<std::mutex> g(clock_lock_);
     samples_.emplace_back(receive_ns, rtt, offset);
-    while (!samples_.empty() && receive_ns - std::get<0>(samples_.front()) > 60 * kSecond) samples_.pop_front();
+    // A short window: a node whose clock is still being steered (phc2sys after
+    // start) moves by milliseconds a minute, and an old best sample would stick.
+    while (!samples_.empty() && receive_ns - std::get<0>(samples_.front()) > 10 * kSecond) samples_.pop_front();
     auto best = std::min_element(samples_.begin(), samples_.end(),
                                  [](const auto& a, const auto& b) { return std::get<1>(a) < std::get<1>(b); });
     offset_ns_ = std::get<2>(*best);

@@ -68,6 +68,10 @@ journalctl -u mocap_camd -n 10                      # 'camera 1640x1232 SBGGR8 v
 sudo pmc -u -b 0 'GET PORT_DATA_SET' | grep portState   # MASTER на camera_1, SLAVE на остальных
 ```
 
+Скрипт отключает на узле `systemd-timesyncd`: часами управляет только PTP.
+Проверено на стендовой CM4: с NTP часы гуляли на миллисекунды. Узел после
+холодной перезагрузки стартует сам: в журнале должно быть `rotated 180 (flips on)`.
+
 Откройте в браузере `http://192.168.10.10N:8080`: должна быть живая картинка,
 внизу справа в «PTP» — `SLAVE` и смещение в единицы мкс (у camera_1 —
 `MASTER`).
